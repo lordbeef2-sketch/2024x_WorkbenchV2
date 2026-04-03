@@ -39,6 +39,7 @@ import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import BookmarkAddRoundedIcon from "@mui/icons-material/BookmarkAddRounded";
 import CompareArrowsRoundedIcon from "@mui/icons-material/CompareArrowsRounded";
 import DownloadRoundedIcon from "@mui/icons-material/DownloadRounded";
+import EditRoundedIcon from "@mui/icons-material/EditRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 import FullscreenRoundedIcon from "@mui/icons-material/FullscreenRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
@@ -56,6 +57,7 @@ import SettingsDialog from "../components/SettingsDialog";
 import {
   AttachmentInfo,
   Bookmark,
+  BranchSummary,
   CommentEntry,
   CompareDifference,
   ItemDetails,
@@ -225,7 +227,9 @@ export default function WorkspacePage() {
   const [commentDraft, setCommentDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [presentationOpen, setPresentationOpen] = useState(false);
+  const [branchDialogOpen, setBranchDialogOpen] = useState(false);
   const [documentEditMode, setDocumentEditMode] = useState(false);
+  const [branchDraft, setBranchDraft] = useState<{ name: string; description: string }>({ name: "", description: "" });
   const [selectedSimulationConfigId, setSelectedSimulationConfigId] = useState("");
   const [simulationValues, setSimulationValues] = useState<Record<string, string | number | boolean>>({});
   const [publishForm, setPublishForm] = useState({
@@ -267,6 +271,7 @@ export default function WorkspacePage() {
   const canPublish = capabilities.publish?.state !== "not_available";
   const canEditItems = capabilities.edit?.state !== "not_available";
   const canAttach = capabilities.attachment?.state !== "not_available";
+  const canEditBranches = capabilities.branch_edit?.state === "ready";
 
   const dashboardQuery = useQuery({
     queryKey: ["dashboard"],
@@ -285,8 +290,8 @@ export default function WorkspacePage() {
   });
 
   const itemQuery = useQuery({
-    queryKey: ["item", selectedItemId],
-    queryFn: () => api.getItem(selectedItemId!),
+    queryKey: ["item", selectedProjectId, selectedBranchId, selectedItemId],
+    queryFn: () => api.getItem(selectedItemId!, selectedProjectId, selectedBranchId),
     enabled: Boolean(selectedItemId),
   });
 
@@ -374,10 +379,12 @@ export default function WorkspacePage() {
           metadata: JSON.parse(itemMetadataDraft) as Record<string, string>,
         },
         csrfToken,
+        selectedProjectId,
+        selectedBranchId,
       );
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["item", selectedItemId] });
+      await queryClient.invalidateQueries({ queryKey: ["item", selectedProjectId, selectedBranchId, selectedItemId] });
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       setBanner({ severity: "success", message: "Model item saved." });
     },
@@ -395,6 +402,23 @@ export default function WorkspacePage() {
       await queryClient.invalidateQueries({ queryKey: ["document", selectedDocumentId] });
       await queryClient.invalidateQueries({ queryKey: ["documents"] });
       setBanner({ severity: "success", message: "Collaborator document saved." });
+    },
+    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
+  });
+
+  const updateBranchMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedProjectId || !selectedBranchId) {
+        throw new Error("Select a project and branch before updating branch settings.");
+      }
+      return api.updateBranch(selectedProjectId, selectedBranchId, branchDraft, csrfToken);
+    },
+    onSuccess: async (branch: BranchSummary) => {
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      setBranchDraft({ name: branch.name, description: branch.description });
+      setBranchDialogOpen(false);
+      setBanner({ severity: "success", message: "Branch metadata saved." });
     },
     onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
   });
@@ -603,6 +627,18 @@ export default function WorkspacePage() {
   }, [documentQuery.data]);
 
   useEffect(() => {
+    if (branchDialogOpen) {
+      return;
+    }
+    const project = (projectsQuery.data ?? []).find((candidate) => candidate.id === selectedProjectId);
+    const branch = project?.branches.find((candidate) => candidate.id === selectedBranchId) ?? project?.branches[0];
+    setBranchDraft({
+      name: branch?.name ?? "",
+      description: branch?.description ?? "",
+    });
+  }, [branchDialogOpen, projectsQuery.data, selectedBranchId, selectedProjectId]);
+
+  useEffect(() => {
     const configs = simulationConfigsQuery.data ?? [];
     if (!configs.length) {
       return;
@@ -635,6 +671,7 @@ export default function WorkspacePage() {
   }, [simulationCompareLeftId, simulationHistoryQuery.data]);
 
   const selectedProject = (projectsQuery.data ?? []).find((project) => project.id === selectedProjectId) ?? null;
+  const selectedBranch = selectedProject?.branches.find((branch) => branch.id === selectedBranchId) ?? selectedProject?.branches[0] ?? null;
   const selectedConfig = (simulationConfigsQuery.data ?? []).find((config) => config.id === selectedSimulationConfigId) ?? null;
   const selectedItem = itemQuery.data ?? null;
   const selectedDocument = documentQuery.data ?? null;
@@ -684,6 +721,17 @@ export default function WorkspacePage() {
     } catch {
       return;
     }
+  };
+
+  const openBranchDialog = () => {
+    if (!selectedBranch) {
+      return;
+    }
+    setBranchDraft({
+      name: selectedBranch.name,
+      description: selectedBranch.description,
+    });
+    setBranchDialogOpen(true);
   };
 
   return (
@@ -777,20 +825,42 @@ export default function WorkspacePage() {
               ))}
             </TextField>
 
-            <TextField
-              select
-              label="Branch"
-              value={selectedBranchId ?? ""}
-              onChange={(event) => updateParams({ branch: event.target.value })}
-              fullWidth
-              disabled={!selectedProject}
-            >
-              {(selectedProject?.branches ?? []).map((branch) => (
-                <MenuItem key={branch.id} value={branch.id}>
-                  {branch.name}
-                </MenuItem>
-              ))}
-            </TextField>
+            <Stack spacing={1}>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "flex-start" }}>
+                <TextField
+                  select
+                  label="Branch"
+                  value={selectedBranchId ?? ""}
+                  onChange={(event) => updateParams({ branch: event.target.value })}
+                  fullWidth
+                  disabled={!selectedProject}
+                >
+                  {(selectedProject?.branches ?? []).map((branch) => (
+                    <MenuItem key={branch.id} value={branch.id}>
+                      {branch.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <Button
+                  variant="outlined"
+                  startIcon={<EditRoundedIcon />}
+                  disabled={!selectedBranch || !canEditBranches}
+                  onClick={openBranchDialog}
+                >
+                  Edit
+                </Button>
+              </Stack>
+              {selectedBranch?.description ? (
+                <Typography variant="body2" color="text.secondary">
+                  {selectedBranch.description}
+                </Typography>
+              ) : null}
+              {capabilities.branch_edit && !canEditBranches ? (
+                <Typography variant="caption" color="text.secondary">
+                  {capabilities.branch_edit.reason}
+                </Typography>
+              ) : null}
+            </Stack>
 
             <TextField
               label="Filter tree"
@@ -1821,6 +1891,45 @@ export default function WorkspacePage() {
           await saveSettingsMutation.mutateAsync(preferences);
         }}
       />
+
+      <Dialog open={branchDialogOpen} onClose={() => setBranchDialogOpen(false)} fullWidth maxWidth="sm">
+        <Box sx={{ p: 3 }}>
+          <Stack spacing={2}>
+            <div>
+              <Typography variant="h5">Edit Branch</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Rename the active branch or update its description metadata.
+              </Typography>
+            </div>
+            <TextField
+              label="Branch Name"
+              fullWidth
+              value={branchDraft.name}
+              onChange={(event) => setBranchDraft((current) => ({ ...current, name: event.target.value }))}
+            />
+            <TextField
+              label="Description"
+              fullWidth
+              multiline
+              minRows={4}
+              value={branchDraft.description}
+              onChange={(event) => setBranchDraft((current) => ({ ...current, description: event.target.value }))}
+            />
+            <Stack direction="row" spacing={1} justifyContent="flex-end">
+              <Button variant="text" onClick={() => setBranchDialogOpen(false)} disabled={updateBranchMutation.isPending}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                onClick={() => updateBranchMutation.mutate()}
+                disabled={!branchDraft.name.trim() || updateBranchMutation.isPending}
+              >
+                Save Branch
+              </Button>
+            </Stack>
+          </Stack>
+        </Box>
+      </Dialog>
 
       <Dialog fullScreen open={presentationOpen} onClose={() => setPresentationOpen(false)}>
         <Box sx={{ p: { xs: 3, md: 6 }, bgcolor: "background.default", minHeight: "100%" }}>

@@ -12,11 +12,13 @@ import structlog
 
 from app.adapters.teamwork import TeamworkAdapter, create_adapter
 from app.auth.oauth import OAuthCallbackResult, OAuthService
+from app.core.pdf import render_pdf_document
 from app.core.storage import SqliteRepository
 from app.integrations.publisher import PublisherAdapter, build_publisher
 from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
     Bookmark,
+    BranchUpdateRequest,
     CapabilityState,
     CommentEntry,
     CompareResult,
@@ -216,16 +218,38 @@ class PlatformService:
     async def get_model_tree(self, session: SessionData, project_id: str | None, branch_id: str | None):
         return await self._adapter_for_session(session).get_model_tree(project_id, branch_id)
 
-    async def get_item(self, session: SessionData, item_id: str) -> ItemDetails:
-        item = await self._adapter_for_session(session).get_item(item_id)
+    async def update_branch(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        payload: BranchUpdateRequest,
+    ):
+        return await self._adapter_for_session(session).update_branch(project_id, branch_id, payload.model_dump(exclude_none=True))
+
+    async def get_item(
+        self,
+        session: SessionData,
+        item_id: str,
+        project_id: str | None = None,
+        branch_id: str | None = None,
+    ) -> ItemDetails:
+        item = await self._adapter_for_session(session).get_item(item_id, project_id, branch_id)
         self.sessions.add_recent_item(
             session,
             Bookmark(title=item.name, item_id=item.id, item_type=item.item_type, path=item.path),
         )
         return item
 
-    async def update_item(self, session: SessionData, item_id: str, payload: dict[str, Any]) -> ItemDetails:
-        item = await self._adapter_for_session(session).update_item(item_id, payload)
+    async def update_item(
+        self,
+        session: SessionData,
+        item_id: str,
+        payload: dict[str, Any],
+        project_id: str | None = None,
+        branch_id: str | None = None,
+    ) -> ItemDetails:
+        item = await self._adapter_for_session(session).update_item(item_id, payload, project_id, branch_id)
         self.sessions.add_recent_item(
             session,
             Bookmark(title=item.name, item_id=item.id, item_type=item.item_type, path=item.path),
@@ -374,12 +398,8 @@ class PlatformService:
             output = export_dir / f"{base_name}.csv"
             output.write_text(self._to_csv(payload), encoding="utf-8")
             return output
-        output = export_dir / f"{base_name}.pdf.txt"
-        output.write_text(
-            "PDF export requested. Install a PDF renderer such as ReportLab or WeasyPrint and replace this adapter to emit a binary PDF.\n\n"
-            + json.dumps(payload, indent=2),
-            encoding="utf-8",
-        )
+        output = export_dir / f"{base_name}.pdf"
+        output.write_bytes(render_pdf_document("Export", json.dumps(payload, indent=2)))
         return output
 
     def _to_markdown(self, payload: dict[str, Any]) -> str:

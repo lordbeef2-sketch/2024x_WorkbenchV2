@@ -183,6 +183,11 @@ class BranchSummary(BaseModel):
     description: str = ""
 
 
+class BranchUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
 class ProjectSummary(BaseModel):
     id: str
     name: str

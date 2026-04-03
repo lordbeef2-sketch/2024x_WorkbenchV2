@@ -59,7 +59,7 @@ Important settings:
 - `SESSION_SECRET`: replace with a long random secret in every non-local environment.
 - `SECURE_COOKIES=true`: required when running behind HTTPS.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
-- `PUBLISHER_MODE=stub|cli|webhook`: selects the publishing adapter.
+- `PUBLISHER_MODE=local|cli|webhook`: selects the publishing adapter.
 - `PUBLISHER_COMMAND`: used when `PUBLISHER_MODE=cli`.
 - `PUBLISHER_WEBHOOK_URL`: used when `PUBLISHER_MODE=webhook`.
 - `ENABLE_PAT_LOGIN=true`: enables the admin-only PAT fallback flow.
@@ -161,7 +161,7 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 - Set `SECURE_COOKIES=true` behind HTTPS.
 - Move sessions to Redis via `REDIS_URL` for multi-instance deployments.
 - Move SQLite to a managed relational database if you need multi-node profile and job persistence.
-- Replace the stub publish adapter with `cli` or `webhook` mode for real publishing pipelines.
+- Replace the default local publish adapter with `cli` or `webhook` mode when you want the backend to hand work off to an external publishing pipeline.
 - If custom CA bundles are required, mount them into the backend container or VM and reference them in server profiles.
 
 ## TWC Authentication Configuration Notes
@@ -176,24 +176,30 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 
 - Teamwork Cloud `2022x` and `2024x` are supported through the adapter boundary in `backend/app/adapters/teamwork.py`.
 - Auto-detection probes version and endpoint availability after sign-in.
+- The adapter now uses the verified main TWC Swagger surface for resource, branch, model, and element browsing when the live server exposes those endpoints.
+- Version-aware request serialization is applied for the shared 2022xR2 and 2024xR3 operations that changed from `text/plain` payloads to `application/json` payloads.
+- Branch rename and branch metadata edit are treated as `2024x`-only because those `PATCH` endpoints were verified only in the `2024xR3` export.
 - Unknown or unavailable remote capabilities are isolated behind safe fallbacks so the UI can still operate without unsafe direct browser integrations.
 
 ## Simulation Notes
 
 - Simulation is treated as a first-class background job.
+- The verified main Teamwork Cloud Swagger does not include simulation operations, so simulation remains a separately probed capability.
 - The backend attempts remote simulation endpoints first and falls back to the local adapter when remote support is not safely confirmed.
 - The UI supports configuration discovery, parameter editing, execution, live logs, result metrics, history, and run comparison.
 
 ## Publishing Notes
 
 - Publishing is intentionally pluggable, not hardcoded to a single REST path.
-- `stub` mode generates concrete HTML artifacts for local validation.
+- The verified main Teamwork Cloud Swagger does not include publish operations, so publishing remains integration-defined rather than contract-derived.
+- `local` mode generates a concrete local publish package with `manifest.json`, `summary.md`, `summary.pdf`, `index.html`, and a ZIP bundle.
 - `cli` mode executes an external command.
 - `webhook` mode delegates to an external job endpoint.
 
 ## Attachment Handling Notes
 
 - Attachment upload, listing, download, and delete are exposed via backend routes.
+- The verified main Teamwork Cloud Swagger does not include collaborator attachment workflows, so collaborator and attachment capability remains separate from the main TWC contract.
 - Fallback storage persists uploaded files under the backend data directory when remote collaborator endpoints are not confirmed.
 - Image attachments render inline previews in the collaborator workspace.
 

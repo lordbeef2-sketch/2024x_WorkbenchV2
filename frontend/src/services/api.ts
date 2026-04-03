@@ -2,6 +2,8 @@ import {
   AttachmentInfo,
   AuthOptions,
   Bookmark,
+  BranchSummary,
+  BranchUpdateRequest,
   CollaboratorDocument,
   CommentEntry,
   CompareResult,
@@ -132,6 +134,13 @@ export const api = {
   getProjects() {
     return request<ProjectSummary[]>("/workspace/projects");
   },
+  updateBranch(projectId: string, branchId: string, payload: BranchUpdateRequest, csrfToken: string) {
+    return request<BranchSummary>(`/workspace/projects/${projectId}/branches/${branchId}`, {
+      method: "PATCH",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
   getTree(projectId?: string, branchId?: string) {
     const params = new URLSearchParams();
     if (projectId) {
@@ -143,11 +152,27 @@ export const api = {
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request<TreeNode[]>(`/workspace/tree${suffix}`);
   },
-  getItem(itemId: string) {
-    return request<ItemDetails>(`/workspace/items/${itemId}`);
+  getItem(itemId: string, projectId?: string, branchId?: string) {
+    const params = new URLSearchParams();
+    if (projectId) {
+      params.set("projectId", projectId);
+    }
+    if (branchId) {
+      params.set("branchId", branchId);
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<ItemDetails>(`/workspace/items/${itemId}${suffix}`);
   },
-  updateItem(itemId: string, payload: Partial<ItemDetails>, csrfToken: string) {
-    return request<ItemDetails>(`/workspace/items/${itemId}`, {
+  updateItem(itemId: string, payload: Partial<ItemDetails>, csrfToken: string, projectId?: string, branchId?: string) {
+    const params = new URLSearchParams();
+    if (projectId) {
+      params.set("projectId", projectId);
+    }
+    if (branchId) {
+      params.set("branchId", branchId);
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<ItemDetails>(`/workspace/items/${itemId}${suffix}`, {
       method: "PUT",
       headers: jsonHeaders(csrfToken),
       body: JSON.stringify(payload),

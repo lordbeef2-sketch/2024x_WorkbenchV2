@@ -2,6 +2,13 @@
 
 This FastAPI service is the secure integration layer for TWC Workbench. It manages OAuth authentication, session cookies, Teamwork Cloud adapters, capability probing, background jobs, exports, collaborator workflows, and publish integrations.
 
+## Verified Contract Boundary
+
+- The adapter uses the verified main Teamwork Cloud Swagger surface for resources, branches, models, and element retrieval where the live server exposes those endpoints.
+- Shared 2022xR2 and 2024xR3 operations that changed request body encoding are serialized per version so the backend does not assume `application/json` is backward-compatible with `2022xR2`.
+- Branch rename and branch metadata edit are exposed as `2024x`-only capability because those `PATCH` endpoints were verified only in the `2024xR3` export.
+- Simulation, collaborator, attachments, and publish are not part of the verified main TWC Swagger surface and therefore remain separately probed or integration-defined.
+
 Run locally with:
 
 ```powershell

@@ -105,6 +105,11 @@ export interface BranchSummary {
   description: string;
 }
 
+export interface BranchUpdateRequest {
+  name?: string;
+  description?: string;
+}
+
 export interface ProjectSummary {
   id: string;
   name: string;

@@ -1,0 +1,843 @@
+{
+  "left_label": "2022xR2",
+  "right_label": "2024xR3",
+  "left_operation_count": 264,
+  "right_operation_count": 266,
+  "only_left": [],
+  "only_right": [
+    {
+      "path": "/osmc/resources/{resourceId}/branches/{branchId}",
+      "method": "PATCH"
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/resources/{resourceId}/branches/{branchId}",
+      "method": "PATCH"
+    }
+  ],
+  "changed_shared_operations": [
+    {
+      "path": "/osmc/admin/config/{key}",
+      "method": "PUT",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "put"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "put"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/admin/ldaps/{ldapId}/resync/usergroups",
+      "method": "PATCH",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [
+          "all",
+          "includeBody"
+        ],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfString"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [
+          "all",
+          "includeBody"
+        ],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "jsonArrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/admin/ldaps/{ldapId}/resync/users",
+      "method": "PATCH",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [
+          "all",
+          "includeBody"
+        ],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfString"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [
+          "all",
+          "includeBody"
+        ],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "jsonArrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/admin/roles/{roleId}/usergroups",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/admin/roles/{roleId}/users",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/admin/usergroups",
+      "method": "PUT",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [
+          "includeNew",
+          "modifiedDate"
+        ],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [
+          "includeNew",
+          "modifiedDate"
+        ],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/resources/{resourceId}/branches/{branchId}/elements",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/resources/{resourceId}/branches/{branchId}/revisions/{revision}/elements",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/resources/{resourceId}/elements",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/resources/{resourceId}/revisions/{revision}/elements",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/resources/{resourceId}/roles/{roleId}/usergroups",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/resources/{resourceId}/roles/{roleId}/users",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfString"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "jsonArrayOfString"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/resources/{resourceId}/tags",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Repository Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/ld+json",
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "Tag",
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200",
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Repository Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json",
+          "application/ld+json"
+        ],
+        "request_schema_refs": [
+          "Tag",
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200",
+          "201"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces",
+      "method": "PUT",
+      "left": {
+        "tags": [
+          "Repository Management"
+        ],
+        "parameter_names": [
+          "includeNew",
+          "modifiedDate"
+        ],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Repository Management"
+        ],
+        "parameter_names": [
+          "includeNew",
+          "modifiedDate"
+        ],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/resources/{resourceId}/branches/{branchId}/elements",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/resources/{resourceId}/branches/{branchId}/revisions/{revision}/elements",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/resources/{resourceId}/elements",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/resources/{resourceId}/revisions/{revision}/elements",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Model Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/resources/{resourceId}/roles/{roleId}/usergroups",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/resources/{resourceId}/roles/{roleId}/users",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfString"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "jsonArrayOfString"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/resources/{resourceId}/tags",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Repository Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/ld+json",
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "Tag",
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200",
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Repository Management"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json",
+          "application/ld+json"
+        ],
+        "request_schema_refs": [
+          "Tag",
+          "arrayOfUuid"
+        ],
+        "response_codes": [
+          "200",
+          "201"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/roles/{roleId}/usergroups",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "post"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      }
+    },
+    {
+      "path": "/osmc/workspaces/{workspaceId}/roles/{roleId}/users",
+      "method": "POST",
+      "left": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "text/plain"
+        ],
+        "request_schema_refs": [
+          "arrayOfString"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      },
+      "right": {
+        "tags": [
+          "Administrator"
+        ],
+        "parameter_names": [],
+        "request_content_types": [
+          "application/json"
+        ],
+        "request_schema_refs": [
+          "jsonArrayOfString"
+        ],
+        "response_codes": [
+          "201"
+        ]
+      }
+    }
+  ],
+  "shared_operation_count": 264,
+  "schema_names_only_left": [],
+  "schema_names_only_right": [
+    "WebhookScopeBranchedEObject",
+    "jsonArrayOfString"
+  ]
+}

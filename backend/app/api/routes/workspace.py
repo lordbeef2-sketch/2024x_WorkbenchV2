@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from fastapi.responses import FileResponse
 
 from app.api.deps import get_container, get_session, require_csrf
-from app.models.domain import Bookmark, ExportRequest, PublishRequest, SavedSearch, SessionPreferences, SimulationRunRequest
+from app.models.domain import Bookmark, BranchUpdateRequest, ExportRequest, PublishRequest, SavedSearch, SessionPreferences, SimulationRunRequest
 from app.services.platform import ApplicationContainer
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
@@ -20,6 +20,22 @@ async def projects(session=Depends(get_session), container: ApplicationContainer
     return await container.platform.list_projects(session)
 
 
+@router.patch("/projects/{project_id}/branches/{branch_id}")
+async def update_branch(
+    project_id: str,
+    branch_id: str,
+    payload: BranchUpdateRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.update_branch(session, project_id, branch_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
 @router.get("/tree")
 async def tree(
     projectId: str | None = Query(default=None),
@@ -31,9 +47,15 @@ async def tree(
 
 
 @router.get("/items/{item_id}")
-async def item(item_id: str, session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+async def item(
+    item_id: str,
+    projectId: str | None = Query(default=None),
+    branchId: str | None = Query(default=None),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
     try:
-        return await container.platform.get_item(session, item_id)
+        return await container.platform.get_item(session, item_id, projectId, branchId)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found") from exc
 
@@ -42,11 +64,13 @@ async def item(item_id: str, session=Depends(get_session), container: Applicatio
 async def update_item(
     item_id: str,
     payload: dict,
+    projectId: str | None = Query(default=None),
+    branchId: str | None = Query(default=None),
     session=Depends(require_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
-        return await container.platform.update_item(session, item_id, payload)
+        return await container.platform.update_item(session, item_id, payload, projectId, branchId)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found") from exc
     except PermissionError as exc:
@@ -177,7 +201,9 @@ async def download_attachment(
     path = await container.platform.get_attachment_path(session, document_id, attachment_id)
     if not path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
-    return FileResponse(path)
+    attachments = await container.platform.list_attachments(session, document_id)
+    attachment = next((item for item in attachments if item.id == attachment_id), None)
+    return FileResponse(path, filename=attachment.file_name if attachment else path.name)
 
 
 @router.get("/collaborator/documents/{document_id}/comments")

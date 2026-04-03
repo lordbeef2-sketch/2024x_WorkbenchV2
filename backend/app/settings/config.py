@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     enable_pat_login: bool = False
     pat_admin_secret: str | None = None
     redis_url: str | None = None
-    publisher_mode: str = "stub"
+    publisher_mode: str = "local"
     publisher_command: str | None = None
     publisher_webhook_url: str | None = None
     root_path: str = ""
