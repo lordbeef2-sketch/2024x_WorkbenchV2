@@ -15,27 +15,34 @@ The browser never talks directly to Teamwork Cloud. All Teamwork Cloud access, t
 
 Run the platform from the repository root with a single script:
 
+Windows:
+
 ```powershell
 .\launch.ps1
 ```
 
-What it does:
+Linux:
 
-- checks all `.ps1` files under the repository and unblocks any that still carry a Windows download mark
-- creates or reuses the root `.venv`
-- installs backend dependencies when `backend/pyproject.toml` changes
-- installs frontend dependencies when `frontend/package.json` changes
-- rebuilds the frontend when source files change
-- sets `FRONTEND_ORIGIN` to the backend URL for a single-origin launch
-- starts FastAPI so the backend serves both the API and the built frontend
+```bash
+bash ./launch.sh
+```
+
+What the launchers do:
+
+- Windows launcher checks all `.ps1` files under the repository and unblocks any that still carry a Windows download mark.
+- Both launchers create or reuse the root `.venv`.
+- Both launchers install backend dependencies when `backend/pyproject.toml` changes.
+- Both launchers install frontend dependencies when `frontend/package.json` changes.
+- Both launchers rebuild the frontend when source files change.
+- Both launchers set `FRONTEND_ORIGIN` to the backend URL for a single-origin launch.
+- Both launchers start FastAPI so the backend serves both the API and the built frontend.
 
 Useful options:
 
-- `.\launch.ps1 -PrepareOnly` prepares the environment and build without starting the server
-- `.\launch.ps1 -NoBrowser` starts the app without opening a browser tab
-- `.\launch.ps1 -Port 8080` launches on a different port
+- Windows: `.\launch.ps1 -PrepareOnly`, `.\launch.ps1 -NoBrowser`, `.\launch.ps1 -Port 8080`
+- Linux: `bash ./launch.sh --prepare-only`, `bash ./launch.sh --no-browser`, `bash ./launch.sh --port 8080`
 
-If PowerShell execution policy blocks script execution, run:
+If PowerShell execution policy blocks script execution on Windows, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\launch.ps1
@@ -89,14 +96,22 @@ Frontend dependencies are declared in `frontend/package.json`.
 3. Copy `backend/.env.example` to `backend/.env`.
 4. Set `SESSION_SECRET` and environment-specific values.
 
-Example:
+Windows example:
 
 ```powershell
-cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e .
-Copy-Item .env.example .env
+python -m pip install -e backend
+Copy-Item backend/.env.example backend/.env
+```
+
+Linux example:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e backend
+cp backend/.env.example backend/.env
 ```
 
 ### Frontend
@@ -105,12 +120,20 @@ Copy-Item .env.example .env
 2. Install frontend dependencies.
 3. Optionally copy `frontend/.env.example` to `frontend/.env`.
 
-Example:
+Windows example:
 
 ```powershell
-cd frontend
+Set-Location frontend
 npm install
 Copy-Item .env.example .env
+```
+
+Linux example:
+
+```bash
+cd frontend
+npm install
+cp .env.example .env
 ```
 
 ## Run Instructions
@@ -119,25 +142,37 @@ Copy-Item .env.example .env
 
 From the repository root:
 
+Windows:
+
 ```powershell
 .\launch.ps1
+```
+
+Linux:
+
+```bash
+bash ./launch.sh
 ```
 
 Open `http://localhost:8000`.
 
 ### Development
 
-Run backend:
+Run backend on Windows:
 
 ```powershell
-cd backend
-.\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Run backend on Linux:
+
+```bash
+./.venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Run frontend in a second terminal:
 
-```powershell
+```bash
 cd frontend
 npm run dev
 ```
