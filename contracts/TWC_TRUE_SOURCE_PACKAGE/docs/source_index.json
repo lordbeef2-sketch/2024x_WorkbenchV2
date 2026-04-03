@@ -1,0 +1,108 @@
+{
+  "product": "Teamwork Cloud",
+  "target_versions": ["2022xR2", "2024xR3"],
+  "sources": [
+    {
+      "id": "public-swagger-index",
+      "type": "swagger-index",
+      "url": "https://osmc.nomagic.com/",
+      "scope": ["2022xR2", "2024xR3", "simulation"]
+    },
+    {
+      "id": "public-twc-2022xr2-swagger-ui",
+      "type": "swagger-ui",
+      "url": "https://osmc.nomagic.com/2022xR2/swagger/index.html",
+      "scope": ["2022xR2"]
+    },
+    {
+      "id": "public-twc-2024xr3-swagger-ui",
+      "type": "swagger-ui",
+      "url": "https://osmc.nomagic.com/2024xR3/swagger/index.html",
+      "scope": ["2024xR3"]
+    },
+    {
+      "id": "public-sim-2022xr2-swagger-ui",
+      "type": "swagger-ui",
+      "url": "https://osmc.nomagic.com/simulation/2022xRefresh2/swagger/index.html",
+      "scope": ["2022xR2", "simulation"]
+    },
+    {
+      "id": "public-sim-2024xr3-swagger-ui",
+      "type": "swagger-ui",
+      "url": "https://osmc.nomagic.com/simulation/2024xRefresh3/swagger/index.html",
+      "scope": ["2024xR3", "simulation"]
+    },
+    {
+      "id": "docs-rest-apis-2024x",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/TWCloud2024x/pages/137987736/REST%2BAPIs",
+      "scope": ["REST overview"]
+    },
+    {
+      "id": "docs-auth-2022xr2",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/TWCloud2022xR2/pages/127970880/Authentication",
+      "scope": ["2022xR2", "authentication"]
+    },
+    {
+      "id": "docs-token-auth-2022xr2",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/TWCloud2022xR2/pages/127970883/Token-based%2Bauthentication",
+      "scope": ["2022xR2", "authentication"]
+    },
+    {
+      "id": "docs-model-manipulation-2022xr2",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/TWCloud2022xR2/pages/127970884/Model%2Bmanipulation",
+      "scope": ["2022xR2", "write/edit"]
+    },
+    {
+      "id": "docs-session-reuse-2022x",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/TWCloud2022x/pages/158597352/Reusing%2BTeamwork%2BCloud%2Bsession",
+      "scope": ["sessions"]
+    },
+    {
+      "id": "docs-auth-server-2024x",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/TWCloud2024x/pages/137986532/Authentication%2Bserver",
+      "scope": ["auth server"]
+    },
+    {
+      "id": "docs-saml-2024x",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/TWCloud2024x/pages/137986541/SAML%2Bintegration",
+      "scope": ["SAML"]
+    },
+    {
+      "id": "docs-saml-parameters-2024x",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/TWCloud2024x/pages/137986542/SAML%2Bparameters",
+      "scope": ["SAML"]
+    },
+    {
+      "id": "docs-saml-config-ui-2024xr3",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/MCS2024xR3/pages/261619838/Configuring%2Bauthentication%2Bserver%2Bfor%2BSAML%2Bintegration",
+      "scope": ["2024xR3", "SAML"]
+    },
+    {
+      "id": "docs-2024xr3-overview",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/TWCloud2024xR3/pages/227171266/Teamwork%2BCloud%2Band%2BServices",
+      "scope": ["2024xR3", "overview"]
+    },
+    {
+      "id": "docs-2024xr3-version-news",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/MD2024xR3/pages/227148264/2024x%2BRefresh3%2BVersion%2BNews",
+      "scope": ["2024xR3", "release notes"]
+    },
+    {
+      "id": "docs-2022xr2-hf2-version-news",
+      "type": "doc",
+      "url": "https://docs.nomagic.com/spaces/NMDOC/pages/178160520/2022x%2BRefresh2%2BHot%2BFix%2B2%2BVersion%2BNews",
+      "scope": ["2022xR2", "release notes"]
+    }
+  ]
+}

@@ -1,0 +1,302 @@
+export type TWCVersion = "auto" | "2022x" | "2024x";
+export type ThemeMode = "light" | "dark" | "system";
+export type CapabilityState = "ready" | "restricted" | "not_available" | "unknown";
+export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+export type JobType = "simulation" | "publish" | "export";
+export type ExportFormat = "json" | "csv" | "markdown" | "html" | "pdf";
+
+export interface ServerProfile {
+  id: string;
+  name: string;
+  base_url: string;
+  auth_url: string;
+  version: TWCVersion;
+  client_id: string;
+  callback_url: string;
+  verify_tls: boolean;
+  ca_bundle_path: string | null;
+  favorite: boolean;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServerProfileInput {
+  name: string;
+  base_url: string;
+  auth_url: string;
+  version: TWCVersion;
+  client_id: string;
+  callback_url: string;
+  verify_tls: boolean;
+  ca_bundle_path: string | null;
+  favorite: boolean;
+}
+
+export interface ServerHealth {
+  server_id: string;
+  status: "healthy" | "degraded" | "unreachable";
+  version_hint: string | null;
+  response_time_ms: number | null;
+  checks: Record<string, boolean>;
+  message: string;
+}
+
+export interface UserContext {
+  preferred_username: string;
+  server_id: string;
+  server_name: string;
+}
+
+export interface Capability {
+  name: string;
+  state: CapabilityState;
+  reason: string;
+  source: string;
+  detected_at: string;
+}
+
+export interface CapabilitySummary {
+  detected_version: string;
+  reachable_endpoints: Record<string, boolean>;
+  capabilities: Record<string, Capability>;
+  detected_at: string;
+}
+
+export interface SessionPreferences {
+  theme_mode: ThemeMode;
+  font_scale: number;
+  request_timeout_seconds: number;
+  live_log_poll_interval_ms: number;
+  presentation_font_scale: number;
+}
+
+export interface Bookmark {
+  id: string;
+  title: string;
+  item_id: string;
+  item_type: string;
+  path: string;
+}
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: string;
+  filters: Record<string, unknown>;
+}
+
+export interface SessionSnapshot {
+  authenticated: boolean;
+  session_id: string | null;
+  csrf_token: string | null;
+  user: UserContext | null;
+  server: ServerProfile | null;
+  capabilities: CapabilitySummary | null;
+  preferences: SessionPreferences;
+  bookmarks: Bookmark[];
+  saved_searches: SavedSearch[];
+  recent_items: Bookmark[];
+}
+
+export interface BranchSummary {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  description: string;
+  favorite: boolean;
+  branches: BranchSummary[];
+}
+
+export interface TreeNode {
+  id: string;
+  label: string;
+  node_type: string;
+  path: string;
+  children: TreeNode[];
+  metadata: Record<string, string>;
+}
+
+export interface ItemDetails {
+  id: string;
+  name: string;
+  item_type: string;
+  path: string;
+  project_id: string;
+  branch_id: string;
+  description: string;
+  documentation_markdown: string;
+  metadata: Record<string, string>;
+  relationships: Array<Record<string, string>>;
+  version: string;
+  editable: boolean;
+  attachment_supported: boolean;
+  collaborators: string[];
+}
+
+export interface SearchResult {
+  id: string;
+  title: string;
+  item_type: string;
+  path: string;
+  excerpt: string;
+  score: number;
+}
+
+export interface SearchResponse {
+  query: string;
+  total: number;
+  results: SearchResult[];
+}
+
+export interface SimulationParameter {
+  name: string;
+  label: string;
+  kind: "string" | "integer" | "number" | "boolean" | "choice";
+  description: string;
+  required: boolean;
+  default_value: string | number | boolean | null;
+  options: string[];
+}
+
+export interface SimulationConfig {
+  id: string;
+  name: string;
+  description: string;
+  project_id: string;
+  editable_parameters: SimulationParameter[];
+  supports_cancel: boolean;
+}
+
+export interface PublishPreset {
+  id: string;
+  name: string;
+  template: string;
+  category: string;
+  description: string;
+}
+
+export interface DocumentVersion {
+  id: string;
+  label: string;
+  created_at: string;
+  summary: string;
+}
+
+export interface AttachmentInfo {
+  id: string;
+  document_id: string;
+  file_name: string;
+  content_type: string;
+  size_bytes: number;
+  uploaded_at: string;
+  source: string;
+}
+
+export interface CommentEntry {
+  id: string;
+  document_id: string;
+  author: string;
+  content: string;
+  created_at: string;
+}
+
+export interface CollaboratorDocument {
+  id: string;
+  title: string;
+  item_id: string;
+  project_id: string;
+  branch_id: string;
+  body_markdown: string;
+  breadcrumbs: string[];
+  toc: string[];
+  editable: boolean;
+  attachments_supported: boolean;
+  versions: DocumentVersion[];
+}
+
+export interface CompareDifference {
+  field_path: string;
+  left_value: unknown;
+  right_value: unknown;
+  summary: string;
+}
+
+export interface CompareResult {
+  compare_type: string;
+  left_id: string;
+  right_id: string;
+  summary: string;
+  differences: CompareDifference[];
+}
+
+export interface JobRecord {
+  id: string;
+  job_type: JobType;
+  status: JobStatus;
+  title: string;
+  owner: string;
+  server_id: string;
+  progress: number;
+  message: string;
+  logs: string[];
+  payload: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  artifact_path: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  cancel_requested: boolean;
+}
+
+export interface DashboardPayload {
+  projects: ProjectSummary[];
+  recent_items: Bookmark[];
+  bookmarks: Bookmark[];
+  capability_badges: Capability[];
+  active_jobs: JobRecord[];
+  publish_presets: PublishPreset[];
+}
+
+export interface SimulationRunRequest {
+  config_id: string;
+  project_id: string;
+  branch_id: string;
+  parameters: Record<string, string | number | boolean>;
+}
+
+export interface PublishRequest {
+  project_id: string;
+  branch_id: string;
+  scope: string;
+  template: string;
+  category: string;
+  republish: boolean;
+  open_result: boolean;
+  presets: Record<string, unknown>;
+}
+
+export interface ExportRequest {
+  export_type: "item" | "compare" | "search" | "simulation";
+  export_format: ExportFormat;
+  reference_id?: string | null;
+  payload: Record<string, unknown>;
+}
+
+export interface AuthOptions {
+  pat_enabled: boolean;
+  csrf_header_name: string;
+}
+
+export interface PatLoginRequest {
+  server_id: string;
+  preferred_username: string;
+  personal_access_token: string;
+  admin_secret?: string;
+}

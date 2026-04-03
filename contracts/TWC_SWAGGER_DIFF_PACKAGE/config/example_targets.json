@@ -1,0 +1,6 @@
+{
+  "v2022_url": "https://YOUR-2022-SERVER:8111/osmc/swagger",
+  "v2024_url": "https://YOUR-2024-SERVER:8111/osmc/swagger",
+  "verify_ssl": false,
+  "timeout_seconds": 60
+}

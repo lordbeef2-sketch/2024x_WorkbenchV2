@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twc-workbench-backend"
+version = "0.1.0"
+description = "Server-backed Teamwork Cloud workbench for modeling, simulation, publishing, and collaborator workflows."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=44.0.0",
+  "fastapi>=0.115.0",
+  "httpx>=0.28.0",
+  "pydantic-settings>=2.7.0",
+  "python-multipart>=0.0.18",
+  "redis>=5.2.1",
+  "structlog>=25.1.0",
+  "uvicorn[standard]>=0.34.0"
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
