@@ -1,6 +1,6 @@
 # Backend
 
-This FastAPI service is the secure integration layer for TWC Workbench. It manages OAuth authentication, session cookies, Teamwork Cloud adapters, capability probing, background jobs, exports, collaborator workflows, and publish integrations.
+This FastAPI service is the secure integration layer for TWC Workbench. It manages delegated Teamwork Cloud sessions, direct Teamwork Cloud token sign-in, session cookies, Teamwork Cloud adapters, capability probing, background jobs, exports, collaborator workflows, and publish integrations.
 
 ## Verified Contract Boundary
 

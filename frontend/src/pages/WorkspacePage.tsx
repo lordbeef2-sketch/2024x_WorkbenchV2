@@ -48,6 +48,7 @@ import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
+import SwapHorizRoundedIcon from "@mui/icons-material/SwapHorizRounded";
 import UploadRoundedIcon from "@mui/icons-material/UploadRounded";
 
 import CapabilityBadges from "../components/CapabilityBadges";
@@ -749,6 +750,9 @@ export default function WorkspacePage() {
             <Typography variant="body2" color="text.secondary">
               Signed in as {session?.user?.preferred_username} on {session?.server?.name}
             </Typography>
+            <Typography variant="body2" color="text.secondary">
+              The active server comes from the current signed-in server profile, not from `.env`.
+            </Typography>
           </Stack>
           <TextField
             value={searchDraft}
@@ -771,6 +775,14 @@ export default function WorkspacePage() {
               ),
             }}
           />
+          <Button
+            variant="outlined"
+            startIcon={<SwapHorizRoundedIcon />}
+            onClick={() => logoutMutation.mutate()}
+            disabled={logoutMutation.isPending}
+          >
+            Switch Server
+          </Button>
           <Tooltip title="Refresh capabilities and workspace state">
             <span>
               <IconButton onClick={() => refreshCapabilityMutation.mutate()} disabled={refreshCapabilityMutation.isPending}>

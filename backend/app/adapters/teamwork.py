@@ -498,10 +498,12 @@ class TeamworkAdapter:
 
     @property
     def headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.context.tokens.access_token}",
+        headers = {
             "Accept": "application/json, application/ld+json;q=0.9, text/plain;q=0.5",
         }
+        if self.context.tokens.access_token:
+            headers["Authorization"] = f"{self.context.tokens.token_type} {self.context.tokens.access_token}"
+        return headers
 
     def _candidate_url(self, candidate: str) -> str:
         if candidate.startswith(("http://", "https://")):
@@ -572,7 +574,14 @@ class TeamworkAdapter:
         extra_headers: dict[str, str] | None = None,
         timeout: float = 20.0,
     ) -> tuple[httpx.Response, str] | None:
-        async with httpx.AsyncClient(timeout=timeout, verify=self.verify, follow_redirects=True) as client:
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout,
+            "verify": self.verify,
+            "follow_redirects": True,
+        }
+        if self.context.tokens.session_cookies:
+            client_kwargs["cookies"] = self.context.tokens.session_cookies
+        async with httpx.AsyncClient(**client_kwargs) as client:
             for candidate in candidates:
                 url = self._candidate_url(candidate)
                 headers = dict(self.headers)
@@ -618,16 +627,49 @@ class TeamworkAdapter:
             return {"restricted": True, "status_code": response.status_code}
         return self._decode_response(response)
 
+    def _extract_current_username(self, payload: Any) -> str | None:
+        candidates: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            candidates.append(payload)
+            entity = _payload_entity(payload, "user")
+            if entity and entity not in candidates:
+                candidates.append(entity)
+            for key in ("user", "data", "item"):
+                value = payload.get(key)
+                if isinstance(value, dict) and value not in candidates:
+                    candidates.append(value)
+        elif isinstance(payload, list):
+            candidates.extend(item for item in payload if isinstance(item, dict))
+
+        for candidate in candidates:
+            username = _first_text(
+                candidate.get("userName"),
+                candidate.get("username"),
+                candidate.get("preferred_username"),
+                candidate.get("name"),
+            )
+            if username:
+                return username
+        return None
+
+    async def current_username(self) -> str | None:
+        raw_result = await self._request_raw_candidates("GET", self.current_user_candidates(), timeout=10.0)
+        if raw_result is None:
+            return None
+        response, _ = raw_result
+        if response.status_code in {401, 403}:
+            return None
+        return self._extract_current_username(self._decode_response(response))
+
     async def health(self) -> dict[str, Any]:
-        checks = {"base_url": False, "auth_url": False}
+        checks = {"base_url": False}
         version_hint = self.context.server.version.value if self.context.server.version != TWCVersion.AUTO else None
         try:
             async with httpx.AsyncClient(timeout=10.0, verify=self.verify, follow_redirects=True) as client:
                 base_response = await client.get(self.context.server.base_url)
                 checks["base_url"] = base_response.status_code < 500
-                auth_response = await client.get(self.context.server.auth_url)
-                checks["auth_url"] = auth_response.status_code < 500
-                combined_text = f"{base_response.text}\n{auth_response.text}".lower()
+                combined_text = base_response.text
+                combined_text = combined_text.lower()
                 if "2024x" in combined_text:
                     version_hint = "2024x"
                 elif "2022x" in combined_text:
@@ -1622,6 +1664,9 @@ class TeamworkAdapter:
 
     def project_candidates(self) -> list[str]:
         return ["/osmc/resources", "/api/projects", "/projects"]
+
+    def current_user_candidates(self) -> list[str]:
+        return ["/osmc/admin/currentUser"]
 
     def version_candidates(self) -> list[str]:
         return ["/osmc/resources/version", "/api/version", "/version", "/about"]

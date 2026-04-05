@@ -11,7 +11,6 @@ import httpx
 import structlog
 
 from app.adapters.teamwork import TeamworkAdapter, create_adapter
-from app.auth.oauth import OAuthCallbackResult, OAuthService
 from app.core.pdf import render_pdf_document
 from app.core.storage import SqliteRepository
 from app.integrations.publisher import PublisherAdapter, build_publisher
@@ -27,7 +26,6 @@ from app.models.domain import (
     ItemDetails,
     JobRecord,
     JobType,
-    PATLoginRequest,
     PublishRequest,
     SavedSearch,
     SearchResponse,
@@ -40,6 +38,7 @@ from app.models.domain import (
     SimulationConfig,
     SimulationRunRequest,
     TokenBundle,
+    TokenLoginRequest,
     TWCVersion,
     UserContext,
     utcnow,
@@ -57,14 +56,12 @@ class PlatformService:
         settings: Settings,
         repo: SqliteRepository,
         sessions: SessionManager,
-        oauth: OAuthService,
         jobs: JobCoordinator,
         publisher: PublisherAdapter,
     ) -> None:
         self.settings = settings
         self.repo = repo
         self.sessions = sessions
-        self.oauth = oauth
         self.jobs = jobs
         self.publisher = publisher
 
@@ -90,7 +87,7 @@ class PlatformService:
     async def health_check(self, server_id: str) -> ServerHealth:
         server = self._require_server(server_id)
         verify = server.ca_bundle_path if server.verify_tls and server.ca_bundle_path else server.verify_tls
-        checks = {"base_url": False, "auth_url": False}
+        checks = {"base_url": False}
         version_hint = server.version.value if server.version != TWCVersion.AUTO else None
         message = ""
         response_time_ms = None
@@ -98,10 +95,9 @@ class PlatformService:
             async with httpx.AsyncClient(timeout=8.0, verify=verify, follow_redirects=True) as client:
                 response = await client.get(server.base_url)
                 checks["base_url"] = response.status_code < 500
-                auth_response = await client.get(server.auth_url)
-                checks["auth_url"] = auth_response.status_code < 500
                 response_time_ms = int(response.elapsed.total_seconds() * 1000)
-                text = f"{response.text}\n{auth_response.text}".lower()
+                text = response.text
+                text = text.lower()
                 if "2024x" in text:
                     version_hint = "2024x"
                 elif "2022x" in text:
@@ -127,47 +123,31 @@ class PlatformService:
             message=message,
         )
 
-    async def create_signin_url(self, server_id: str) -> str:
+    async def login_with_upstream_session(
+        self,
+        server_id: str,
+        *,
+        access_token: str | None,
+        session_cookies: dict[str, str],
+        preferred_username: str | None,
+    ) -> SessionData:
         server = self._require_server(server_id)
-        return await self.oauth.create_authorization_url(server)
-
-    async def finalize_oauth(self, server_id: str, callback: OAuthCallbackResult) -> SessionData:
-        server = self._require_server(server_id)
-        user = UserContext(
-            preferred_username=callback.preferred_username,
-            server_id=server.id,
-            server_name=server.name,
+        credentials = TokenBundle(
+            access_token=access_token,
+            session_cookies=session_cookies,
+            upstream_user=preferred_username,
         )
-        adapter = self._adapter_for_credentials(server, callback.token_bundle)
-        capabilities = await adapter.discover_capabilities()
-        capabilities.capabilities["publish"] = self.publisher.capability()
-        session = self.sessions.create_session(server, user, callback.token_bundle, capabilities)
-        server.last_used_at = session.created_at
-        self.repo.upsert_server(server)
-        logger.info("oauth-login-complete", user=user.preferred_username, server_id=server.id)
-        return session
+        if not credentials.access_token and not credentials.session_cookies:
+            raise PermissionError(
+                "No upstream Teamwork Cloud credentials were present on the request. Deploy this app behind the same TWC session cookie domain or a proxy that forwards a user-scoped TWC token."
+            )
 
-    async def login_with_pat(self, payload: PATLoginRequest) -> SessionData:
-        if not self.settings.enable_pat_login:
-            raise PermissionError("Personal access token login is disabled")
-        if self.settings.pat_admin_secret and payload.admin_secret != self.settings.pat_admin_secret:
-            raise PermissionError("Invalid admin secret for personal access token login")
+        return await self._create_authenticated_session(server, credentials, fallback_username=preferred_username, log_event="upstream-session-login-complete")
 
+    async def login_with_token(self, payload: TokenLoginRequest) -> SessionData:
         server = self._require_server(payload.server_id)
-        token_bundle = TokenBundle(access_token=payload.personal_access_token, token_type="Bearer")
-        user = UserContext(
-            preferred_username=payload.preferred_username,
-            server_id=server.id,
-            server_name=server.name,
-        )
-        adapter = self._adapter_for_credentials(server, token_bundle)
-        capabilities = await adapter.discover_capabilities()
-        capabilities.capabilities["publish"] = self.publisher.capability()
-        session = self.sessions.create_session(server, user, token_bundle, capabilities)
-        server.last_used_at = session.created_at
-        self.repo.upsert_server(server)
-        logger.info("pat-login-complete", user=user.preferred_username, server_id=server.id)
-        return session
+        credentials = TokenBundle(access_token=payload.token)
+        return await self._create_authenticated_session(server, credentials, log_event="token-login-complete")
 
     def get_session_snapshot(self, session_id: str | None):
         return self.sessions.snapshot(self.sessions.get_session(session_id))
@@ -439,10 +419,51 @@ class PlatformService:
         return None
 
     def _adapter_for_session(self, session: SessionData) -> TeamworkAdapter:
-        return self._adapter_for_credentials(session.server, self.sessions.get_tokens(session))
+        return self._adapter_for_credentials(session.server, self.sessions.get_credentials(session))
 
     def _adapter_for_credentials(self, server: ServerProfile, tokens) -> TeamworkAdapter:
         return create_adapter(server, tokens, self.settings.resolved_data_dir)
+
+    async def _create_authenticated_session(
+        self,
+        server: ServerProfile,
+        credentials: TokenBundle,
+        *,
+        fallback_username: str | None = None,
+        log_event: str,
+    ) -> SessionData:
+        adapter = self._adapter_for_credentials(server, credentials)
+        preferred_username = await self._resolve_preferred_username(adapter, fallback_username)
+        capabilities = await adapter.discover_capabilities()
+        capabilities.capabilities["publish"] = self.publisher.capability()
+        if not self._has_remote_access(capabilities):
+            raise PermissionError(
+                "The authenticated Teamwork Cloud user did not expose any repository endpoints. Ensure the TWC session or token belongs to a user with repository access."
+            )
+
+        user = UserContext(
+            preferred_username=preferred_username,
+            server_id=server.id,
+            server_name=server.name,
+        )
+        session = self.sessions.create_session(server, user, credentials, capabilities)
+        server.last_used_at = session.created_at
+        self.repo.upsert_server(server)
+        logger.info(log_event, user=user.preferred_username, server_id=server.id)
+        return session
+
+    async def _resolve_preferred_username(self, adapter: TeamworkAdapter, fallback_username: str | None = None) -> str:
+        preferred_username = await adapter.current_username()
+        if preferred_username:
+            return preferred_username
+        if fallback_username and fallback_username.strip():
+            return fallback_username.strip()
+        raise PermissionError(
+            "Unable to resolve the authenticated Teamwork Cloud user from /osmc/admin/currentUser. Ensure the supplied session cookie or token is valid for TWC."
+        )
+
+    def _has_remote_access(self, capabilities) -> bool:
+        return any(capabilities.reachable_endpoints.get(endpoint) for endpoint in ("projects", "simulation", "collaborator"))
 
     def _require_server(self, server_id: str) -> ServerProfile:
         server = self.repo.get_server(server_id)
@@ -456,14 +477,12 @@ class ApplicationContainer:
         self.settings = settings
         self.repo = SqliteRepository(settings.resolved_database_path)
         self.sessions = SessionManager(settings)
-        self.oauth = OAuthService()
         self.jobs = JobCoordinator(self.repo)
         self.publisher = build_publisher(settings)
         self.platform = PlatformService(
             settings=settings,
             repo=self.repo,
             sessions=self.sessions,
-            oauth=self.oauth,
             jobs=self.jobs,
             publisher=self.publisher,
         )

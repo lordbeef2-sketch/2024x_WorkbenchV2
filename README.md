@@ -39,8 +39,8 @@ What the launchers do:
 
 Useful options:
 
-- Windows: `.\launch.ps1 -PrepareOnly`, `.\launch.ps1 -NoBrowser`, `.\launch.ps1 -Port 8080`
-- Linux: `bash ./launch.sh --prepare-only`, `bash ./launch.sh --no-browser`, `bash ./launch.sh --port 8080`
+- Windows: `.\launch.ps1 -PrepareOnly`, `.\launch.ps1 -NoBrowser`, `.\launch.ps1 -Port 8080`, `.\launch.ps1 -BindHost 127.0.0.1`
+- Linux: `bash ./launch.sh --prepare-only`, `bash ./launch.sh --no-browser`, `bash ./launch.sh --port 8080`, `bash ./launch.sh --host 127.0.0.1`
 
 If PowerShell execution policy blocks script execution on Windows, run:
 
@@ -60,17 +60,27 @@ powershell -ExecutionPolicy Bypass -File .\launch.ps1
 
 Copy `backend/.env.example` to `backend/.env` and set values appropriate for your environment.
 
+`backend/.env` is only for app-level runtime settings. Do not define a single active Teamwork Cloud server in `.env`.
+This application supports multiple editable TWC server profiles stored inside the app, each with values such as `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, and `favorite`.
+Users can add, edit, delete, select, and switch server profiles at runtime without rebuilding the frontend or editing environment files.
+
 Important settings:
 
+- `HOST`: bind address for this app only. Use `0.0.0.0`, `127.0.0.1`, or a local interface IP. Do not put the Teamwork Cloud FQDN here.
 - `FRONTEND_ORIGIN`: allowed browser origin for local development or deployment.
-- `SESSION_SECRET`: replace with a long random secret in every non-local environment.
+- `SESSION_SECRET`: replace with a long random secret in every non-local environment. It encrypts stored per-user delegated credentials inside the app session.
 - `SECURE_COOKIES=true`: required when running behind HTTPS.
+- `UPSTREAM_AUTH_COOKIE_NAMES`: optional JSON array of TWC cookie names to forward. Leave empty to forward all incoming cookies except the app's own session cookie.
+- `UPSTREAM_USER_HEADERS`: optional JSON array of trusted reverse-proxy user headers.
+- `UPSTREAM_ACCESS_TOKEN_HEADERS`: optional JSON array of trusted reverse-proxy TWC token headers.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
 - `PUBLISHER_MODE=local|cli|webhook`: selects the publishing adapter.
 - `PUBLISHER_COMMAND`: used when `PUBLISHER_MODE=cli`.
 - `PUBLISHER_WEBHOOK_URL`: used when `PUBLISHER_MODE=webhook`.
-- `ENABLE_PAT_LOGIN=true`: enables the admin-only PAT fallback flow.
-- `PAT_ADMIN_SECRET`: required if PAT login is enabled in a shared environment.
+
+Teamwork Cloud base URLs, version hints, and certificate settings are configured as server profiles inside the application, not through `HOST`.
+
+The launch scripts read `HOST` and `PORT` from `backend/.env` by default. Command-line launch options override them when provided.
 
 ## Frontend Configuration
 
@@ -201,11 +211,11 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 
 ## TWC Authentication Configuration Notes
 
-- Register the backend callback URL, not the frontend URL, with the authentication provider.
-- For local development the default callback is typically `http://localhost:8000/api/auth/callback`.
-- The OAuth implementation supports OIDC metadata discovery where available and falls back to derived token and userinfo endpoints when necessary.
-- The callback route can resolve the server profile from OAuth state, so the callback URI does not need a server-specific query parameter.
-- PAT login is optional, disabled by default, and should only be enabled for controlled administrative scenarios.
+- TWC is the authentication and authorization authority for this app.
+- The preferred deployment mode is to forward the existing TWC browser session cookie to this app and let the backend replay it to TWC with the user’s own permissions.
+- If your proxy cannot forward session cookies, configure `UPSTREAM_ACCESS_TOKEN_HEADERS` to pass a user-scoped TWC token instead.
+- Direct token sign-in is also supported from the landing page. The backend validates the supplied token against `/osmc/admin/currentUser` before opening a workbench session.
+- Optional trusted user headers in `UPSTREAM_USER_HEADERS` are used only as a fallback hint when a reverse proxy already knows the authenticated TWC user.
 
 ## Version Compatibility Notes
 

@@ -4,10 +4,14 @@ Use this checklist to gather the **non-public** or **environment-specific** arti
 
 ## A. Swagger / OpenAPI
 ### Required
-- [ ] Export 2022xR2 Teamwork Cloud Swagger/OpenAPI from your live server
-- [ ] Export 2024xR3 Teamwork Cloud Swagger/OpenAPI from your live server
+- [x] Export 2022xR2 Teamwork Cloud Swagger/OpenAPI from your live server
+- [x] Export 2024xR3 Teamwork Cloud Swagger/OpenAPI from your live server
 - [ ] Export 2022xR2 simulation Swagger/OpenAPI if available
 - [ ] Export 2024xR3 simulation Swagger/OpenAPI if available
+
+Already present in this repo:
+- `contracts/TWC_SWAGGER_DIFF_PACKAGE/scripts/output/twc_2022xR2.json`
+- `contracts/TWC_SWAGGER_DIFF_PACKAGE/scripts/output/twc_2024xR3.json`
 
 ### Save to
 - `live_capture/2022xR2/swagger/`

@@ -10,7 +10,6 @@ import {
   DashboardPayload,
   ExportRequest,
   JobRecord,
-  PatLoginRequest,
   ProjectSummary,
   SavedSearch,
   SearchResponse,
@@ -21,6 +20,7 @@ import {
   SessionSnapshot,
   SimulationConfig,
   SimulationRunRequest,
+  TokenLoginRequest,
   TreeNode,
   ItemDetails,
   PublishRequest,
@@ -98,8 +98,8 @@ export const api = {
       headers: jsonHeaders(csrfToken),
     });
   },
-  patLogin(payload: PatLoginRequest) {
-    return request<SessionSnapshot>("/auth/pat", {
+  tokenLogin(payload: TokenLoginRequest) {
+    return request<SessionSnapshot>("/auth/token", {
       method: "POST",
       headers: jsonHeaders(),
       body: JSON.stringify(payload),

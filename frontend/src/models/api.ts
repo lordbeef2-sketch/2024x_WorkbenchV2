@@ -9,10 +9,7 @@ export interface ServerProfile {
   id: string;
   name: string;
   base_url: string;
-  auth_url: string;
   version: TWCVersion;
-  client_id: string;
-  callback_url: string;
   verify_tls: boolean;
   ca_bundle_path: string | null;
   favorite: boolean;
@@ -24,10 +21,7 @@ export interface ServerProfile {
 export interface ServerProfileInput {
   name: string;
   base_url: string;
-  auth_url: string;
   version: TWCVersion;
-  client_id: string;
-  callback_url: string;
   verify_tls: boolean;
   ca_bundle_path: string | null;
   favorite: boolean;
@@ -295,13 +289,11 @@ export interface ExportRequest {
 }
 
 export interface AuthOptions {
-  pat_enabled: boolean;
+  token_signin_enabled: boolean;
   csrf_header_name: string;
 }
 
-export interface PatLoginRequest {
+export interface TokenLoginRequest {
   server_id: string;
-  preferred_username: string;
-  personal_access_token: string;
-  admin_secret?: string;
+  token: string;
 }

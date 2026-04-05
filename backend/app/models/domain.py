@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def utcnow() -> datetime:
@@ -48,13 +48,30 @@ class ThemeMode(str, Enum):
 class ServerProfileBase(BaseModel):
     name: str
     base_url: str
-    auth_url: str
     version: TWCVersion = TWCVersion.AUTO
-    client_id: str
-    callback_url: str
     verify_tls: bool = True
     ca_bundle_path: str | None = None
     favorite: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_auth_fields(cls, raw: object) -> object:
+        if not isinstance(raw, dict):
+            return raw
+        payload = dict(raw)
+        payload.pop("auth_mode", None)
+        payload.pop("auth_url", None)
+        payload.pop("client_id", None)
+        payload.pop("callback_url", None)
+        return payload
+
+    @field_validator("name", "base_url", "ca_bundle_path", mode="before")
+    @classmethod
+    def empty_string_to_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
 
 class ServerProfileCreate(ServerProfileBase):
@@ -64,13 +81,30 @@ class ServerProfileCreate(ServerProfileBase):
 class ServerProfileUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
-    auth_url: str | None = None
     version: TWCVersion | None = None
-    client_id: str | None = None
-    callback_url: str | None = None
     verify_tls: bool | None = None
     ca_bundle_path: str | None = None
     favorite: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_auth_fields(cls, raw: object) -> object:
+        if not isinstance(raw, dict):
+            return raw
+        payload = dict(raw)
+        payload.pop("auth_mode", None)
+        payload.pop("auth_url", None)
+        payload.pop("client_id", None)
+        payload.pop("callback_url", None)
+        return payload
+
+    @field_validator("name", "base_url", "ca_bundle_path", mode="before")
+    @classmethod
+    def empty_string_to_none_update(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
 
 class ServerProfile(ServerProfileBase):
@@ -134,26 +168,26 @@ class SavedSearch(BaseModel):
 
 
 class TokenBundle(BaseModel):
-    access_token: str
+    access_token: str | None = None
     refresh_token: str | None = None
     id_token: str | None = None
-    token_type: str = "Bearer"
+    token_type: str = "Token"
     scope: str | None = None
     expires_at: datetime | None = None
+    session_cookies: dict[str, str] = Field(default_factory=dict)
+    upstream_user: str | None = None
 
 
-class PATLoginRequest(BaseModel):
+class TokenLoginRequest(BaseModel):
     server_id: str
-    preferred_username: str
-    personal_access_token: str
-    admin_secret: str | None = None
+    token: str
 
 
 class SessionData(BaseModel):
     session_id: str = Field(default_factory=lambda: uuid4().hex)
     server: ServerProfile
     user: UserContext
-    encrypted_tokens: str
+    encrypted_credentials: str
     csrf_token: str = Field(default_factory=lambda: uuid4().hex)
     capabilities: CapabilitySummary
     preferences: SessionPreferences = Field(default_factory=SessionPreferences)

@@ -24,18 +24,18 @@ from app.models.domain import (
 from app.settings.config import Settings
 
 
-class TokenCipher:
+class CredentialCipher:
     def __init__(self, secret: str) -> None:
         digest = hashlib.sha256(secret.encode("utf-8")).digest()
         key = base64.urlsafe_b64encode(digest)
         self._fernet = Fernet(key)
 
-    def encrypt(self, tokens: TokenBundle) -> str:
-        payload = tokens.model_dump_json().encode("utf-8")
+    def encrypt(self, credentials: TokenBundle) -> str:
+        payload = credentials.model_dump_json().encode("utf-8")
         return self._fernet.encrypt(payload).decode("utf-8")
 
-    def decrypt(self, encrypted_tokens: str) -> TokenBundle:
-        raw = self._fernet.decrypt(encrypted_tokens.encode("utf-8"))
+    def decrypt(self, encrypted_credentials: str) -> TokenBundle:
+        raw = self._fernet.decrypt(encrypted_credentials.encode("utf-8"))
         return TokenBundle.model_validate_json(raw)
 
 
@@ -94,7 +94,7 @@ class RedisSessionStore(SessionStore):
 class SessionManager:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.cipher = TokenCipher(settings.session_secret)
+        self.cipher = CredentialCipher(settings.session_secret)
         self.store: SessionStore = (
             RedisSessionStore(settings.redis_url) if settings.redis_url else InMemorySessionStore()
         )
@@ -103,7 +103,7 @@ class SessionManager:
         self,
         server: ServerProfile,
         user: UserContext,
-        tokens: TokenBundle,
+        credentials: TokenBundle,
         capabilities: Any,
     ) -> SessionData:
         now = datetime.now(UTC)
@@ -111,7 +111,7 @@ class SessionManager:
             session_id=uuid4().hex,
             server=server,
             user=user,
-            encrypted_tokens=self.cipher.encrypt(tokens),
+            encrypted_credentials=self.cipher.encrypt(credentials),
             capabilities=capabilities,
             created_at=now,
             expires_at=now + timedelta(minutes=self.settings.session_ttl_minutes),
@@ -136,8 +136,8 @@ class SessionManager:
     def destroy_session(self, session_id: str) -> None:
         self.store.delete(session_id)
 
-    def get_tokens(self, session: SessionData) -> TokenBundle:
-        return self.cipher.decrypt(session.encrypted_tokens)
+    def get_credentials(self, session: SessionData) -> TokenBundle:
+        return self.cipher.decrypt(session.encrypted_credentials)
 
     def validate_csrf(self, session: SessionData, token: str | None) -> bool:
         return bool(token and token == session.csrf_token)

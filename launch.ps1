@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [int]$Port = 8000,
+    [Nullable[int]]$Port = $null,
+    [string]$BindHost,
     [switch]$NoBrowser,
     [switch]$PrepareOnly,
     [switch]$SkipInstall
@@ -16,18 +17,75 @@ function Write-Phase {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+function Test-PythonInterpreter {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Executable,
+        [string[]]$Arguments = @()
+    )
+
+    try {
+        $versionText = & $Executable @Arguments -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        return [version]$versionText -ge [version]"3.11"
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-BootstrapPython {
     $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+    $candidates = @()
     if ($pyLauncher) {
-        return @($pyLauncher.Source, "-3.11")
+        $candidates += ,@($pyLauncher.Source, "-3.11")
+        $candidates += ,@($pyLauncher.Source, "-3")
+    }
+
+    $python3Command = Get-Command python3 -ErrorAction SilentlyContinue
+    if ($python3Command) {
+        $candidates += ,@($python3Command.Source)
     }
 
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCommand) {
-        return @($pythonCommand.Source)
+        $candidates += ,@($pythonCommand.Source)
+    }
+
+    foreach ($candidate in $candidates) {
+        $executable = $candidate[0]
+        $arguments = if ($candidate.Count -gt 1) { $candidate[1..($candidate.Count - 1)] } else { @() }
+        if (Test-PythonInterpreter -Executable $executable -Arguments $arguments) {
+            return $candidate
+        }
     }
 
     throw "Python 3.11 or newer is required but was not found on PATH."
+}
+
+function Get-EnvFileValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    if (-not (Test-Path $FilePath)) {
+        return $null
+    }
+
+    $pattern = '^\s*' + [regex]::Escape($Name) + '\s*=\s*(.*)\s*$'
+    foreach ($line in Get-Content -LiteralPath $FilePath) {
+        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
+            continue
+        }
+
+        if ($line -match $pattern) {
+            return $matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+
+    return $null
 }
 
 function Get-LatestWriteTimeUtc {
@@ -100,7 +158,6 @@ $frontendBuildStamp = Join-Path $frontendDir "dist\.build.stamp"
 $backendEnvFile = Join-Path $backendDir ".env"
 $frontendEnvFile = Join-Path $frontendDir ".env"
 $unblockScript = Join-Path $rootDir "unblock-ps1.ps1"
-$appUrl = "http://localhost:$Port"
 
 Invoke-RepoScriptUnblock -UtilityPath $unblockScript -RootPath $rootDir
 
@@ -118,7 +175,7 @@ if (-not (Test-Path $venvPython)) {
 
 $pythonVersion = & $venvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
 if ([version]$pythonVersion -lt [version]"3.11") {
-    throw "The virtual environment uses Python $pythonVersion. Python 3.11 or newer is required."
+    throw "The virtual environment uses Python $pythonVersion. Remove .venv and rerun the launcher with Python 3.11 or newer available on PATH."
 }
 
 if (-not (Test-Path $backendEnvFile) -and (Test-Path (Join-Path $backendDir ".env.example"))) {
@@ -130,6 +187,24 @@ if (-not (Test-Path $frontendEnvFile) -and (Test-Path (Join-Path $frontendDir ".
     Write-Phase "Creating frontend/.env from the example file"
     Copy-Item (Join-Path $frontendDir ".env.example") $frontendEnvFile
 }
+
+$configuredBindHost = Get-EnvFileValue -FilePath $backendEnvFile -Name "HOST"
+$configuredPort = Get-EnvFileValue -FilePath $backendEnvFile -Name "PORT"
+
+if ([string]::IsNullOrWhiteSpace($BindHost)) {
+    $BindHost = if ([string]::IsNullOrWhiteSpace($configuredBindHost)) { "0.0.0.0" } else { $configuredBindHost }
+}
+
+if ($null -eq $Port) {
+    if (-not [string]::IsNullOrWhiteSpace($configuredPort)) {
+        $Port = [int]$configuredPort
+    }
+    else {
+        $Port = 8000
+    }
+}
+
+$appUrl = "http://localhost:$Port"
 
 if (-not $SkipInstall) {
     $backendPyProject = Join-Path $backendDir "pyproject.toml"
@@ -208,7 +283,7 @@ if ($needsFrontendBuild) {
 }
 
 $env:FRONTEND_ORIGIN = $appUrl
-$env:HOST = "0.0.0.0"
+$env:HOST = $BindHost
 $env:PORT = "$Port"
 
 Write-Phase "Prepared TWC Workbench for launch at $appUrl"
@@ -240,7 +315,7 @@ if (-not $NoBrowser) {
 Write-Phase "Starting the single-origin FastAPI server"
 Push-Location $backendDir
 try {
-    & $venvPython -m uvicorn app.main:app --host 0.0.0.0 --port $Port
+    & $venvPython -m uvicorn app.main:app --host $BindHost --port $Port
 }
 finally {
     Pop-Location

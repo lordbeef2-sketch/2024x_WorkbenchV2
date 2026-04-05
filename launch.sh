@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-port=8000
+port=""
+bind_host=""
 no_browser=0
 prepare_only=0
 skip_install=0
 
 usage() {
   cat <<'EOF'
-Usage: bash ./launch.sh [--port PORT] [--no-browser] [--prepare-only] [--skip-install]
+Usage: bash ./launch.sh [--host HOST] [--port PORT] [--no-browser] [--prepare-only] [--skip-install]
 EOF
 }
 
@@ -30,6 +31,24 @@ get_bootstrap_python() {
 
   printf 'Python 3.11 or newer is required but was not found on PATH.\n' >&2
   exit 1
+}
+
+get_env_file_value() {
+  local file_path="$1"
+  local name="$2"
+
+  if [ ! -f "$file_path" ]; then
+    return 0
+  fi
+
+  awk -v key="$name" '
+    $0 !~ /^[[:space:]]*#/ && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      sub(/^[[:space:]]*[^=]+=[[:space:]]*/, "", $0)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+      print
+      exit
+    }
+  ' "$file_path"
 }
 
 get_latest_write_time() {
@@ -95,6 +114,15 @@ while [ "$#" -gt 0 ]; do
       port="$2"
       shift 2
       ;;
+    --host)
+      if [ "$#" -lt 2 ]; then
+        printf '--host requires a value.\n' >&2
+        usage
+        exit 1
+      fi
+      bind_host="$2"
+      shift 2
+      ;;
     --no-browser)
       no_browser=1
       shift
@@ -129,7 +157,6 @@ frontend_install_stamp="$frontend_dir/node_modules/.install.stamp"
 frontend_build_stamp="$frontend_dir/dist/.build.stamp"
 backend_env_file="$backend_dir/.env"
 frontend_env_file="$frontend_dir/.env"
-app_url="http://localhost:${port}"
 
 if [ ! -x "$venv_python" ]; then
   write_phase "Creating Python virtual environment in .venv"
@@ -152,6 +179,19 @@ if [ ! -f "$frontend_env_file" ] && [ -f "$frontend_dir/.env.example" ]; then
   write_phase "Creating frontend/.env from the example file"
   cp "$frontend_dir/.env.example" "$frontend_env_file"
 fi
+
+configured_bind_host="$(get_env_file_value "$backend_env_file" "HOST")"
+configured_port="$(get_env_file_value "$backend_env_file" "PORT")"
+
+if [ -z "$bind_host" ]; then
+  bind_host="${configured_bind_host:-0.0.0.0}"
+fi
+
+if [ -z "$port" ]; then
+  port="${configured_port:-8000}"
+fi
+
+app_url="http://localhost:${port}"
 
 if [ "$skip_install" -eq 0 ]; then
   backend_install_time=0
@@ -237,7 +277,7 @@ if [ "$needs_frontend_build" -eq 1 ]; then
 fi
 
 export FRONTEND_ORIGIN="$app_url"
-export HOST="0.0.0.0"
+export HOST="$bind_host"
 export PORT="$port"
 
 write_phase "Prepared TWC Workbench for launch at $app_url"
@@ -253,4 +293,4 @@ fi
 
 write_phase "Starting the single-origin FastAPI server"
 cd "$backend_dir"
-exec "$venv_python" -m uvicorn app.main:app --host 0.0.0.0 --port "$port"
+exec "$venv_python" -m uvicorn app.main:app --host "$bind_host" --port "$port"

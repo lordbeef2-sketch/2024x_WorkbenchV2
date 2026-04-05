@@ -31,7 +31,7 @@ import PublicRoundedIcon from "@mui/icons-material/PublicRounded";
 import VpnKeyRoundedIcon from "@mui/icons-material/VpnKeyRounded";
 
 import ServerProfileDialog from "../components/ServerProfileDialog";
-import { PatLoginRequest, ServerHealth, ServerProfile, ServerProfileInput } from "../models/api";
+import { ServerHealth, ServerProfile, ServerProfileInput, TokenLoginRequest } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 import { formatDate } from "../utils/format";
@@ -59,12 +59,10 @@ export default function LandingPage() {
   const { authOptions, error, setSessionSnapshot } = useSession();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<ServerProfile | null>(null);
-  const [patDialogOpen, setPatDialogOpen] = useState(false);
-  const [patForm, setPatForm] = useState<PatLoginRequest>({
+  const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
+  const [tokenForm, setTokenForm] = useState<TokenLoginRequest>({
     server_id: "",
-    preferred_username: "",
-    personal_access_token: "",
-    admin_secret: "",
+    token: "",
   });
   const [banner, setBanner] = useState<{ severity: "success" | "error"; message: string } | null>(null);
 
@@ -110,8 +108,8 @@ export default function LandingPage() {
     onError: (caught) => setBanner({ severity: "error", message: errorMessage(caught) }),
   });
 
-  const patMutation = useMutation({
-    mutationFn: api.patLogin,
+  const tokenMutation = useMutation({
+    mutationFn: api.tokenLogin,
     onSuccess: (snapshot) => {
       setSessionSnapshot(snapshot);
       navigate("/workspace", { replace: true });
@@ -127,6 +125,17 @@ export default function LandingPage() {
   });
 
   const servers = serversQuery.data ?? [];
+  const selectedTokenServer = servers.find((server) => server.id === tokenForm.server_id) ?? null;
+
+  const openTokenDialog = (serverId: string) => {
+    setTokenForm({ server_id: serverId, token: "" });
+    setTokenDialogOpen(true);
+  };
+
+  const closeTokenDialog = () => {
+    setTokenDialogOpen(false);
+    setTokenForm((current) => ({ ...current, token: "" }));
+  };
 
   return (
     <Container maxWidth="xl" sx={{ py: { xs: 3, md: 5 } }}>
@@ -159,7 +168,7 @@ export default function LandingPage() {
                   Secure enterprise workbench for modeling, simulation, publishing, and collaborator presentation workflows.
                 </Typography>
                 <Typography variant="h6" sx={{ maxWidth: 900, color: "rgba(255,255,255,0.82)", fontWeight: 400 }}>
-                  The backend owns Teamwork Cloud authentication, session security, token lifecycle, capability detection, and job orchestration. The frontend focuses on a fast operator experience.
+                  The backend brokers workspace actions strictly through the active user’s Teamwork Cloud identity. Sign-in reuses a valid TWC browser session when available, or validates a direct TWC token for that same user.
                 </Typography>
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
                   <Button variant="contained" color="secondary" startIcon={<AddRoundedIcon />} onClick={() => setDialogOpen(true)}>
@@ -178,10 +187,10 @@ export default function LandingPage() {
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                     <Chip label={`${servers.length} configured servers`} sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
                     <Chip label={`${servers.filter((server) => server.favorite).length} favorites`} sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
-                    <Chip label="HTTP-only secure sessions" sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
+                    <Chip label="User-scoped TWC auth" sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
                   </Stack>
                   <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.8)" }}>
-                    OAuth 2.0 authorization code flow is the primary path. An optional personal access token flow is available only when explicitly enabled on the backend.
+                    TWC remains the authentication and authorization authority. The workbench never asks for client IDs or callback URLs and never substitutes an admin credential for the active user.
                   </Typography>
                   <Stack spacing={1.5}>
                     <Stack direction="row" spacing={1.5} alignItems="center">
@@ -211,6 +220,9 @@ export default function LandingPage() {
                   New Server
                 </Button>
               </Stack>
+              <Typography variant="body2" color="text.secondary">
+                Save as many editable server profiles as you need, then sign into the one you want to make active for the current workspace session.
+              </Typography>
               {serversQuery.isLoading ? (
                 <Paper sx={{ p: 4, borderRadius: 5 }}>
                   <Typography color="text.secondary">Loading server profiles...</Typography>
@@ -252,15 +264,13 @@ export default function LandingPage() {
                               </Stack>
                               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                                 <Chip label={`Version ${health?.version_hint ?? server.version}`} variant="outlined" />
+                                <Chip label="TWC user auth" variant="outlined" />
                                 <Chip label={health?.status ?? "probing"} color={healthColor(health?.status)} />
                                 <Chip label={server.verify_tls ? "TLS verified" : "TLS relaxed"} variant="outlined" />
                               </Stack>
                               <Stack spacing={0.75}>
                                 <Typography variant="body2" color="text.secondary">
-                                  Auth URL: {server.auth_url}
-                                </Typography>
-                                <Typography variant="body2" color="text.secondary">
-                                  Callback: {server.callback_url}
+                                  Sign-in reuses the browser’s forwarded Teamwork Cloud session cookie when available, or accepts a direct TWC token for the same user.
                                 </Typography>
                                 <Typography variant="body2" color="text.secondary">
                                   Last used: {formatDate(server.last_used_at)}
@@ -278,19 +288,16 @@ export default function LandingPage() {
                                   startIcon={<LoginRoundedIcon />}
                                   onClick={() => window.location.assign(api.signInUrl(server.id))}
                                 >
-                                  Sign In
+                                  Use TWC Session
                                 </Button>
-                                {authOptions?.pat_enabled ? (
+                                {authOptions?.token_signin_enabled !== false ? (
                                   <Button
                                     fullWidth
                                     variant="outlined"
                                     startIcon={<VpnKeyRoundedIcon />}
-                                    onClick={() => {
-                                      setPatForm((current) => ({ ...current, server_id: server.id }));
-                                      setPatDialogOpen(true);
-                                    }}
+                                    onClick={() => openTokenDialog(server.id)}
                                   >
-                                    Admin PAT
+                                    Use TWC Token
                                   </Button>
                                 ) : null}
                               </Stack>
@@ -305,7 +312,7 @@ export default function LandingPage() {
                 <Paper sx={{ p: 5, borderRadius: 5, textAlign: "center" }}>
                   <Typography variant="h5">No server profiles yet</Typography>
                   <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
-                    Create your first Teamwork Cloud connection profile to begin authentication and workspace operations.
+                    Create your first Teamwork Cloud connection profile to begin workspace operations with the user’s delegated TWC permissions.
                   </Typography>
                   <Button sx={{ mt: 2.5 }} variant="contained" startIcon={<AddRoundedIcon />} onClick={() => setDialogOpen(true)}>
                     Add Server Profile
@@ -320,7 +327,10 @@ export default function LandingPage() {
                 <Typography variant="h5">Operational Guidance</Typography>
                 <Stack spacing={1.5} sx={{ mt: 2 }}>
                   <Typography variant="body2" color="text.secondary">
-                    Use backend callback URLs registered with the Teamwork Cloud authentication provider. The default local callback is usually http://localhost:8000/api/auth/callback.
+                    Reuse the browser’s existing TWC session when this app is deployed behind the same cookie domain or a trusted reverse proxy that forwards the TWC session cookie.
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    When session reuse is not available, provide a user-scoped Teamwork Cloud token. The backend validates it against TWC before opening a workbench session.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     For enterprise deployments, keep certificate validation enabled and provide a CA bundle path when your Teamwork Cloud environment is issued by a private PKI.
@@ -360,47 +370,35 @@ export default function LandingPage() {
         }}
       />
 
-      <Dialog open={patDialogOpen} onClose={() => setPatDialogOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Admin Personal Access Token Sign-In</DialogTitle>
+      <Dialog open={tokenDialogOpen} onClose={closeTokenDialog} fullWidth maxWidth="sm">
+        <DialogTitle>Teamwork Cloud Token Sign-In</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
-            <Alert severity="warning">
-              This flow is intended for controlled administrative use. OAuth remains the primary authentication path.
+            <Alert severity="info">
+              Provide a user-scoped Teamwork Cloud token. The backend will validate it against TWC and create a local session only after resolving the authenticated TWC user.
             </Alert>
+            {selectedTokenServer ? <Typography variant="body2">Server: {selectedTokenServer.name}</Typography> : null}
             <TextField
-              label="Preferred Username"
-              value={patForm.preferred_username}
-              onChange={(event) => setPatForm((current) => ({ ...current, preferred_username: event.target.value }))}
-              fullWidth
-            />
-            <TextField
-              label="Personal Access Token"
+              label="Teamwork Cloud Token"
               type="password"
-              value={patForm.personal_access_token}
-              onChange={(event) => setPatForm((current) => ({ ...current, personal_access_token: event.target.value }))}
-              fullWidth
-            />
-            <TextField
-              label="Admin Secret"
-              type="password"
-              value={patForm.admin_secret ?? ""}
-              onChange={(event) => setPatForm((current) => ({ ...current, admin_secret: event.target.value }))}
+              value={tokenForm.token}
+              onChange={(event) => setTokenForm((current) => ({ ...current, token: event.target.value }))}
               fullWidth
             />
           </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 3 }}>
-          <Button onClick={() => setPatDialogOpen(false)}>Cancel</Button>
+          <Button onClick={closeTokenDialog}>Cancel</Button>
           <Button
             variant="contained"
             startIcon={<VpnKeyRoundedIcon />}
-            disabled={!patForm.server_id || !patForm.preferred_username || !patForm.personal_access_token || patMutation.isPending}
+            disabled={!tokenForm.server_id || !tokenForm.token || tokenMutation.isPending}
             onClick={async () => {
-              await patMutation.mutateAsync(patForm);
-              setPatDialogOpen(false);
+              await tokenMutation.mutateAsync(tokenForm);
+              closeTokenDialog();
             }}
           >
-            Sign In with PAT
+            Sign In with Token
           </Button>
         </DialogActions>
       </Dialog>
