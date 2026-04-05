@@ -12,8 +12,8 @@ export interface ServerProfile {
   version: TWCVersion;
   verify_tls: boolean;
   ca_bundle_path: string | null;
-  favorite: boolean;
-  last_used_at: string | null;
+  enabled: boolean;
+  display_order: number;
   created_at: string;
   updated_at: string;
 }
@@ -24,7 +24,16 @@ export interface ServerProfileInput {
   version: TWCVersion;
   verify_tls: boolean;
   ca_bundle_path: string | null;
-  favorite: boolean;
+  enabled: boolean;
+  display_order: number;
+}
+
+export interface UserServerState {
+  user_id: string;
+  selected_server_id: string | null;
+  last_used_server_id: string | null;
+  favorite_server_ids: string[];
+  updated_at: string;
 }
 
 export interface ServerHealth {
@@ -86,6 +95,9 @@ export interface SessionSnapshot {
   csrf_token: string | null;
   user: UserContext | null;
   server: ServerProfile | null;
+  pending_server: ServerProfile | null;
+  server_state: UserServerState | null;
+  can_manage_server_presets: boolean;
   capabilities: CapabilitySummary | null;
   preferences: SessionPreferences;
   bookmarks: Bookmark[];

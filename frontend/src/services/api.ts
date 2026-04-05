@@ -108,22 +108,35 @@ export const api = {
   listServers() {
     return request<ServerProfile[]>("/servers");
   },
-  createServer(payload: ServerProfileInput) {
+  listManagedServers() {
+    return request<ServerProfile[]>("/servers/manage");
+  },
+  createServer(payload: ServerProfileInput, csrfToken: string) {
     return request<ServerProfile>("/servers", {
       method: "POST",
-      headers: jsonHeaders(),
+      headers: jsonHeaders(csrfToken),
       body: JSON.stringify(payload),
     });
   },
-  updateServer(serverId: string, payload: Partial<ServerProfileInput>) {
+  updateServer(serverId: string, payload: Partial<ServerProfileInput>, csrfToken: string) {
     return request<ServerProfile>(`/servers/${serverId}`, {
       method: "PUT",
-      headers: jsonHeaders(),
+      headers: jsonHeaders(csrfToken),
       body: JSON.stringify(payload),
     });
   },
-  deleteServer(serverId: string) {
-    return request<void>(`/servers/${serverId}`, { method: "DELETE" });
+  deleteServer(serverId: string, csrfToken: string) {
+    return request<void>(`/servers/${serverId}`, {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
+  reorderServers(serverIds: string[], csrfToken: string) {
+    return request<ServerProfile[]>("/servers/reorder", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify({ server_ids: serverIds }),
+    });
   },
   getServerHealth(serverId: string) {
     return request<ServerHealth>(`/servers/${serverId}/health`);

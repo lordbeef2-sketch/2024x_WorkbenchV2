@@ -13,28 +13,21 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  IconButton,
   Paper,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
 import Grid from "@mui/material/GridLegacy";
-import AddRoundedIcon from "@mui/icons-material/AddRounded";
-import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
-import EditRoundedIcon from "@mui/icons-material/EditRounded";
-import FavoriteRoundedIcon from "@mui/icons-material/FavoriteRounded";
 import HttpsRoundedIcon from "@mui/icons-material/HttpsRounded";
 import LoginRoundedIcon from "@mui/icons-material/LoginRounded";
 import MonitorHeartRoundedIcon from "@mui/icons-material/MonitorHeartRounded";
 import PublicRoundedIcon from "@mui/icons-material/PublicRounded";
 import VpnKeyRoundedIcon from "@mui/icons-material/VpnKeyRounded";
 
-import ServerProfileDialog from "../components/ServerProfileDialog";
-import { ServerHealth, ServerProfile, ServerProfileInput, TokenLoginRequest } from "../models/api";
+import { ServerHealth, TokenLoginRequest } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
-import { formatDate } from "../utils/format";
 
 function healthColor(status?: ServerHealth["status"]): "success" | "warning" | "error" | "default" {
   if (status === "healthy") {
@@ -56,9 +49,7 @@ function errorMessage(caught: unknown): string {
 export default function LandingPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { authOptions, error, setSessionSnapshot } = useSession();
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingServer, setEditingServer] = useState<ServerProfile | null>(null);
+  const { authOptions, error, session, setSessionSnapshot } = useSession();
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
   const [tokenForm, setTokenForm] = useState<TokenLoginRequest>({
     server_id: "",
@@ -79,35 +70,6 @@ export default function LandingPage() {
     })),
   });
 
-  const createOrUpdateMutation = useMutation({
-    mutationFn: async ({ serverId, payload }: { serverId?: string; payload: ServerProfileInput }) => {
-      if (serverId) {
-        return api.updateServer(serverId, payload);
-      }
-      return api.createServer(payload);
-    },
-    onSuccess: async (_, variables) => {
-      await queryClient.invalidateQueries({ queryKey: ["servers"] });
-      await queryClient.invalidateQueries({ queryKey: ["server-health"] });
-      setBanner({
-        severity: "success",
-        message: variables.serverId ? "Server profile updated." : "Server profile created.",
-      });
-      setEditingServer(null);
-    },
-    onError: (caught) => setBanner({ severity: "error", message: errorMessage(caught) }),
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: api.deleteServer,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["servers"] });
-      await queryClient.invalidateQueries({ queryKey: ["server-health"] });
-      setBanner({ severity: "success", message: "Server profile deleted." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: errorMessage(caught) }),
-  });
-
   const tokenMutation = useMutation({
     mutationFn: api.tokenLogin,
     onSuccess: (snapshot) => {
@@ -125,6 +87,7 @@ export default function LandingPage() {
   });
 
   const servers = serversQuery.data ?? [];
+  const pendingServer = session?.pending_server ?? null;
   const selectedTokenServer = servers.find((server) => server.id === tokenForm.server_id) ?? null;
 
   const openTokenDialog = (serverId: string) => {
@@ -168,16 +131,11 @@ export default function LandingPage() {
                   Secure enterprise workbench for modeling, simulation, publishing, and collaborator presentation workflows.
                 </Typography>
                 <Typography variant="h6" sx={{ maxWidth: 900, color: "rgba(255,255,255,0.82)", fontWeight: 400 }}>
-                  The backend brokers workspace actions strictly through the active user’s Teamwork Cloud identity. Sign-in reuses a valid TWC browser session when available, or validates a direct TWC token for that same user.
+                  Administrators publish the Teamwork Cloud preset catalog centrally. End users can see that server list before app login, choose a target TWC server, and then authenticate against the selected server.
                 </Typography>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-                  <Button variant="contained" color="secondary" startIcon={<AddRoundedIcon />} onClick={() => setDialogOpen(true)}>
-                    Add Server Profile
-                  </Button>
-                  <Button variant="outlined" color="inherit" startIcon={<MonitorHeartRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["server-health"] })}>
-                    Refresh Health
-                  </Button>
-                </Stack>
+                <Button variant="outlined" color="inherit" startIcon={<MonitorHeartRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["server-health"] })}>
+                  Refresh Health
+                </Button>
               </Stack>
             </Grid>
             <Grid item xs={12} lg={4}>
@@ -185,12 +143,12 @@ export default function LandingPage() {
                 <Stack spacing={2}>
                   <Typography variant="h5">Platform Summary</Typography>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip label={`${servers.length} configured servers`} sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
-                    <Chip label={`${servers.filter((server) => server.favorite).length} favorites`} sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
+                    <Chip label={`${servers.length} available presets`} sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
+                    <Chip label="Central admin catalog" sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
                     <Chip label="User-scoped TWC auth" sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
                   </Stack>
                   <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.8)" }}>
-                    TWC remains the authentication and authorization authority. The workbench never asks for client IDs or callback URLs and never substitutes an admin credential for the active user.
+                    TWC remains the authentication and authorization authority. Preset servers are global, but every sign-in still runs strictly as the active Teamwork Cloud user.
                   </Typography>
                   <Stack spacing={1.5}>
                     <Stack direction="row" spacing={1.5} alignItems="center">
@@ -209,23 +167,30 @@ export default function LandingPage() {
         </Paper>
 
         {banner ? <Alert severity={banner.severity}>{banner.message}</Alert> : null}
+        {pendingServer ? (
+          <Alert
+            severity="info"
+            action={
+              <Button color="inherit" size="small" onClick={() => window.location.assign(api.signInUrl(pendingServer.id))}>
+                Continue TWC Sign-In
+              </Button>
+            }
+          >
+            Selected server: {pendingServer.name}. Authenticate against that Teamwork Cloud server first. When you return here with a valid upstream TWC session, the app will complete sign-in for that selected server automatically.
+          </Alert>
+        ) : null}
         {error ? <Alert severity="warning">{error}</Alert> : null}
 
         <Grid container spacing={3}>
           <Grid item xs={12} lg={8}>
             <Stack spacing={2}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center">
-                <Typography variant="h4">Teamwork Cloud Servers</Typography>
-                <Button startIcon={<AddRoundedIcon />} variant="contained" onClick={() => setDialogOpen(true)}>
-                  New Server
-                </Button>
-              </Stack>
+              <Typography variant="h4">Teamwork Cloud Presets</Typography>
               <Typography variant="body2" color="text.secondary">
-                Save as many editable server profiles as you need, then sign into the one you want to make active for the current workspace session.
+                Choose one enabled preset server before app authentication. Preset definitions are global app data, readable on this landing page without prior login, and managed centrally by administrators.
               </Typography>
               {serversQuery.isLoading ? (
                 <Paper sx={{ p: 4, borderRadius: 5 }}>
-                  <Typography color="text.secondary">Loading server profiles...</Typography>
+                  <Typography color="text.secondary">Loading preset servers...</Typography>
                 </Paper>
               ) : servers.length ? (
                 <Grid container spacing={2}>
@@ -236,44 +201,27 @@ export default function LandingPage() {
                         <Card sx={{ borderRadius: 5, height: "100%" }}>
                           <CardContent sx={{ p: 3 }}>
                             <Stack spacing={2.5} sx={{ height: "100%" }}>
-                              <Stack direction="row" justifyContent="space-between" spacing={2} alignItems="flex-start">
+                              <Stack spacing={1}>
                                 <Box>
                                   <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
                                     <Typography variant="h5">{server.name}</Typography>
-                                    {server.favorite ? <FavoriteRoundedIcon color="error" fontSize="small" /> : null}
+                                    <Chip size="small" label="Preset" variant="outlined" />
                                   </Stack>
                                   <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
                                     {server.base_url}
                                   </Typography>
                                 </Box>
-                                <Stack direction="row" spacing={0.5}>
-                                  <IconButton onClick={() => { setEditingServer(server); setDialogOpen(true); }}>
-                                    <EditRoundedIcon fontSize="small" />
-                                  </IconButton>
-                                  <IconButton
-                                    color="error"
-                                    onClick={() => {
-                                      if (window.confirm(`Delete server profile ${server.name}?`)) {
-                                        deleteMutation.mutate(server.id);
-                                      }
-                                    }}
-                                  >
-                                    <DeleteOutlineRoundedIcon fontSize="small" />
-                                  </IconButton>
-                                </Stack>
                               </Stack>
                               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                                 <Chip label={`Version ${health?.version_hint ?? server.version}`} variant="outlined" />
+                                <Chip label={`Order ${server.display_order}`} variant="outlined" />
                                 <Chip label="TWC user auth" variant="outlined" />
                                 <Chip label={health?.status ?? "probing"} color={healthColor(health?.status)} />
                                 <Chip label={server.verify_tls ? "TLS verified" : "TLS relaxed"} variant="outlined" />
                               </Stack>
                               <Stack spacing={0.75}>
                                 <Typography variant="body2" color="text.secondary">
-                                  Sign-in reuses the browser’s forwarded Teamwork Cloud session cookie when available, or accepts a direct TWC token for the same user.
-                                </Typography>
-                                <Typography variant="body2" color="text.secondary">
-                                  Last used: {formatDate(server.last_used_at)}
+                                  The selected preset server is established first. Authentication then happens against that Teamwork Cloud server, and the resulting workbench session is bound to the selected server after login succeeds.
                                 </Typography>
                                 {health?.message ? (
                                   <Typography variant="body2" color="warning.main">
@@ -288,7 +236,7 @@ export default function LandingPage() {
                                   startIcon={<LoginRoundedIcon />}
                                   onClick={() => window.location.assign(api.signInUrl(server.id))}
                                 >
-                                  Use TWC Session
+                                  Sign In via TWC
                                 </Button>
                                 {authOptions?.token_signin_enabled !== false ? (
                                   <Button
@@ -310,13 +258,10 @@ export default function LandingPage() {
                 </Grid>
               ) : (
                 <Paper sx={{ p: 5, borderRadius: 5, textAlign: "center" }}>
-                  <Typography variant="h5">No server profiles yet</Typography>
+                  <Typography variant="h5">No preset servers available</Typography>
                   <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
-                    Create your first Teamwork Cloud connection profile to begin workspace operations with the user’s delegated TWC permissions.
+                    An administrator needs to publish at least one enabled Teamwork Cloud preset before users can sign in.
                   </Typography>
-                  <Button sx={{ mt: 2.5 }} variant="contained" startIcon={<AddRoundedIcon />} onClick={() => setDialogOpen(true)}>
-                    Add Server Profile
-                  </Button>
                 </Paper>
               )}
             </Stack>
@@ -327,10 +272,16 @@ export default function LandingPage() {
                 <Typography variant="h5">Operational Guidance</Typography>
                 <Stack spacing={1.5} sx={{ mt: 2 }}>
                   <Typography variant="body2" color="text.secondary">
+                    Preset servers are visible before login so users can choose the target Teamwork Cloud server first. App authentication is completed only after the selected server authenticates the user.
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
                     Reuse the browser’s existing TWC session when this app is deployed behind the same cookie domain or a trusted reverse proxy that forwards the TWC session cookie.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     When session reuse is not available, provide a user-scoped Teamwork Cloud token. The backend validates it against TWC before opening a workbench session.
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Preset server definitions are global and admin-managed. Users do not edit `.env` and do not create their own target servers on the landing page.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     For enterprise deployments, keep certificate validation enabled and provide a CA bundle path when your Teamwork Cloud environment is issued by a private PKI.
@@ -354,21 +305,6 @@ export default function LandingPage() {
           </Grid>
         </Grid>
       </Stack>
-
-      <ServerProfileDialog
-        open={dialogOpen}
-        initialValue={editingServer}
-        onClose={() => {
-          setDialogOpen(false);
-          setEditingServer(null);
-        }}
-        onSubmit={async (payload) => {
-          await createOrUpdateMutation.mutateAsync({
-            serverId: editingServer?.id,
-            payload,
-          });
-        }}
-      />
 
       <Dialog open={tokenDialogOpen} onClose={closeTokenDialog} fullWidth maxWidth="sm">
         <DialogTitle>Teamwork Cloud Token Sign-In</DialogTitle>

@@ -12,6 +12,7 @@ from cryptography.fernet import Fernet
 from redis import Redis
 
 from app.models.domain import (
+    AuthorizationContext,
     Bookmark,
     SavedSearch,
     ServerProfile,
@@ -103,6 +104,7 @@ class SessionManager:
         self,
         server: ServerProfile,
         user: UserContext,
+        authorization_context: AuthorizationContext,
         credentials: TokenBundle,
         capabilities: Any,
     ) -> SessionData:
@@ -111,6 +113,7 @@ class SessionManager:
             session_id=uuid4().hex,
             server=server,
             user=user,
+            authorization_context=authorization_context,
             encrypted_credentials=self.cipher.encrypt(credentials),
             capabilities=capabilities,
             created_at=now,
@@ -151,6 +154,7 @@ class SessionManager:
             csrf_token=session.csrf_token,
             user=session.user,
             server=session.server,
+            can_manage_server_presets=session.authorization_context.can_manage_server_presets,
             capabilities=session.capabilities,
             preferences=session.preferences,
             bookmarks=session.bookmarks,

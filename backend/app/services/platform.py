@@ -16,6 +16,7 @@ from app.core.storage import SqliteRepository
 from app.integrations.publisher import PublisherAdapter, build_publisher
 from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
+    AuthorizationContext,
     Bookmark,
     BranchUpdateRequest,
     CapabilityState,
@@ -32,14 +33,17 @@ from app.models.domain import (
     ServerHealth,
     ServerProfile,
     ServerProfileCreate,
+    ServerProfileReorderRequest,
     ServerProfileUpdate,
     SessionData,
     SessionPreferences,
+    SessionSnapshot,
     SimulationConfig,
     SimulationRunRequest,
     TokenBundle,
     TokenLoginRequest,
     TWCVersion,
+    UserServerState,
     UserContext,
     utcnow,
 )
@@ -47,6 +51,9 @@ from app.security.session import SessionManager
 from app.settings.config import Settings
 
 logger = structlog.get_logger(__name__)
+
+
+ADMIN_CLAIM_MARKERS = ("admin", "administrator")
 
 
 class PlatformService:
@@ -68,8 +75,13 @@ class PlatformService:
     def list_servers(self) -> list[ServerProfile]:
         return self.repo.list_servers()
 
+    def list_servers_for_management(self) -> list[ServerProfile]:
+        return self.repo.list_servers(include_disabled=True)
+
     def create_server(self, payload: ServerProfileCreate) -> ServerProfile:
         server = ServerProfile(**payload.model_dump())
+        if "display_order" not in payload.model_fields_set:
+            server.display_order = self.repo.next_server_display_order()
         return self.repo.upsert_server(server)
 
     def update_server(self, server_id: str, payload: ServerProfileUpdate) -> ServerProfile:
@@ -78,14 +90,40 @@ class PlatformService:
         updated.updated_at = utcnow()
         return self.repo.upsert_server(updated)
 
+    def reorder_servers(self, payload: ServerProfileReorderRequest) -> list[ServerProfile]:
+        current_servers = self.repo.list_servers(include_disabled=True)
+        servers_by_id = {server.id: server for server in current_servers}
+        requested_ids = [server_id for server_id in payload.server_ids if server_id in servers_by_id]
+        missing_ids = [server_id for server_id in payload.server_ids if server_id not in servers_by_id]
+        if missing_ids:
+            raise KeyError(missing_ids[0])
+
+        ordered_ids = requested_ids + [server.id for server in current_servers if server.id not in requested_ids]
+        ordered_servers: list[ServerProfile] = []
+        for index, server_id in enumerate(ordered_ids):
+            server = servers_by_id[server_id]
+            if server.display_order != index:
+                server = server.model_copy(update={"display_order": index, "updated_at": utcnow()})
+            ordered_servers.append(server)
+
+        return self.repo.bulk_upsert_servers(ordered_servers)
+
     def delete_server(self, server_id: str) -> bool:
         return self.repo.delete_server(server_id)
 
-    def get_server(self, server_id: str) -> ServerProfile | None:
-        return self.repo.get_server(server_id)
+    def get_server(self, server_id: str, *, include_disabled: bool = True) -> ServerProfile | None:
+        server = self.repo.get_server(server_id)
+        if not server:
+            return None
+        if not include_disabled and not server.enabled:
+            return None
+        return server
 
-    async def health_check(self, server_id: str) -> ServerHealth:
-        server = self._require_server(server_id)
+    def can_manage_server_presets(self, session: SessionData) -> bool:
+        return session.authorization_context.can_manage_server_presets
+
+    async def health_check(self, server_id: str, *, include_disabled: bool = False) -> ServerHealth:
+        server = self._require_server(server_id, include_disabled=include_disabled)
         verify = server.ca_bundle_path if server.verify_tls and server.ca_bundle_path else server.verify_tls
         checks = {"base_url": False}
         version_hint = server.version.value if server.version != TWCVersion.AUTO else None
@@ -130,8 +168,10 @@ class PlatformService:
         access_token: str | None,
         session_cookies: dict[str, str],
         preferred_username: str | None,
+        upstream_roles: list[str] | None = None,
+        upstream_groups: list[str] | None = None,
     ) -> SessionData:
-        server = self._require_server(server_id)
+        server = self._require_server(server_id, include_disabled=False)
         credentials = TokenBundle(
             access_token=access_token,
             session_cookies=session_cookies,
@@ -142,15 +182,43 @@ class PlatformService:
                 "No upstream Teamwork Cloud credentials were present on the request. Deploy this app behind the same TWC session cookie domain or a proxy that forwards a user-scoped TWC token."
             )
 
-        return await self._create_authenticated_session(server, credentials, fallback_username=preferred_username, log_event="upstream-session-login-complete")
+        return await self._create_authenticated_session(
+            server,
+            credentials,
+            fallback_username=preferred_username,
+            upstream_roles=upstream_roles,
+            upstream_groups=upstream_groups,
+            log_event="upstream-session-login-complete",
+        )
 
-    async def login_with_token(self, payload: TokenLoginRequest) -> SessionData:
-        server = self._require_server(payload.server_id)
+    async def login_with_token(
+        self,
+        payload: TokenLoginRequest,
+        *,
+        upstream_roles: list[str] | None = None,
+        upstream_groups: list[str] | None = None,
+    ) -> SessionData:
+        server = self._require_server(payload.server_id, include_disabled=False)
         credentials = TokenBundle(access_token=payload.token)
-        return await self._create_authenticated_session(server, credentials, log_event="token-login-complete")
+        return await self._create_authenticated_session(
+            server,
+            credentials,
+            upstream_roles=upstream_roles,
+            upstream_groups=upstream_groups,
+            log_event="token-login-complete",
+        )
 
-    def get_session_snapshot(self, session_id: str | None):
-        return self.sessions.snapshot(self.sessions.get_session(session_id))
+    def get_session_snapshot(self, session_id: str | None) -> SessionSnapshot:
+        session = self.sessions.get_session(session_id)
+        snapshot = self.sessions.snapshot(session)
+        if not session:
+            return snapshot
+
+        return snapshot.model_copy(
+            update={
+                "server_state": self.repo.get_user_server_state(self._user_key(session.user.preferred_username)),
+            }
+        )
 
     def get_preferences(self, session: SessionData) -> SessionPreferences:
         return session.preferences
@@ -430,10 +498,13 @@ class PlatformService:
         credentials: TokenBundle,
         *,
         fallback_username: str | None = None,
+        upstream_roles: list[str] | None = None,
+        upstream_groups: list[str] | None = None,
         log_event: str,
     ) -> SessionData:
         adapter = self._adapter_for_credentials(server, credentials)
-        preferred_username = await self._resolve_preferred_username(adapter, fallback_username)
+        current_user_context = await adapter.current_user_context()
+        preferred_username = self._resolve_preferred_username(current_user_context, fallback_username)
         capabilities = await adapter.discover_capabilities()
         capabilities.capabilities["publish"] = self.publisher.capability()
         if not self._has_remote_access(capabilities):
@@ -446,14 +517,18 @@ class PlatformService:
             server_id=server.id,
             server_name=server.name,
         )
-        session = self.sessions.create_session(server, user, credentials, capabilities)
-        server.last_used_at = session.created_at
-        self.repo.upsert_server(server)
+        authorization_context = self._build_authorization_context(
+            current_user_context,
+            upstream_roles=upstream_roles,
+            upstream_groups=upstream_groups,
+        )
+        session = self.sessions.create_session(server, user, authorization_context, credentials, capabilities)
+        self._update_user_server_state(user.preferred_username, server.id, session.created_at)
         logger.info(log_event, user=user.preferred_username, server_id=server.id)
         return session
 
-    async def _resolve_preferred_username(self, adapter: TeamworkAdapter, fallback_username: str | None = None) -> str:
-        preferred_username = await adapter.current_username()
+    def _resolve_preferred_username(self, current_user_context, fallback_username: str | None = None) -> str:
+        preferred_username = current_user_context.preferred_username if current_user_context else None
         if preferred_username:
             return preferred_username
         if fallback_username and fallback_username.strip():
@@ -462,11 +537,60 @@ class PlatformService:
             "Unable to resolve the authenticated Teamwork Cloud user from /osmc/admin/currentUser. Ensure the supplied session cookie or token is valid for TWC."
         )
 
+    def _build_authorization_context(
+        self,
+        current_user_context,
+        *,
+        upstream_roles: list[str] | None,
+        upstream_groups: list[str] | None,
+    ) -> AuthorizationContext:
+        roles = self._merge_claims(*(upstream_roles or []), *((current_user_context.roles) if current_user_context else []))
+        groups = self._merge_claims(*(upstream_groups or []), *((current_user_context.groups) if current_user_context else []))
+
+        if roles or groups:
+            return AuthorizationContext(
+                roles=roles,
+                groups=groups,
+                source="upstream-authorization-claims",
+                can_manage_server_presets=self._claims_grant_admin(roles, groups),
+            )
+
+        return AuthorizationContext(
+            roles=[],
+            groups=[],
+            source="authenticated-user-default",
+            can_manage_server_presets=True,
+        )
+
+    def _claims_grant_admin(self, roles: list[str], groups: list[str]) -> bool:
+        claims = [*(role.lower() for role in roles), *(group.lower() for group in groups)]
+        return any(marker in claim for claim in claims for marker in ADMIN_CLAIM_MARKERS)
+
+    def _merge_claims(self, *values: str) -> list[str]:
+        merged: list[str] = []
+        for value in values:
+            candidate = value.strip()
+            if candidate and candidate not in merged:
+                merged.append(candidate)
+        return merged
+
     def _has_remote_access(self, capabilities) -> bool:
         return any(capabilities.reachable_endpoints.get(endpoint) for endpoint in ("projects", "simulation", "collaborator"))
 
-    def _require_server(self, server_id: str) -> ServerProfile:
-        server = self.repo.get_server(server_id)
+    def _user_key(self, preferred_username: str) -> str:
+        return preferred_username.strip().lower()
+
+    def _update_user_server_state(self, preferred_username: str, server_id: str, updated_at) -> UserServerState:
+        user_id = self._user_key(preferred_username)
+        current = self.repo.get_user_server_state(user_id) or UserServerState(user_id=user_id)
+        current.selected_server_id = server_id
+        current.last_used_server_id = server_id
+        current.favorite_server_ids = [favorite_id for favorite_id in current.favorite_server_ids if self.repo.get_server(favorite_id)]
+        current.updated_at = updated_at
+        return self.repo.upsert_user_server_state(current)
+
+    def _require_server(self, server_id: str, *, include_disabled: bool = True) -> ServerProfile:
+        server = self.get_server(server_id, include_disabled=include_disabled)
         if not server:
             raise KeyError(server_id)
         return server

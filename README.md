@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File .\launch.ps1
 
 - **FastAPI + httpx + pydantic** provide a clean async backend with strong typed models and straightforward API integration patterns.
 - **Server-side session management** keeps tokens out of browser storage and supports secure HTTP-only cookies.
-- **SQLite by default** gives a zero-friction local runtime for server profiles and job history while leaving room for Redis-backed sessions and external infra in production.
+- **SQLite by default** gives a zero-friction local runtime for preset server definitions, per-user server selection state, and job history while leaving room for Redis-backed sessions and external infra in production.
 - **React + TypeScript + Material UI** provide a maintainable enterprise-grade frontend with responsive layout, theming, and composable workflows.
 - **Adapter boundaries** isolate Teamwork Cloud version differences, publishing integrations, and remote capability uncertainty behind stable internal contracts.
 
@@ -61,8 +61,9 @@ powershell -ExecutionPolicy Bypass -File .\launch.ps1
 Copy `backend/.env.example` to `backend/.env` and set values appropriate for your environment.
 
 `backend/.env` is only for app-level runtime settings. Do not define a single active Teamwork Cloud server in `.env`.
-This application supports multiple editable TWC server profiles stored inside the app, each with values such as `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, and `favorite`.
-Users can add, edit, delete, select, and switch server profiles at runtime without rebuilding the frontend or editing environment files.
+This application stores Teamwork Cloud connections as admin-managed preset servers inside the app, each with values such as `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
+Administrators can add, edit, disable, delete, and reorder presets at runtime without rebuilding the frontend or editing environment files. Users only select from enabled presets and the app persists each user’s selected and last-used server state separately.
+Preset-management authorization is derived from Teamwork Cloud or trusted reverse-proxy role and group context. When no upstream role or group claims are available, the app defaults to allowing authenticated users rather than maintaining a separate authorization list.
 
 Important settings:
 
@@ -72,13 +73,15 @@ Important settings:
 - `SECURE_COOKIES=true`: required when running behind HTTPS.
 - `UPSTREAM_AUTH_COOKIE_NAMES`: optional JSON array of TWC cookie names to forward. Leave empty to forward all incoming cookies except the app's own session cookie.
 - `UPSTREAM_USER_HEADERS`: optional JSON array of trusted reverse-proxy user headers.
+- `UPSTREAM_GROUP_HEADERS`: optional JSON array of trusted reverse-proxy group headers used to mirror TWC group membership.
+- `UPSTREAM_ROLE_HEADERS`: optional JSON array of trusted reverse-proxy role headers used to mirror TWC role membership.
 - `UPSTREAM_ACCESS_TOKEN_HEADERS`: optional JSON array of trusted reverse-proxy TWC token headers.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
 - `PUBLISHER_MODE=local|cli|webhook`: selects the publishing adapter.
 - `PUBLISHER_COMMAND`: used when `PUBLISHER_MODE=cli`.
 - `PUBLISHER_WEBHOOK_URL`: used when `PUBLISHER_MODE=webhook`.
 
-Teamwork Cloud base URLs, version hints, and certificate settings are configured as server profiles inside the application, not through `HOST`.
+Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured inside the application, not through `HOST`.
 
 The launch scripts read `HOST` and `PORT` from `backend/.env` by default. Command-line launch options override them when provided.
 
@@ -205,14 +208,18 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 - Terminate TLS at a reverse proxy or application gateway and forward traffic to FastAPI.
 - Set `SECURE_COOKIES=true` behind HTTPS.
 - Move sessions to Redis via `REDIS_URL` for multi-instance deployments.
-- Move SQLite to a managed relational database if you need multi-node profile and job persistence.
+- Move SQLite to a managed relational database if you need multi-node preset, per-user state, and job persistence.
 - Replace the default local publish adapter with `cli` or `webhook` mode when you want the backend to hand work off to an external publishing pipeline.
 - If custom CA bundles are required, mount them into the backend container or VM and reference them in server profiles.
 
 ## TWC Authentication Configuration Notes
 
 - TWC is the authentication and authorization authority for this app.
+- Preset Teamwork Cloud servers are global app data and are readable on the landing page before app login.
+- Users select a preset server first, then authenticate against that selected Teamwork Cloud server.
+- The post-login app session is bound to the selected server, not the other way around.
 - The preferred deployment mode is to forward the existing TWC browser session cookie to this app and let the backend replay it to TWC with the user’s own permissions.
+- If no forwarded TWC session is available yet, the app keeps the selected preset server as pre-login state and completes the local app session automatically when the browser returns with valid upstream credentials.
 - If your proxy cannot forward session cookies, configure `UPSTREAM_ACCESS_TOKEN_HEADERS` to pass a user-scoped TWC token instead.
 - Direct token sign-in is also supported from the landing page. The backend validates the supplied token against `/osmc/admin/currentUser` before opening a workbench session.
 - Optional trusted user headers in `UPSTREAM_USER_HEADERS` are used only as a fallback hint when a reverse proxy already knows the authenticated TWC user.

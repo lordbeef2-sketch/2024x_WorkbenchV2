@@ -18,23 +18,25 @@ import { ServerProfile, ServerProfileInput, TWCVersion } from "../models/api";
 interface ServerProfileDialogProps {
   open: boolean;
   initialValue?: ServerProfile | null;
+  defaultDisplayOrder?: number;
   onClose: () => void;
   onSubmit: (value: ServerProfileInput) => Promise<void> | void;
 }
 
-function createDefaultProfile(): ServerProfileInput {
+function createDefaultProfile(defaultDisplayOrder = 0): ServerProfileInput {
   return {
     name: "",
     base_url: "",
     version: "auto",
     verify_tls: true,
     ca_bundle_path: null,
-    favorite: false,
+    enabled: true,
+    display_order: defaultDisplayOrder,
   };
 }
 
-export default function ServerProfileDialog({ open, initialValue, onClose, onSubmit }: ServerProfileDialogProps) {
-  const [form, setForm] = useState<ServerProfileInput>(createDefaultProfile());
+export default function ServerProfileDialog({ open, initialValue, defaultDisplayOrder = 0, onClose, onSubmit }: ServerProfileDialogProps) {
+  const [form, setForm] = useState<ServerProfileInput>(createDefaultProfile(defaultDisplayOrder));
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -42,7 +44,7 @@ export default function ServerProfileDialog({ open, initialValue, onClose, onSub
       return;
     }
     if (!initialValue) {
-      setForm(createDefaultProfile());
+      setForm(createDefaultProfile(defaultDisplayOrder));
       return;
     }
     setForm({
@@ -51,9 +53,10 @@ export default function ServerProfileDialog({ open, initialValue, onClose, onSub
       version: initialValue.version,
       verify_tls: initialValue.verify_tls,
       ca_bundle_path: initialValue.ca_bundle_path,
-      favorite: initialValue.favorite,
+      enabled: initialValue.enabled,
+      display_order: initialValue.display_order,
     });
-  }, [initialValue, open]);
+  }, [defaultDisplayOrder, initialValue, open]);
 
   const handleSubmit = async () => {
     setSubmitting(true);
@@ -75,7 +78,7 @@ export default function ServerProfileDialog({ open, initialValue, onClose, onSub
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-      <DialogTitle>{initialValue ? "Edit Teamwork Cloud Server" : "Add Teamwork Cloud Server"}</DialogTitle>
+      <DialogTitle>{initialValue ? "Edit Preset Teamwork Cloud Server" : "Add Preset Teamwork Cloud Server"}</DialogTitle>
       <DialogContent>
         <Grid container spacing={2} sx={{ mt: 0.5 }}>
           <Grid item xs={12} md={6}>
@@ -146,18 +149,28 @@ export default function ServerProfileDialog({ open, initialValue, onClose, onSub
               </div>
             </Stack>
           </Grid>
-          <Grid item xs={12}>
+          <Grid item xs={12} md={6}>
+            <TextField
+              label="Display Order"
+              type="number"
+              value={form.display_order}
+              onChange={(event) => setField("display_order", Math.max(0, Number.parseInt(event.target.value, 10) || 0))}
+              fullWidth
+              inputProps={{ min: 0 }}
+            />
+          </Grid>
+          <Grid item xs={12} md={6}>
             <Stack
               direction="row"
               spacing={2}
               alignItems="center"
               sx={{ px: 2, py: 1.5, borderRadius: 3, border: "1px solid", borderColor: "divider" }}
             >
-              <Switch checked={form.favorite} onChange={(event) => setField("favorite", event.target.checked)} />
+              <Switch checked={form.enabled} onChange={(event) => setField("enabled", event.target.checked)} />
               <div>
-                <Typography fontWeight={600}>Favorite Server</Typography>
+                <Typography fontWeight={600}>Preset Enabled</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Favorite servers surface to the top of the landing page and quick actions.
+                  Disabled presets remain visible to administrators but are hidden from normal user sign-in flows.
                 </Typography>
               </div>
             </Stack>
@@ -171,7 +184,7 @@ export default function ServerProfileDialog({ open, initialValue, onClose, onSub
           onClick={handleSubmit}
           disabled={submitting || !form.name || !form.base_url}
         >
-          {initialValue ? "Save Changes" : "Create Server"}
+          {initialValue ? "Save Changes" : "Create Preset"}
         </Button>
       </DialogActions>
     </Dialog>

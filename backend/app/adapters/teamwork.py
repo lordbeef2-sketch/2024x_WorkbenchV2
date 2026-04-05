@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
@@ -38,6 +39,18 @@ from app.models.domain import BranchSummary, TokenBundle
 
 ProgressReporter = Callable[[int, str], Awaitable[None]]
 CancelChecker = Callable[[], bool]
+
+
+UUID_PATTERN = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+@dataclass
+class CurrentUserContext:
+    preferred_username: str | None = None
+    roles: list[str] = field(default_factory=list)
+    groups: list[str] = field(default_factory=list)
 
 
 def _first_list(payload: dict[str, Any], *keys: str) -> list[Any] | None:
@@ -149,6 +162,29 @@ def _ldp_member_ids(payload: dict[str, Any]) -> list[str]:
 
 def _normalize_types(value: Any) -> list[str]:
     return [str(item) for item in _as_list(value) if str(item).strip()]
+
+
+def _is_uuid_like(value: str) -> bool:
+    return bool(UUID_PATTERN.fullmatch(value.strip()))
+
+
+def _claim_text(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        if text and not _is_uuid_like(text):
+            return [text]
+        return []
+    if isinstance(value, list):
+        items: list[str] = []
+        for item in value:
+            items.extend(_claim_text(item))
+        return items
+    if isinstance(value, dict):
+        items: list[str] = []
+        for key in ("name", "displayName", "authority", "groupName", "roleName", "description", "value"):
+            items.extend(_claim_text(value.get(key)))
+        return items
+    return []
 
 
 def _humanize_type(raw_type: str) -> str:
@@ -652,14 +688,54 @@ class TeamworkAdapter:
                 return username
         return None
 
-    async def current_username(self) -> str | None:
-        raw_result = await self._request_raw_candidates("GET", self.current_user_candidates(), timeout=10.0)
+    def _extract_current_user_context(self, payload: Any) -> CurrentUserContext:
+        candidates: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            candidates.append(payload)
+            entity = _payload_entity(payload, "user")
+            if entity and entity not in candidates:
+                candidates.append(entity)
+            for key in ("user", "data", "item"):
+                value = payload.get(key)
+                if isinstance(value, dict) and value not in candidates:
+                    candidates.append(value)
+        elif isinstance(payload, list):
+            candidates.extend(item for item in payload if isinstance(item, dict))
+
+        roles: list[str] = []
+        groups: list[str] = []
+        for candidate in candidates:
+            roles.extend(_claim_text(candidate.get("roles")))
+            roles.extend(_claim_text(candidate.get("authorities")))
+            roles.extend(_claim_text(candidate.get("roleAssignments")))
+            groups.extend(_claim_text(candidate.get("userGroups")))
+            groups.extend(_claim_text(candidate.get("usergroups")))
+            groups.extend(_claim_text(candidate.get("groups")))
+
+        return CurrentUserContext(
+            preferred_username=self._extract_current_username(payload),
+            roles=list(dict.fromkeys(roles)),
+            groups=list(dict.fromkeys(groups)),
+        )
+
+    async def current_user_context(self) -> CurrentUserContext | None:
+        raw_result = await self._request_raw_candidates(
+            "GET",
+            ["/osmc/admin/currentUser?permission=true", *self.current_user_candidates()],
+            timeout=10.0,
+        )
         if raw_result is None:
             return None
         response, _ = raw_result
         if response.status_code in {401, 403}:
             return None
-        return self._extract_current_username(self._decode_response(response))
+        return self._extract_current_user_context(self._decode_response(response))
+
+    async def current_username(self) -> str | None:
+        context = await self.current_user_context()
+        if context is None:
+            return None
+        return context.preferred_username
 
     async def health(self) -> dict[str, Any]:
         checks = {"base_url": False}

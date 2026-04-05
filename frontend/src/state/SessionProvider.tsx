@@ -21,6 +21,9 @@ function createEmptySession(): SessionSnapshot {
     csrf_token: null,
     user: null,
     server: null,
+    pending_server: null,
+    server_state: null,
+    can_manage_server_presets: false,
     capabilities: null,
     preferences: {
       theme_mode: "system",

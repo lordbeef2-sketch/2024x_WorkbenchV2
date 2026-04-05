@@ -51,7 +51,8 @@ class ServerProfileBase(BaseModel):
     version: TWCVersion = TWCVersion.AUTO
     verify_tls: bool = True
     ca_bundle_path: str | None = None
-    favorite: bool = False
+    enabled: bool = True
+    display_order: int = Field(default=0, ge=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -84,7 +85,8 @@ class ServerProfileUpdate(BaseModel):
     version: TWCVersion | None = None
     verify_tls: bool | None = None
     ca_bundle_path: str | None = None
-    favorite: bool | None = None
+    enabled: bool | None = None
+    display_order: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -109,9 +111,27 @@ class ServerProfileUpdate(BaseModel):
 
 class ServerProfile(ServerProfileBase):
     id: str = Field(default_factory=lambda: uuid4().hex)
-    last_used_at: datetime | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class ServerProfileReorderRequest(BaseModel):
+    server_ids: list[str] = Field(default_factory=list)
+
+
+class UserServerState(BaseModel):
+    user_id: str
+    selected_server_id: str | None = None
+    last_used_server_id: str | None = None
+    favorite_server_ids: list[str] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class AuthorizationContext(BaseModel):
+    roles: list[str] = Field(default_factory=list)
+    groups: list[str] = Field(default_factory=list)
+    source: str = "authenticated-user-default"
+    can_manage_server_presets: bool = True
 
 
 class ServerHealth(BaseModel):
@@ -187,6 +207,7 @@ class SessionData(BaseModel):
     session_id: str = Field(default_factory=lambda: uuid4().hex)
     server: ServerProfile
     user: UserContext
+    authorization_context: AuthorizationContext = Field(default_factory=AuthorizationContext)
     encrypted_credentials: str
     csrf_token: str = Field(default_factory=lambda: uuid4().hex)
     capabilities: CapabilitySummary
@@ -204,6 +225,9 @@ class SessionSnapshot(BaseModel):
     csrf_token: str | None = None
     user: UserContext | None = None
     server: ServerProfile | None = None
+    pending_server: ServerProfile | None = None
+    server_state: UserServerState | None = None
+    can_manage_server_presets: bool = False
     capabilities: CapabilitySummary | None = None
     preferences: SessionPreferences = Field(default_factory=SessionPreferences)
     bookmarks: list[Bookmark] = Field(default_factory=list)
