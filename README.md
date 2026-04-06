@@ -64,14 +64,19 @@ Copy `backend/.env.example` to `backend/.env` and set values appropriate for you
 `TWC_PRESET_SERVERS` is the authoritative JSON catalog for pre-login Teamwork Cloud discovery. Each preset includes `id`, `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
 The backend loads that catalog at startup and exposes enabled presets on the landing page before authentication. Users do not create their own target servers just to connect; the app persists only each user’s selected and last-used server state separately.
 To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` and restart the backend.
+For cross-host `Sign In via TWC`, configure `APP_ORIGIN`, `TWC_AUTH_CLIENT_ID`, and `TWC_AUTH_CLIENT_SECRET` so the selected Teamwork Cloud auth server can redirect back to this app callback.
 Preset-management authorization is derived from Teamwork Cloud or trusted reverse-proxy role and group context. When no upstream role or group claims are available, the app defaults to allowing authenticated users rather than maintaining a separate authorization list.
 
 Important settings:
 
 - `HOST`: bind address for this app only. Use `0.0.0.0`, `127.0.0.1`, or a local interface IP. Do not put the Teamwork Cloud FQDN here.
 - `FRONTEND_ORIGIN`: allowed browser origin for local development or deployment.
+- `APP_ORIGIN`: public origin of this app for redirect-based TWC callback handling. Defaults to `FRONTEND_ORIGIN` when left empty.
 - `SESSION_SECRET`: replace with a long random secret in every non-local environment. It encrypts stored per-user delegated credentials inside the app session.
 - `TWC_PRESET_SERVERS`: JSON array of preset Teamwork Cloud servers loaded at startup for pre-login discovery.
+- `TWC_AUTH_CLIENT_ID`: client ID registered in the selected Teamwork Cloud authentication server.
+- `TWC_AUTH_CLIENT_SECRET`: shared auth client secret sent as `X-Auth-Secret` to the token endpoint.
+- `TWC_AUTH_CALLBACK_PATH`: optional callback path override. Defaults to `/api/auth/callback`.
 - `SECURE_COOKIES=true`: required when running behind HTTPS.
 - `UPSTREAM_AUTH_COOKIE_NAMES`: optional JSON array of TWC cookie names to forward. Leave empty to forward all incoming cookies except the app's own session cookie.
 - `UPSTREAM_USER_HEADERS`: optional JSON array of trusted reverse-proxy user headers.
@@ -220,8 +225,9 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 - Preset Teamwork Cloud servers are loaded from `TWC_PRESET_SERVERS` at startup and are readable on the landing page before app login.
 - Users select a preset server first, then authenticate against that selected Teamwork Cloud server.
 - The post-login app session is bound to the selected server, not the other way around.
-- The preferred deployment mode is to forward the existing TWC browser session cookie to this app and let the backend replay it to TWC with the user’s own permissions.
-- If no forwarded TWC session is available yet, the app keeps the selected preset server as pre-login state and completes the local app session automatically when the browser returns with valid upstream credentials.
+- Redirect-based `Sign In via TWC` uses the Teamwork Cloud authentication server for the selected preset server and does not assume browser cookie reuse from another host.
+- `Use TWC Token` remains the cross-host fallback because it is header-based and does not depend on browser cookie sharing.
+- Upstream session-cookie reuse may still work in same-host or proxy-mediated deployments, but it is not the supported assumption for cross-host login.
 - If your proxy cannot forward session cookies, configure `UPSTREAM_ACCESS_TOKEN_HEADERS` to pass a user-scoped TWC token instead.
 - Direct token sign-in is also supported from the landing page. The backend validates the supplied token against `/osmc/admin/currentUser` before opening a workbench session.
 - Optional trusted user headers in `UPSTREAM_USER_HEADERS` are used only as a fallback hint when a reverse proxy already knows the authenticated TWC user.

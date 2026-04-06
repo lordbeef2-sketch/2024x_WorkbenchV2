@@ -3,6 +3,7 @@
 This FastAPI service is the secure integration layer for TWC Workbench. It manages delegated Teamwork Cloud sessions, direct Teamwork Cloud token sign-in, HTTP-only app sessions, startup-loaded Teamwork Cloud preset servers from `TWC_PRESET_SERVERS`, pre-login selected-server state, per-user post-login server selection state, Teamwork Cloud adapters, capability probing, background jobs, exports, collaborator workflows, and publish integrations.
 
 To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` in `backend/.env` and restart the backend.
+For cross-host redirect login, configure `APP_ORIGIN`, `TWC_AUTH_CLIENT_ID`, and `TWC_AUTH_CLIENT_SECRET` so the selected Teamwork Cloud authentication server can redirect back to this app and exchange the code with `X-Auth-Secret`.
 
 Preset-management authorization is derived from Teamwork Cloud user context and trusted upstream role or group headers when they are available. The backend does not keep a separate hardcoded admin-user list.
 

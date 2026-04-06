@@ -302,6 +302,8 @@ export interface ExportRequest {
 
 export interface AuthOptions {
   token_signin_enabled: boolean;
+  redirect_signin_enabled: boolean;
+  redirect_signin_message?: string | null;
   csrf_header_name: string;
 }
 

@@ -15,6 +15,7 @@ from app.models.domain import PresetServerDefinition
 class Settings(BaseSettings):
     app_name: str = "TWC Workbench"
     environment: str = "development"
+    app_origin: str | None = None
     host: str = "0.0.0.0"
     port: int = 8000
     api_prefix: str = "/api"
@@ -26,7 +27,13 @@ class Settings(BaseSettings):
     session_secret: str = "replace-this-in-production-with-32-random-bytes"
     session_cookie_name: str = "twc_session"
     pending_server_cookie_name: str = "twc_pending_server"
+    auth_state_cookie_name: str = "twc_auth_state"
     twc_preset_servers: list[PresetServerDefinition] = Field(default_factory=list)
+    twc_auth_client_id: str | None = None
+    twc_auth_client_secret: str | None = None
+    twc_auth_callback_path: str | None = None
+    twc_auth_scope: str = "openid"
+    twc_auth_state_ttl_minutes: int = 15
     session_ttl_minutes: int = 480
     secure_cookies: bool = False
     csrf_header_name: str = "X-CSRF-Token"
@@ -71,7 +78,15 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    @field_validator("database_path", "export_dir", mode="before")
+    @field_validator(
+        "database_path",
+        "export_dir",
+        "app_origin",
+        "twc_auth_client_id",
+        "twc_auth_client_secret",
+        "twc_auth_callback_path",
+        mode="before",
+    )
     @classmethod
     def blank_paths_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -120,6 +135,23 @@ class Settings(BaseSettings):
     @property
     def resolved_export_dir(self) -> Path:
         return (self.export_dir or self.resolved_data_dir / "exports").resolve()
+
+    @property
+    def resolved_app_origin(self) -> str:
+        origin = (self.app_origin or self.frontend_origin).strip().rstrip("/")
+        return origin
+
+    @property
+    def resolved_twc_auth_callback_path(self) -> str:
+        path = self.twc_auth_callback_path or f"{self.api_prefix.rstrip('/')}/auth/callback"
+        normalized = path.strip()
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+        return normalized
+
+    @property
+    def resolved_twc_auth_callback_url(self) -> str:
+        return f"{self.resolved_app_origin}{self.resolved_twc_auth_callback_path}"
 
     def extract_upstream_auth_cookies(self, cookies: Mapping[str, str]) -> dict[str, str]:
         allowed = {name.strip() for name in self.upstream_auth_cookie_names if name.strip()}

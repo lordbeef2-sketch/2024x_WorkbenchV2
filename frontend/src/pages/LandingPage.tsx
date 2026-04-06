@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -48,6 +48,7 @@ function errorMessage(caught: unknown): string {
 
 export default function LandingPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { authOptions, error, session, setSessionSnapshot } = useSession();
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
@@ -89,6 +90,8 @@ export default function LandingPage() {
   const servers = serversQuery.data ?? [];
   const pendingServer = session?.pending_server ?? null;
   const selectedTokenServer = servers.find((server) => server.id === tokenForm.server_id) ?? null;
+  const authError = searchParams.get("authError");
+  const redirectSignInEnabled = authOptions?.redirect_signin_enabled !== false;
 
   const openTokenDialog = (serverId: string) => {
     setTokenForm({ server_id: serverId, token: "" });
@@ -131,7 +134,7 @@ export default function LandingPage() {
                   Secure enterprise workbench for modeling, simulation, publishing, and collaborator presentation workflows.
                 </Typography>
                 <Typography variant="h6" sx={{ maxWidth: 900, color: "rgba(255,255,255,0.82)", fontWeight: 400 }}>
-                  Administrators publish the Teamwork Cloud preset catalog centrally. End users can see that server list before app login, choose a target TWC server, and then authenticate against the selected server.
+                  Administrators publish the Teamwork Cloud preset catalog centrally. End users can see that server list before app login, choose a target TWC server, and then authenticate against the selected server through a real redirect-based auth flow.
                 </Typography>
                 <Button variant="outlined" color="inherit" startIcon={<MonitorHeartRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["server-health"] })}>
                   Refresh Health
@@ -148,7 +151,7 @@ export default function LandingPage() {
                     <Chip label="User-scoped TWC auth" sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
                   </Stack>
                   <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.8)" }}>
-                    TWC remains the authentication and authorization authority. Preset servers are global, but every sign-in still runs strictly as the active Teamwork Cloud user.
+                    TWC remains the authentication and authorization authority. Redirect sign-in binds the app session to the selected TWC server, while token sign-in remains available as a header-based fallback.
                   </Typography>
                   <Stack spacing={1.5}>
                     <Stack direction="row" spacing={1.5} alignItems="center">
@@ -167,16 +170,18 @@ export default function LandingPage() {
         </Paper>
 
         {banner ? <Alert severity={banner.severity}>{banner.message}</Alert> : null}
+        {authError ? <Alert severity="error">{authError}</Alert> : null}
+        {authOptions?.redirect_signin_message ? <Alert severity="warning">{authOptions.redirect_signin_message}</Alert> : null}
         {pendingServer ? (
           <Alert
             severity="info"
             action={
-              <Button color="inherit" size="small" onClick={() => window.location.assign(api.signInUrl(pendingServer.id))}>
+              <Button color="inherit" size="small" onClick={() => window.location.assign(api.signInUrl(pendingServer.id))} disabled={!redirectSignInEnabled}>
                 Continue TWC Sign-In
               </Button>
             }
           >
-            Selected server: {pendingServer.name}. Authenticate against that Teamwork Cloud server first. When you return here with a valid upstream TWC session, the app will complete sign-in for that selected server automatically.
+            Selected server: {pendingServer.name}. Redirect sign-in uses that Teamwork Cloud server's authentication service and preserves the selected server through the callback. It does not rely on browser cookie reuse from another host.
           </Alert>
         ) : null}
         {error ? <Alert severity="warning">{error}</Alert> : null}
@@ -221,7 +226,7 @@ export default function LandingPage() {
                               </Stack>
                               <Stack spacing={0.75}>
                                 <Typography variant="body2" color="text.secondary">
-                                  The selected preset server is established first. Authentication then happens against that Teamwork Cloud server, and the resulting workbench session is bound to the selected server after login succeeds.
+                                  The selected preset server is established first. Redirect sign-in sends the browser to that Teamwork Cloud server's auth service, then the callback creates an app session bound to that same server.
                                 </Typography>
                                 {health?.message ? (
                                   <Typography variant="body2" color="warning.main">
@@ -235,6 +240,7 @@ export default function LandingPage() {
                                   variant="contained"
                                   startIcon={<LoginRoundedIcon />}
                                   onClick={() => window.location.assign(api.signInUrl(server.id))}
+                                  disabled={!redirectSignInEnabled}
                                 >
                                   Sign In via TWC
                                 </Button>
@@ -272,13 +278,13 @@ export default function LandingPage() {
                 <Typography variant="h5">Operational Guidance</Typography>
                 <Stack spacing={1.5} sx={{ mt: 2 }}>
                   <Typography variant="body2" color="text.secondary">
-                    Preset servers are visible before login so users can choose the target Teamwork Cloud server first. App authentication is completed only after the selected server authenticates the user.
+                    Preset servers are visible before login so users can choose the target Teamwork Cloud server first. Redirect sign-in completes only after the selected server's auth service redirects back to this app callback.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Reuse the browser’s existing TWC session when this app is deployed behind the same cookie domain or a trusted reverse proxy that forwards the TWC session cookie.
+                    Cross-host redirect login does not assume the browser shares Teamwork Cloud session cookies with this app host.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    When session reuse is not available, provide a user-scoped Teamwork Cloud token. The backend validates it against TWC before opening a workbench session.
+                    Use TWC Token remains supported as the cross-host fallback because it is header-based. The backend validates that token against the selected Teamwork Cloud server before opening a workbench session.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Preset server definitions are global and admin-managed. Users do not edit `.env` and do not create their own target servers on the landing page.

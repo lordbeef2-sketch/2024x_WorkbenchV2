@@ -208,6 +208,25 @@ class PlatformService:
             log_event="token-login-complete",
         )
 
+    async def login_with_token_bundle(
+        self,
+        server_id: str,
+        token_bundle: TokenBundle,
+        *,
+        preferred_username: str | None = None,
+        upstream_roles: list[str] | None = None,
+        upstream_groups: list[str] | None = None,
+    ) -> SessionData:
+        server = self._require_server(server_id, include_disabled=False)
+        return await self._create_authenticated_session(
+            server,
+            token_bundle,
+            fallback_username=preferred_username,
+            upstream_roles=upstream_roles,
+            upstream_groups=upstream_groups,
+            log_event="redirect-login-complete",
+        )
+
     def get_session_snapshot(self, session_id: str | None) -> SessionSnapshot:
         session = self.sessions.get_session(session_id)
         snapshot = self.sessions.snapshot(session)
@@ -598,10 +617,13 @@ class PlatformService:
 
 class ApplicationContainer:
     def __init__(self, settings: Settings) -> None:
+        from app.auth.oauth import OAuthService
+
         self.settings = settings
         self.repo = SqliteRepository(settings.resolved_database_path)
         self.repo.sync_servers(settings.twc_preset_servers)
         self.sessions = SessionManager(settings)
+        self.oauth = OAuthService(settings)
         self.jobs = JobCoordinator(self.repo)
         self.publisher = build_publisher(settings)
         self.platform = PlatformService(
