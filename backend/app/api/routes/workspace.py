@@ -12,12 +12,18 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 
 @router.get("/dashboard")
 async def dashboard(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
-    return await container.platform.dashboard(session)
+    try:
+        return await container.platform.dashboard(session)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
 @router.get("/projects")
 async def projects(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
-    return await container.platform.list_projects(session)
+    try:
+        return await container.platform.list_projects(session)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
 @router.patch("/projects/{project_id}/branches/{branch_id}")

@@ -277,11 +277,13 @@ export default function WorkspacePage() {
   const dashboardQuery = useQuery({
     queryKey: ["dashboard"],
     queryFn: api.getDashboard,
+    retry: false,
   });
 
   const projectsQuery = useQuery({
     queryKey: ["projects"],
     queryFn: api.getProjects,
+    retry: false,
   });
 
   const treeQuery = useQuery({
@@ -689,6 +691,8 @@ export default function WorkspacePage() {
   };
 
   const activeJobs = (jobsQuery.data ?? []).filter((job) => job.status === "running" || job.status === "pending");
+  const dashboardErrorMessage = dashboardQuery.error ? notificationMessage(dashboardQuery.error) : null;
+  const projectsErrorMessage = projectsQuery.error ? notificationMessage(projectsQuery.error) : null;
 
   const handleItemSave = async () => {
     try {
@@ -945,13 +949,15 @@ export default function WorkspacePage() {
           <Divider />
           <Box sx={{ p: 2.5, overflow: "auto", minHeight: 0, flex: 1 }}>
             {banner ? <Alert severity={banner.severity} sx={{ mb: 2 }}>{banner.message}</Alert> : null}
+            {dashboardErrorMessage ? <Alert severity="error" sx={{ mb: 2 }}>Dashboard data could not be loaded from Teamwork Cloud: {dashboardErrorMessage}</Alert> : null}
+            {projectsErrorMessage ? <Alert severity="error" sx={{ mb: 2 }}>Project listing failed: {projectsErrorMessage}</Alert> : null}
 
             {selectedTab === "dashboard" ? (
               <Stack spacing={2.5}>
                 <Typography variant="h4">Workspace Dashboard</Typography>
                 <Grid container spacing={2}>
                   <Grid item xs={12} md={6} xl={3}>
-                    <MetricCard label="Projects" value={String((dashboardQuery.data?.projects ?? []).length)} caption="Projects visible to the active Teamwork Cloud session." />
+                    <MetricCard label="Projects" value={dashboardQuery.isError ? "Unavailable" : String((dashboardQuery.data?.projects ?? []).length)} caption="Projects visible to the active Teamwork Cloud session." />
                   </Grid>
                   <Grid item xs={12} md={6} xl={3}>
                     <MetricCard label="Active Jobs" value={String(activeJobs.length)} caption="Simulation, publish, and export work currently running." />
@@ -1071,31 +1077,51 @@ export default function WorkspacePage() {
             {selectedTab === "projects" ? (
               <Stack spacing={2.5}>
                 <Typography variant="h4">Project Browser</Typography>
-                <Grid container spacing={2}>
-                  {(projectsQuery.data ?? []).map((project) => (
-                    <Grid item xs={12} md={6} key={project.id}>
-                      <Card sx={{ borderRadius: 5, height: "100%" }}>
-                        <CardContent>
-                          <Stack spacing={1.5}>
-                            <Stack direction="row" justifyContent="space-between" alignItems="center">
-                              <Typography variant="h5">{project.name}</Typography>
-                              <Chip size="small" label={project.favorite ? "favorite" : "project"} />
+                {projectsQuery.isLoading ? (
+                  <Paper sx={{ p: 4, borderRadius: 5 }}>
+                    <Typography color="text.secondary">Loading Teamwork Cloud projects...</Typography>
+                  </Paper>
+                ) : projectsQuery.isError ? (
+                  <Paper sx={{ p: 4, borderRadius: 5 }}>
+                    <Typography variant="h6">Project data is unavailable</Typography>
+                    <Typography color="text.secondary" sx={{ mt: 1 }}>
+                      The app did not switch to the 2-project demo fallback for this authenticated session. Check the error banner and backend logs for the failed TWC project request path.
+                    </Typography>
+                  </Paper>
+                ) : !(projectsQuery.data ?? []).length ? (
+                  <Paper sx={{ p: 4, borderRadius: 5 }}>
+                    <Typography variant="h6">No projects returned</Typography>
+                    <Typography color="text.secondary" sx={{ mt: 1 }}>
+                      Teamwork Cloud accepted the session but returned no visible projects for this user.
+                    </Typography>
+                  </Paper>
+                ) : (
+                  <Grid container spacing={2}>
+                    {(projectsQuery.data ?? []).map((project) => (
+                      <Grid item xs={12} md={6} key={project.id}>
+                        <Card sx={{ borderRadius: 5, height: "100%" }}>
+                          <CardContent>
+                            <Stack spacing={1.5}>
+                              <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                <Typography variant="h5">{project.name}</Typography>
+                                <Chip size="small" label={project.favorite ? "favorite" : "project"} />
+                              </Stack>
+                              <Typography color="text.secondary">{project.description}</Typography>
+                              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                {project.branches.map((branch) => (
+                                  <Chip key={branch.id} label={branch.name} variant={branch.id === selectedBranchId && project.id === selectedProjectId ? "filled" : "outlined"} />
+                                ))}
+                              </Stack>
+                              <Button variant="contained" onClick={() => updateParams({ project: project.id, branch: project.branches[0]?.id, tab: "models" })}>
+                                Open Project
+                              </Button>
                             </Stack>
-                            <Typography color="text.secondary">{project.description}</Typography>
-                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                              {project.branches.map((branch) => (
-                                <Chip key={branch.id} label={branch.name} variant={branch.id === selectedBranchId && project.id === selectedProjectId ? "filled" : "outlined"} />
-                              ))}
-                            </Stack>
-                            <Button variant="contained" onClick={() => updateParams({ project: project.id, branch: project.branches[0]?.id, tab: "models" })}>
-                              Open Project
-                            </Button>
-                          </Stack>
-                        </CardContent>
-                      </Card>
-                    </Grid>
-                  ))}
-                </Grid>
+                          </CardContent>
+                        </Card>
+                      </Grid>
+                    ))}
+                  </Grid>
+                )}
               </Stack>
             ) : null}
 

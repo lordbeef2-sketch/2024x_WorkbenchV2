@@ -157,7 +157,7 @@ class Settings(BaseSettings):
         allowed = {name.strip() for name in self.upstream_auth_cookie_names if name.strip()}
         if allowed:
             return {name: value for name, value in cookies.items() if name in allowed}
-        excluded = {self.session_cookie_name, self.pending_server_cookie_name}
+        excluded = {self.session_cookie_name, self.pending_server_cookie_name, self.auth_state_cookie_name}
         return {name: value for name, value in cookies.items() if name not in excluded}
 
     def extract_upstream_username(self, headers: Mapping[str, str]) -> str | None:

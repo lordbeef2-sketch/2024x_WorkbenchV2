@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
+import structlog
 
 from app.models.domain import (
     AttachmentInfo,
@@ -39,6 +40,8 @@ from app.models.domain import BranchSummary, TokenBundle
 
 ProgressReporter = Callable[[int, str], Awaitable[None]]
 CancelChecker = Callable[[], bool]
+
+logger = structlog.get_logger(__name__)
 
 
 UUID_PATTERN = re.compile(
@@ -157,6 +160,31 @@ def _ldp_member_ids(payload: dict[str, Any]) -> list[str]:
             identifier = _reference_id(member)
             if identifier and identifier != "it" and identifier not in identifiers:
                 identifiers.append(identifier)
+    return identifiers
+
+
+def _dict_items(payload: Any, *keys: str) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    if candidates := _first_list(payload, *keys):
+        return [item for item in candidates if isinstance(item, dict)]
+    return [payload]
+
+
+def _entity_reference_ids(payload: Any, *keys: str) -> list[str]:
+    identifiers = _ldp_member_ids(payload if isinstance(payload, dict) else {}) if isinstance(payload, dict) else []
+    for entry in _dict_items(payload, *keys):
+        identifier = _reference_id(
+            entry.get("@id")
+            or entry.get("id")
+            or entry.get("resource")
+            or entry.get("kerml:resource")
+            or entry.get("href")
+        )
+        if identifier and identifier != "it" and identifier not in identifiers:
+            identifiers.append(identifier)
     return identifiers
 
 
@@ -528,6 +556,7 @@ class TeamworkAdapter:
         self.context = context
         self.fallback = FallbackWorkspaceStore(context.storage_dir, context.server.id)
         self._detected_version: str | None = None
+        self._last_project_list_issue: str | None = None
         self.verify = (
             context.server.ca_bundle_path if context.server.verify_tls and context.server.ca_bundle_path else context.server.verify_tls
         )
@@ -662,6 +691,58 @@ class TeamworkAdapter:
         if response.status_code in {401, 403}:
             return {"restricted": True, "status_code": response.status_code}
         return self._decode_response(response)
+
+    async def _request_candidates_with_trace(
+        self,
+        method: str,
+        candidates: list[str],
+        *,
+        timeout: float = 20.0,
+    ) -> tuple[dict[str, Any] | list[Any] | None, dict[str, Any]]:
+        attempts: list[dict[str, Any]] = []
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout,
+            "verify": self.verify,
+            "follow_redirects": True,
+        }
+        if self.context.tokens.session_cookies:
+            client_kwargs["cookies"] = self.context.tokens.session_cookies
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            for candidate in candidates:
+                url = self._candidate_url(candidate)
+                headers = dict(self.headers)
+                try:
+                    response = await client.request(method, url, headers=headers)
+                except httpx.HTTPError as exc:
+                    attempts.append({"candidate": candidate, "error": str(exc)})
+                    continue
+
+                attempts.append({"candidate": candidate, "status_code": response.status_code})
+                if 200 <= response.status_code < 300 or response.status_code in {401, 403}:
+                    if response.status_code in {401, 403}:
+                        return {"restricted": True, "status_code": response.status_code}, {
+                            "selected_candidate": candidate,
+                            "status_code": response.status_code,
+                            "attempts": attempts,
+                        }
+                    return self._decode_response(response), {
+                        "selected_candidate": candidate,
+                        "status_code": response.status_code,
+                        "attempts": attempts,
+                    }
+
+        return None, {"selected_candidate": None, "status_code": None, "attempts": attempts}
+
+    def _trace_summary(self, trace: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for attempt in trace.get("attempts", []):
+            candidate = str(attempt.get("candidate") or "unknown")
+            if attempt.get("status_code") is not None:
+                parts.append(f"{candidate} -> HTTP {attempt['status_code']}")
+            elif attempt.get("error"):
+                parts.append(f"{candidate} -> {attempt['error']}")
+        return "; ".join(parts) or "no usable candidate response"
 
     def _extract_current_username(self, payload: Any) -> str | None:
         candidates: list[dict[str, Any]] = []
@@ -944,14 +1025,18 @@ class TeamworkAdapter:
             }
         )
 
-    async def _list_remote_branches(self, resource_id: str) -> list[BranchSummary]:
-        payload = await self._request_candidates("GET", [f"/osmc/resources/{resource_id}/branches"])
+    async def _list_remote_branches(self, resource_id: str, workspace_id: str | None = None) -> list[BranchSummary]:
+        candidates = [f"/osmc/resources/{resource_id}/branches"]
+        if workspace_id:
+            candidates.insert(0, f"/osmc/workspaces/{workspace_id}/resources/{resource_id}/branches")
+
+        payload = await self._request_candidates("GET", candidates)
         if payload is None:
             return []
         branch_ids = _ldp_member_ids(payload)
         branches: list[BranchSummary] = []
         for branch_id in branch_ids:
-            detail = await self._request_candidates("GET", self.branch_candidates(resource_id, branch_id))
+            detail = await self._request_candidates("GET", self.branch_candidates(resource_id, branch_id, workspace_id))
             branch_payload = _payload_entity(detail, "branch")
             if branch_payload is not None:
                 branches.append(
@@ -966,15 +1051,89 @@ class TeamworkAdapter:
         return branches
 
     async def _list_remote_projects(self) -> list[ProjectSummary]:
-        payload = await self._request_candidates("GET", ["/osmc/resources"])
+        self._last_project_list_issue = None
+        resource_payloads: list[tuple[str | None, Any]] = []
+        issues: list[str] = []
+
+        payload, payload_trace = await self._request_candidates_with_trace("GET", ["/osmc/resources"])
         if payload is None:
+            issues.append(f"/osmc/resources did not return a usable response ({self._trace_summary(payload_trace)})")
+            logger.warning("twc-project-list-root-failed", server_id=self.context.server.id, trace=payload_trace)
+        elif isinstance(payload, dict) and payload.get("restricted"):
+            issues.append(f"/osmc/resources returned HTTP {payload.get('status_code')} for the active Teamwork Cloud session")
+            logger.warning("twc-project-list-root-restricted", server_id=self.context.server.id, trace=payload_trace)
+        else:
+            resource_payloads.append((self._workspace_id_from_payload(payload), payload))
+
+        workspace_payload, workspace_trace = await self._request_candidates_with_trace("GET", ["/osmc/workspaces"])
+        if workspace_payload is None:
+            logger.info("twc-project-list-workspaces-unavailable", server_id=self.context.server.id, trace=workspace_trace)
+        elif isinstance(workspace_payload, dict) and workspace_payload.get("restricted"):
+            logger.info("twc-project-list-workspaces-restricted", server_id=self.context.server.id, trace=workspace_trace)
+        else:
+            workspace_ids: list[str] = []
+            for entry in _dict_items(workspace_payload, "ldp:contains", "workspaces", "items", "data"):
+                workspace_id = self._workspace_id_from_payload(entry) or _reference_id(entry.get("@id") or entry.get("id") or entry.get("href"))
+                if workspace_id and workspace_id not in workspace_ids:
+                    workspace_ids.append(workspace_id)
+            for workspace_id in workspace_ids:
+                workspace_resources, workspace_resources_trace = await self._request_candidates_with_trace("GET", [f"/osmc/workspaces/{workspace_id}/resources"])
+                if workspace_resources is None:
+                    logger.info(
+                        "twc-project-list-workspace-resources-unavailable",
+                        server_id=self.context.server.id,
+                        workspace_id=workspace_id,
+                        trace=workspace_resources_trace,
+                    )
+                    continue
+                if isinstance(workspace_resources, dict) and workspace_resources.get("restricted"):
+                    logger.warning(
+                        "twc-project-list-workspace-resources-restricted",
+                        server_id=self.context.server.id,
+                        workspace_id=workspace_id,
+                        trace=workspace_resources_trace,
+                    )
+                    continue
+                if workspace_resources:
+                    resource_payloads.append((workspace_id, workspace_resources))
+
+        if not resource_payloads:
+            self._last_project_list_issue = issues[-1] if issues else "Teamwork Cloud project listing did not return any usable remote project endpoint responses"
+            logger.warning("twc-project-list-remote-unavailable", server_id=self.context.server.id, issue=self._last_project_list_issue)
             return []
-        resource_ids = _ldp_member_ids(payload)
+
+        resource_ids: list[str] = []
+        resource_entries: dict[str, dict[str, Any]] = {}
+        resource_workspaces: dict[str, str | None] = {}
+        for workspace_id, resource_payload in resource_payloads:
+            for resource_id in _entity_reference_ids(resource_payload, "ldp:contains", "resources", "items", "data"):
+                if resource_id not in resource_ids:
+                    resource_ids.append(resource_id)
+                if workspace_id and resource_id not in resource_workspaces:
+                    resource_workspaces[resource_id] = workspace_id
+            for entry in _dict_items(resource_payload, "ldp:contains", "resources", "items", "data"):
+                resource_id = _reference_id(entry.get("@id") or entry.get("id") or entry.get("resource") or entry.get("kerml:resource"))
+                if not resource_id:
+                    continue
+                resource_entries.setdefault(resource_id, entry)
+                if workspace_id and resource_id not in resource_workspaces:
+                    resource_workspaces[resource_id] = workspace_id
+
+        if not resource_ids:
+            self._last_project_list_issue = "Teamwork Cloud project listing returned a response but no resource identifiers were extracted from it"
+            logger.warning("twc-project-list-empty", server_id=self.context.server.id, issue=self._last_project_list_issue)
+            return []
+
         projects: list[ProjectSummary] = []
         for resource_id in resource_ids:
-            detail = await self._request_candidates("GET", [f"/osmc/resources/{resource_id}"])
-            detail_payload = _payload_entity(detail, "resource") or {}
-            branches = await self._list_remote_branches(resource_id)
+            workspace_id = resource_workspaces.get(resource_id)
+            detail_candidates = [f"/osmc/resources/{resource_id}"]
+            if workspace_id:
+                detail_candidates.insert(0, f"/osmc/workspaces/{workspace_id}/resources/{resource_id}")
+            detail = await self._request_candidates("GET", detail_candidates)
+            detail_payload = _payload_entity(detail, "resource") or resource_entries.get(resource_id, {})
+            workspace_id = workspace_id or self._workspace_id_from_payload(detail_payload)
+            branches = await self._list_remote_branches(resource_id, workspace_id)
             if not branches:
                 branches = [BranchSummary(id="main", name="main", description="Default branch placeholder")]
             projects.append(
@@ -986,6 +1145,13 @@ class TeamworkAdapter:
                     branches=branches,
                 )
             )
+
+        logger.info(
+            "twc-project-list-remote",
+            server_id=self.context.server.id,
+            raw_count=len(resource_ids),
+            delivered_count=len(projects),
+        )
         return projects
 
     def _model_tree_node(self, model_id: str, payload: dict[str, Any], project_id: str, branch_id: str) -> TreeNode:
@@ -1372,28 +1538,62 @@ class TeamworkAdapter:
         return self.fallback.save_item(item.model_copy(update=overlay_fields))
 
     async def list_projects(self) -> list[ProjectSummary]:
-        remote_projects = await self._list_remote_projects()
-        if remote_projects:
-            return remote_projects
+        try:
+            remote_projects = await self._list_remote_projects()
+            if remote_projects:
+                logger.info("Fetched projects from TWC", server_id=self.context.server.id, fetched_count=len(remote_projects))
+                return remote_projects
 
-        payload = await self._request_candidates("GET", self.project_candidates())
-        if isinstance(payload, dict):
-            items = _first_list(payload, "projects", "items", "data")
-            if items is not None:
-                projects = []
-                for item in items:
-                    projects.append(
-                        ProjectSummary(
-                            id=str(item.get("id") or item.get("projectId") or uuid4().hex),
-                            name=str(item.get("name") or item.get("title") or "Unnamed Project"),
-                            description=str(item.get("description") or item.get("summary") or ""),
-                            favorite=False,
-                            branches=[BranchSummary(id="main", name="main", description="Default branch")],
+            payload, generic_trace = await self._request_candidates_with_trace("GET", self.project_candidates())
+            if isinstance(payload, dict):
+                items = _first_list(payload, "projects", "items", "data")
+                if items is not None:
+                    projects = []
+                    for item in items:
+                        projects.append(
+                            ProjectSummary(
+                                id=str(item.get("id") or item.get("projectId") or uuid4().hex),
+                                name=str(item.get("name") or item.get("title") or "Unnamed Project"),
+                                description=str(item.get("description") or item.get("summary") or ""),
+                                favorite=False,
+                                branches=[BranchSummary(id="main", name="main", description="Default branch")],
+                            )
                         )
-                    )
-                if projects:
-                    return projects
-        return self.fallback.projects()
+                    if projects:
+                        logger.info(
+                            "twc-project-list-generic",
+                            server_id=self.context.server.id,
+                            raw_count=len(items),
+                            delivered_count=len(projects),
+                            trace=generic_trace,
+                        )
+                        logger.info("Fetched projects from TWC", server_id=self.context.server.id, fetched_count=len(projects))
+                        return projects
+
+            if isinstance(payload, dict) and payload.get("restricted"):
+                self._last_project_list_issue = (
+                    f"Generic project listing candidates returned HTTP {payload.get('status_code')} for the active Teamwork Cloud session"
+                )
+            elif payload is None:
+                self._last_project_list_issue = self._last_project_list_issue or (
+                    f"Generic project listing candidates did not return a usable response ({self._trace_summary(generic_trace)})"
+                )
+            else:
+                self._last_project_list_issue = self._last_project_list_issue or "Teamwork Cloud project listing returned no usable project entries"
+
+            logger.warning(
+                "twc-project-list-no-remote-projects",
+                server_id=self.context.server.id,
+                delivered_count=0,
+                issue=self._last_project_list_issue,
+                trace=generic_trace,
+            )
+            raise RuntimeError("Failed to load projects from TWC")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.exception("TWC project fetch failed", server_id=self.context.server.id)
+            raise RuntimeError("Failed to load projects from TWC") from exc
 
     async def get_model_tree(self, project_id: str | None = None, branch_id: str | None = None) -> list[TreeNode]:
         if project_id and branch_id:

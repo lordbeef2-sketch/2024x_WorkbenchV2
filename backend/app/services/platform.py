@@ -269,6 +269,7 @@ class PlatformService:
     async def dashboard(self, session: SessionData) -> DashboardPayload:
         adapter = self._adapter_for_session(session)
         projects = await adapter.list_projects()
+        logger.info("twc-project-list-dashboard", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
         jobs = self.jobs.list_jobs(session.user.preferred_username)[:8]
         return DashboardPayload(
             projects=projects,
@@ -280,7 +281,9 @@ class PlatformService:
         )
 
     async def list_projects(self, session: SessionData):
-        return await self._adapter_for_session(session).list_projects()
+        projects = await self._adapter_for_session(session).list_projects()
+        logger.info("twc-project-list-ui", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
+        return projects
 
     async def get_model_tree(self, session: SessionData, project_id: str | None, branch_id: str | None):
         return await self._adapter_for_session(session).get_model_tree(project_id, branch_id)
