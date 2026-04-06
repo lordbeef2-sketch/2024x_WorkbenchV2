@@ -600,6 +600,7 @@ class ApplicationContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.repo = SqliteRepository(settings.resolved_database_path)
+        self.repo.sync_servers(settings.twc_preset_servers)
         self.sessions = SessionManager(settings)
         self.jobs = JobCoordinator(self.repo)
         self.publisher = build_publisher(settings)

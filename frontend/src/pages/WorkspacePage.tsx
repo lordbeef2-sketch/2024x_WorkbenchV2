@@ -36,7 +36,6 @@ import {
 import Grid from "@mui/material/GridLegacy";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
-import AdminPanelSettingsRoundedIcon from "@mui/icons-material/AdminPanelSettingsRounded";
 import BookmarkAddRoundedIcon from "@mui/icons-material/BookmarkAddRounded";
 import CompareArrowsRoundedIcon from "@mui/icons-material/CompareArrowsRounded";
 import DownloadRoundedIcon from "@mui/icons-material/DownloadRounded";
@@ -55,7 +54,6 @@ import UploadRoundedIcon from "@mui/icons-material/UploadRounded";
 import CapabilityBadges from "../components/CapabilityBadges";
 import JobStrip from "../components/JobStrip";
 import ProjectTree from "../components/ProjectTree";
-import ServerPresetManagerDialog from "../components/ServerPresetManagerDialog";
 import SettingsDialog from "../components/SettingsDialog";
 import {
   AttachmentInfo,
@@ -229,7 +227,6 @@ export default function WorkspacePage() {
   const [documentDraft, setDocumentDraft] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [serverManagerOpen, setServerManagerOpen] = useState(false);
   const [presentationOpen, setPresentationOpen] = useState(false);
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
   const [documentEditMode, setDocumentEditMode] = useState(false);
@@ -596,7 +593,7 @@ export default function WorkspacePage() {
       updateParams(
         {
           project: project.id,
-          branch: branch?.id ?? "main",
+          branch: branch?.id,
         },
         true,
       );
@@ -786,15 +783,6 @@ export default function WorkspacePage() {
           >
             Switch Server
           </Button>
-          {session?.can_manage_server_presets ? (
-            <Button
-              variant="outlined"
-              startIcon={<AdminPanelSettingsRoundedIcon />}
-              onClick={() => setServerManagerOpen(true)}
-            >
-              Manage Presets
-            </Button>
-          ) : null}
           <Tooltip title="Refresh capabilities and workspace state">
             <span>
               <IconButton onClick={() => refreshCapabilityMutation.mutate()} disabled={refreshCapabilityMutation.isPending}>
@@ -1915,14 +1903,6 @@ export default function WorkspacePage() {
           await saveSettingsMutation.mutateAsync(preferences);
         }}
       />
-
-      {session?.csrf_token ? (
-        <ServerPresetManagerDialog
-          open={serverManagerOpen}
-          onClose={() => setServerManagerOpen(false)}
-          csrfToken={session.csrf_token}
-        />
-      ) : null}
 
       <Dialog open={branchDialogOpen} onClose={() => setBranchDialogOpen(false)} fullWidth maxWidth="sm">
         <Box sx={{ p: 3 }}>

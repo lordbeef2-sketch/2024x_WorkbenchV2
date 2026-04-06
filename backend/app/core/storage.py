@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 from typing import Iterable
 
-from app.models.domain import JobRecord, ServerProfile, UserServerState, utcnow
+from app.models.domain import JobRecord, PresetServerDefinition, ServerProfile, UserServerState, utcnow
 
 
 class SqliteRepository:
@@ -95,6 +95,41 @@ class SqliteRepository:
             connection.commit()
         return self.list_servers(include_disabled=True)
 
+    def sync_servers(self, definitions: Iterable[PresetServerDefinition]) -> list[ServerProfile]:
+        items = list(definitions)
+        valid_server_ids = {item.id for item in items}
+        existing_servers = {server.id: server for server in self.list_servers(include_disabled=True)}
+        synced_servers: list[ServerProfile] = []
+
+        for definition in items:
+            current = existing_servers.get(definition.id)
+            synced_servers.append(
+                ServerProfile(
+                    id=definition.id,
+                    name=definition.name,
+                    base_url=definition.base_url,
+                    version=definition.version,
+                    verify_tls=definition.verify_tls,
+                    ca_bundle_path=definition.ca_bundle_path,
+                    enabled=definition.enabled,
+                    display_order=definition.display_order,
+                    created_at=current.created_at if current else utcnow(),
+                    updated_at=current.updated_at if current else utcnow(),
+                )
+            )
+
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM servers")
+            if synced_servers:
+                connection.executemany(
+                    "INSERT OR REPLACE INTO servers (id, payload) VALUES (?, ?)",
+                    [(server.id, server.model_dump_json()) for server in synced_servers],
+                )
+            self._prune_invalid_user_server_state(connection, valid_server_ids)
+            connection.commit()
+
+        return self.list_servers(include_disabled=True)
+
     def next_server_display_order(self) -> int:
         servers = self.list_servers(include_disabled=True)
         if not servers:
@@ -138,6 +173,32 @@ class SqliteRepository:
                 state.last_used_server_id = None
                 changed = True
             favorite_ids = [value for value in state.favorite_server_ids if value != server_id]
+            if favorite_ids != state.favorite_server_ids:
+                state.favorite_server_ids = favorite_ids
+                changed = True
+            if changed:
+                state.updated_at = utcnow()
+                updates.append((state.user_id, state.model_dump_json()))
+
+        if updates:
+            connection.executemany(
+                "INSERT OR REPLACE INTO user_server_state (user_id, payload) VALUES (?, ?)",
+                updates,
+            )
+
+    def _prune_invalid_user_server_state(self, connection: sqlite3.Connection, valid_server_ids: set[str]) -> None:
+        rows = connection.execute("SELECT user_id, payload FROM user_server_state").fetchall()
+        updates: list[tuple[str, str]] = []
+        for row in rows:
+            state = UserServerState.model_validate_json(row["payload"])
+            changed = False
+            if state.selected_server_id and state.selected_server_id not in valid_server_ids:
+                state.selected_server_id = None
+                changed = True
+            if state.last_used_server_id and state.last_used_server_id not in valid_server_ids:
+                state.last_used_server_id = None
+                changed = True
+            favorite_ids = [value for value in state.favorite_server_ids if value in valid_server_ids]
             if favorite_ids != state.favorite_server_ids:
                 state.favorite_server_ids = favorite_ids
                 changed = True

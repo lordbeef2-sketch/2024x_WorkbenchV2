@@ -115,6 +115,10 @@ class ServerProfile(ServerProfileBase):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class PresetServerDefinition(ServerProfileBase):
+    id: str
+
+
 class ServerProfileReorderRequest(BaseModel):
     server_ids: list[str] = Field(default_factory=list)
 

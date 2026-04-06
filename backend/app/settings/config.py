@@ -9,6 +9,8 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.models.domain import PresetServerDefinition
+
 
 class Settings(BaseSettings):
     app_name: str = "TWC Workbench"
@@ -24,6 +26,7 @@ class Settings(BaseSettings):
     session_secret: str = "replace-this-in-production-with-32-random-bytes"
     session_cookie_name: str = "twc_session"
     pending_server_cookie_name: str = "twc_pending_server"
+    twc_preset_servers: list[PresetServerDefinition] = Field(default_factory=list)
     session_ttl_minutes: int = 480
     secure_cookies: bool = False
     csrf_header_name: str = "X-CSRF-Token"
@@ -73,6 +76,37 @@ class Settings(BaseSettings):
     def blank_paths_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("twc_preset_servers", mode="before")
+    @classmethod
+    def parse_twc_preset_servers(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("TWC_PRESET_SERVERS must be a JSON array of preset server objects") from exc
+            if not isinstance(payload, list):
+                raise ValueError("TWC_PRESET_SERVERS must be a JSON array of preset server objects")
+            return payload
+        return value
+
+    @field_validator("twc_preset_servers")
+    @classmethod
+    def validate_unique_twc_preset_server_ids(
+        cls,
+        value: list[PresetServerDefinition],
+    ) -> list[PresetServerDefinition]:
+        ids: set[str] = set()
+        for item in value:
+            if item.id in ids:
+                raise ValueError(f"TWC_PRESET_SERVERS contains a duplicate id: {item.id}")
+            ids.add(item.id)
         return value
 
     @property

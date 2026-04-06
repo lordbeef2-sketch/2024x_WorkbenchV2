@@ -8,6 +8,10 @@ from app.services.platform import ApplicationContainer
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
+PRESET_CATALOG_MUTATION_DETAIL = (
+    "Preset servers are loaded from TWC_PRESET_SERVERS in backend/.env at startup. Edit that setting and restart the app to change the pre-login catalog."
+)
+
 
 @router.get("")
 def list_servers(container: ApplicationContainer = Depends(get_container)):
@@ -28,7 +32,7 @@ def create_server(
     _session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
-    return container.platform.create_server(payload)
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PRESET_CATALOG_MUTATION_DETAIL)
 
 
 @router.post("/reorder")
@@ -37,10 +41,7 @@ def reorder_servers(
     _session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
-    try:
-        return container.platform.reorder_servers(payload)
-    except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found") from exc
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PRESET_CATALOG_MUTATION_DETAIL)
 
 
 @router.put("/{server_id}")
@@ -50,10 +51,7 @@ def update_server(
     _session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
-    try:
-        return container.platform.update_server(server_id, payload)
-    except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found") from exc
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PRESET_CATALOG_MUTATION_DETAIL)
 
 
 @router.delete("/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -62,9 +60,7 @@ def delete_server(
     _session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
-    if not container.platform.delete_server(server_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
-    return None
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PRESET_CATALOG_MUTATION_DETAIL)
 
 
 @router.get("/{server_id}/health")

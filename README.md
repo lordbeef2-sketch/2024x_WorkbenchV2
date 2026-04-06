@@ -60,9 +60,10 @@ powershell -ExecutionPolicy Bypass -File .\launch.ps1
 
 Copy `backend/.env.example` to `backend/.env` and set values appropriate for your environment.
 
-`backend/.env` is only for app-level runtime settings. Do not define a single active Teamwork Cloud server in `.env`.
-This application stores Teamwork Cloud connections as admin-managed preset servers inside the app, each with values such as `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
-Administrators can add, edit, disable, delete, and reorder presets at runtime without rebuilding the frontend or editing environment files. Users only select from enabled presets and the app persists each user’s selected and last-used server state separately.
+`backend/.env` remains the app runtime configuration file, and it also carries the preset Teamwork Cloud catalog through `TWC_PRESET_SERVERS`.
+`TWC_PRESET_SERVERS` is the authoritative JSON catalog for pre-login Teamwork Cloud discovery. Each preset includes `id`, `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
+The backend loads that catalog at startup and exposes enabled presets on the landing page before authentication. Users do not create their own target servers just to connect; the app persists only each user’s selected and last-used server state separately.
+To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` and restart the backend.
 Preset-management authorization is derived from Teamwork Cloud or trusted reverse-proxy role and group context. When no upstream role or group claims are available, the app defaults to allowing authenticated users rather than maintaining a separate authorization list.
 
 Important settings:
@@ -70,6 +71,7 @@ Important settings:
 - `HOST`: bind address for this app only. Use `0.0.0.0`, `127.0.0.1`, or a local interface IP. Do not put the Teamwork Cloud FQDN here.
 - `FRONTEND_ORIGIN`: allowed browser origin for local development or deployment.
 - `SESSION_SECRET`: replace with a long random secret in every non-local environment. It encrypts stored per-user delegated credentials inside the app session.
+- `TWC_PRESET_SERVERS`: JSON array of preset Teamwork Cloud servers loaded at startup for pre-login discovery.
 - `SECURE_COOKIES=true`: required when running behind HTTPS.
 - `UPSTREAM_AUTH_COOKIE_NAMES`: optional JSON array of TWC cookie names to forward. Leave empty to forward all incoming cookies except the app's own session cookie.
 - `UPSTREAM_USER_HEADERS`: optional JSON array of trusted reverse-proxy user headers.
@@ -81,7 +83,7 @@ Important settings:
 - `PUBLISHER_COMMAND`: used when `PUBLISHER_MODE=cli`.
 - `PUBLISHER_WEBHOOK_URL`: used when `PUBLISHER_MODE=webhook`.
 
-Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured inside the application, not through `HOST`.
+Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through `TWC_PRESET_SERVERS`, not through `HOST`.
 
 The launch scripts read `HOST` and `PORT` from `backend/.env` by default. Command-line launch options override them when provided.
 
@@ -215,7 +217,7 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 ## TWC Authentication Configuration Notes
 
 - TWC is the authentication and authorization authority for this app.
-- Preset Teamwork Cloud servers are global app data and are readable on the landing page before app login.
+- Preset Teamwork Cloud servers are loaded from `TWC_PRESET_SERVERS` at startup and are readable on the landing page before app login.
 - Users select a preset server first, then authenticate against that selected Teamwork Cloud server.
 - The post-login app session is bound to the selected server, not the other way around.
 - The preferred deployment mode is to forward the existing TWC browser session cookie to this app and let the backend replay it to TWC with the user’s own permissions.
