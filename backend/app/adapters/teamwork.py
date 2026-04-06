@@ -63,6 +63,18 @@ def _first_list(payload: dict[str, Any], *keys: str) -> list[Any] | None:
     return None
 
 
+def _first_list_recursive(payload: dict[str, Any], *keys: str) -> list[Any] | None:
+    direct = _first_list(payload, *keys)
+    if direct is not None:
+        return direct
+    for value in payload.values():
+        if isinstance(value, dict):
+            nested = _first_list_recursive(value, *keys)
+            if nested is not None:
+                return nested
+    return None
+
+
 def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
@@ -92,8 +104,29 @@ def _payload_list(payload: Any, *keys: str) -> list[Any] | None:
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        return _first_list(payload, *keys)
+        return _first_list_recursive(payload, *keys)
     return None
+
+
+def _payload_shape(payload: Any, depth: int = 2) -> Any:
+    if isinstance(payload, dict):
+        if depth <= 0:
+            return {"type": "object", "keys": list(payload.keys())[:20]}
+        summary: dict[str, Any] = {}
+        for key, value in list(payload.items())[:20]:
+            summary[key] = _payload_shape(value, depth - 1)
+        if len(payload) > 20:
+            summary["..."] = f"{len(payload) - 20} more keys"
+        return summary
+    if isinstance(payload, list):
+        if depth <= 0:
+            return {"type": "array", "length": len(payload)}
+        return {
+            "type": "array",
+            "length": len(payload),
+            "sample": [_payload_shape(item, depth - 1) for item in payload[:3]],
+        }
+    return type(payload).__name__
 
 
 def _payload_entity(payload: Any, *markers: str) -> dict[str, Any] | None:
@@ -168,7 +201,7 @@ def _dict_items(payload: Any, *keys: str) -> list[dict[str, Any]]:
         return [item for item in payload if isinstance(item, dict)]
     if not isinstance(payload, dict):
         return []
-    if candidates := _first_list(payload, *keys):
+    if candidates := _first_list_recursive(payload, *keys):
         return [item for item in candidates if isinstance(item, dict)]
     return [payload]
 
@@ -179,6 +212,8 @@ def _entity_reference_ids(payload: Any, *keys: str) -> list[str]:
         identifier = _reference_id(
             entry.get("@id")
             or entry.get("id")
+            or entry.get("resourceId")
+            or entry.get("resourceID")
             or entry.get("resource")
             or entry.get("kerml:resource")
             or entry.get("href")
@@ -186,6 +221,49 @@ def _entity_reference_ids(payload: Any, *keys: str) -> list[str]:
         if identifier and identifier != "it" and identifier not in identifiers:
             identifiers.append(identifier)
     return identifiers
+
+
+def _project_resource_items(payload: Any) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    items = _payload_list(
+        payload,
+        "resources",
+        "items",
+        "data",
+        "results",
+        "entries",
+        "content",
+        "members",
+        "hydra:member",
+        "ldp:contains",
+        "value",
+    )
+    if items is not None:
+        for item in items:
+            if isinstance(item, dict):
+                entries.append(item)
+            elif isinstance(item, str):
+                entries.append({"@id": item})
+    if entries:
+        return entries
+    if isinstance(payload, dict):
+        entity = _payload_entity(payload, "resource")
+        if entity is not None:
+            return [entity]
+    return []
+
+
+def _project_resource_id(payload: dict[str, Any]) -> str | None:
+    return _reference_id(
+        payload.get("id")
+        or payload.get("resourceId")
+        or payload.get("resourceID")
+        or payload.get("@id")
+        or payload.get("resource")
+        or payload.get("kerml:resource")
+        or payload.get("href")
+        or payload.get("url")
+    )
 
 
 def _normalize_types(value: Any) -> list[str]:
@@ -938,6 +1016,10 @@ class TeamworkAdapter:
         entity = _payload_entity(payload)
         if not entity:
             return None
+        for key in ("workspaceId", "workspaceID"):
+            value = entity.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
         for key in ("kerml:resource", "resource", "@base"):
             value = entity.get(key)
             if isinstance(value, dict):
@@ -961,8 +1043,21 @@ class TeamworkAdapter:
         entity = _payload_entity(payload) or {}
         esi_data = entity.get("kerml:esiData")
         if isinstance(esi_data, dict):
-            return _first_text(esi_data.get("name"), entity.get("kerml:name"), entity.get("dcterms:title"), entity.get("name"), entity.get("title"))
-        return _first_text(entity.get("kerml:name"), entity.get("dcterms:title"), entity.get("name"), entity.get("title"))
+            return _first_text(
+                esi_data.get("name"),
+                entity.get("kerml:name"),
+                entity.get("dcterms:title"),
+                entity.get("name"),
+                entity.get("label"),
+                entity.get("title"),
+            )
+        return _first_text(
+            entity.get("kerml:name"),
+            entity.get("dcterms:title"),
+            entity.get("name"),
+            entity.get("label"),
+            entity.get("title"),
+        )
 
     def _extract_description(self, payload: dict[str, Any]) -> str:
         entity = _payload_entity(payload) or {}
@@ -1106,32 +1201,50 @@ class TeamworkAdapter:
         resource_entries: dict[str, dict[str, Any]] = {}
         resource_workspaces: dict[str, str | None] = {}
         for workspace_id, resource_payload in resource_payloads:
-            for resource_id in _entity_reference_ids(resource_payload, "ldp:contains", "resources", "items", "data"):
+            for entry in _project_resource_items(resource_payload):
+                resource_id = _project_resource_id(entry)
+                if not resource_id:
+                    logger.warning(
+                        "twc-project-list-skip-resource-without-id",
+                        server_id=self.context.server.id,
+                        workspace_id=workspace_id,
+                        entry_shape=_payload_shape(entry),
+                        raw_entry=entry,
+                    )
+                    continue
                 if resource_id not in resource_ids:
                     resource_ids.append(resource_id)
-                if workspace_id and resource_id not in resource_workspaces:
-                    resource_workspaces[resource_id] = workspace_id
-            for entry in _dict_items(resource_payload, "ldp:contains", "resources", "items", "data"):
-                resource_id = _reference_id(entry.get("@id") or entry.get("id") or entry.get("resource") or entry.get("kerml:resource"))
-                if not resource_id:
-                    continue
                 resource_entries.setdefault(resource_id, entry)
-                if workspace_id and resource_id not in resource_workspaces:
-                    resource_workspaces[resource_id] = workspace_id
+                resolved_workspace_id = workspace_id or self._workspace_id_from_payload(entry)
+                if resolved_workspace_id and resource_id not in resource_workspaces:
+                    resource_workspaces[resource_id] = resolved_workspace_id
 
         if not resource_ids:
-            self._last_project_list_issue = "Teamwork Cloud project listing returned a response but no resource identifiers were extracted from it"
-            logger.warning("twc-project-list-empty", server_id=self.context.server.id, issue=self._last_project_list_issue)
-            return []
+            self._last_project_list_issue = "No valid projects extracted from TWC response"
+            logger.error(
+                "twc-project-list-parse-failed",
+                server_id=self.context.server.id,
+                issue=self._last_project_list_issue,
+                response_shapes=[
+                    {"workspace_id": workspace_id, "shape": _payload_shape(resource_payload)}
+                    for workspace_id, resource_payload in resource_payloads
+                ],
+                raw_responses=[
+                    {"workspace_id": workspace_id, "payload": resource_payload}
+                    for workspace_id, resource_payload in resource_payloads[:3]
+                ],
+            )
+            raise RuntimeError(self._last_project_list_issue)
 
         projects: list[ProjectSummary] = []
         for resource_id in resource_ids:
             workspace_id = resource_workspaces.get(resource_id)
+            resource_entry = resource_entries.get(resource_id, {})
             detail_candidates = [f"/osmc/resources/{resource_id}"]
             if workspace_id:
                 detail_candidates.insert(0, f"/osmc/workspaces/{workspace_id}/resources/{resource_id}")
             detail = await self._request_candidates("GET", detail_candidates)
-            detail_payload = _payload_entity(detail, "resource") or resource_entries.get(resource_id, {})
+            detail_payload = _payload_entity(detail, "resource") or resource_entry
             workspace_id = workspace_id or self._workspace_id_from_payload(detail_payload)
             branches = await self._list_remote_branches(resource_id, workspace_id)
             if not branches:
@@ -1139,8 +1252,8 @@ class TeamworkAdapter:
             projects.append(
                 ProjectSummary(
                     id=resource_id,
-                    name=self._extract_display_name(detail_payload) or resource_id,
-                    description=self._extract_description(detail_payload),
+                    name=self._extract_display_name(detail_payload) or self._extract_display_name(resource_entry) or "Unnamed",
+                    description=self._extract_description(detail_payload) or self._extract_description(resource_entry),
                     favorite=False,
                     branches=branches,
                 )
