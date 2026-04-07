@@ -194,8 +194,31 @@ export const api = {
   search(query: string) {
     return request<SearchResponse>(`/workspace/search?query=${encodeURIComponent(query)}`);
   },
-  compare(leftId: string, rightId: string) {
-    return request<CompareResult>(`/workspace/compare?leftId=${encodeURIComponent(leftId)}&rightId=${encodeURIComponent(rightId)}`);
+  compare(
+    leftId: string,
+    rightId: string,
+    leftProjectId?: string,
+    leftBranchId?: string,
+    rightProjectId?: string,
+    rightBranchId?: string,
+  ) {
+    const params = new URLSearchParams({
+      leftId,
+      rightId,
+    });
+    if (leftProjectId) {
+      params.set("leftProjectId", leftProjectId);
+    }
+    if (leftBranchId) {
+      params.set("leftBranchId", leftBranchId);
+    }
+    if (rightProjectId) {
+      params.set("rightProjectId", rightProjectId);
+    }
+    if (rightBranchId) {
+      params.set("rightBranchId", rightBranchId);
+    }
+    return request<CompareResult>(`/workspace/compare?${params.toString()}`);
   },
   getSimulationConfigurations(projectId?: string) {
     const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";

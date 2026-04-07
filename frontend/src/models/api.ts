@@ -80,6 +80,8 @@ export interface Bookmark {
   item_id: string;
   item_type: string;
   path: string;
+  project_id?: string | null;
+  branch_id?: string | null;
 }
 
 export interface SavedSearch {
@@ -122,6 +124,9 @@ export interface ProjectSummary {
   description: string;
   favorite: boolean;
   branches: BranchSummary[];
+  workspace_id?: string | null;
+  resource_id?: string | null;
+  categories?: unknown;
 }
 
 export interface TreeNode {
@@ -157,6 +162,10 @@ export interface SearchResult {
   path: string;
   excerpt: string;
   score: number;
+  project_id?: string | null;
+  branch_id?: string | null;
+  document_id?: string | null;
+  target_tab?: "details" | "collaborator";
 }
 
 export interface SearchResponse {
@@ -297,6 +306,8 @@ export interface ExportRequest {
   export_type: "item" | "compare" | "search" | "simulation";
   export_format: ExportFormat;
   reference_id?: string | null;
+  project_id?: string | null;
+  branch_id?: string | null;
   payload: Record<string, unknown>;
 }
 

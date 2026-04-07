@@ -96,10 +96,22 @@ async def search(
 async def compare(
     leftId: str = Query(...),
     rightId: str = Query(...),
+    leftProjectId: str | None = Query(default=None),
+    leftBranchId: str | None = Query(default=None),
+    rightProjectId: str | None = Query(default=None),
+    rightBranchId: str | None = Query(default=None),
     session=Depends(get_session),
     container: ApplicationContainer = Depends(get_container),
 ):
-    return await container.platform.compare_items(session, leftId, rightId)
+    return await container.platform.compare_items(
+        session,
+        leftId,
+        rightId,
+        leftProjectId,
+        leftBranchId,
+        rightProjectId,
+        rightBranchId,
+    )
 
 
 @router.get("/simulations/configurations")

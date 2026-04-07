@@ -307,7 +307,14 @@ class PlatformService:
         item = await self._adapter_for_session(session).get_item(item_id, project_id, branch_id)
         self.sessions.add_recent_item(
             session,
-            Bookmark(title=item.name, item_id=item.id, item_type=item.item_type, path=item.path),
+            Bookmark(
+                title=item.name,
+                item_id=item.id,
+                item_type=item.item_type,
+                path=item.path,
+                project_id=item.project_id,
+                branch_id=item.branch_id,
+            ),
         )
         return item
 
@@ -322,15 +329,38 @@ class PlatformService:
         item = await self._adapter_for_session(session).update_item(item_id, payload, project_id, branch_id)
         self.sessions.add_recent_item(
             session,
-            Bookmark(title=item.name, item_id=item.id, item_type=item.item_type, path=item.path),
+            Bookmark(
+                title=item.name,
+                item_id=item.id,
+                item_type=item.item_type,
+                path=item.path,
+                project_id=item.project_id,
+                branch_id=item.branch_id,
+            ),
         )
         return item
 
     async def search(self, session: SessionData, query: str) -> SearchResponse:
         return await self._adapter_for_session(session).search(query)
 
-    async def compare_items(self, session: SessionData, left_id: str, right_id: str) -> CompareResult:
-        return await self._adapter_for_session(session).compare_items(left_id, right_id)
+    async def compare_items(
+        self,
+        session: SessionData,
+        left_id: str,
+        right_id: str,
+        left_project_id: str | None = None,
+        left_branch_id: str | None = None,
+        right_project_id: str | None = None,
+        right_branch_id: str | None = None,
+    ) -> CompareResult:
+        return await self._adapter_for_session(session).compare_items(
+            left_id,
+            right_id,
+            left_project_id,
+            left_branch_id,
+            right_project_id,
+            right_branch_id,
+        )
 
     async def simulation_configs(self, session: SessionData, project_id: str | None) -> list[SimulationConfig]:
         return await self._adapter_for_session(session).list_simulation_configs(project_id)
@@ -438,7 +468,7 @@ class PlatformService:
 
     async def _resolve_export_payload(self, session: SessionData, request: ExportRequest) -> dict[str, Any]:
         if request.export_type == "item" and request.reference_id:
-            item = await self.get_item(session, request.reference_id)
+            item = await self.get_item(session, request.reference_id, request.project_id, request.branch_id)
             return item.model_dump(mode="json")
         if request.export_type == "compare":
             return request.payload

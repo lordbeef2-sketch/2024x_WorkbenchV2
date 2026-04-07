@@ -182,6 +182,8 @@ class Bookmark(BaseModel):
     item_id: str
     item_type: str
     path: str = ""
+    project_id: str | None = None
+    branch_id: str | None = None
 
 
 class SavedSearch(BaseModel):
@@ -256,6 +258,9 @@ class ProjectSummary(BaseModel):
     description: str = ""
     favorite: bool = False
     branches: list[BranchSummary] = Field(default_factory=list)
+    workspace_id: str | None = None
+    resource_id: str | None = None
+    categories: Any | None = None
 
 
 class TreeNode(BaseModel):
@@ -291,6 +296,10 @@ class SearchResult(BaseModel):
     path: str
     excerpt: str
     score: float
+    project_id: str | None = None
+    branch_id: str | None = None
+    document_id: str | None = None
+    target_tab: Literal["details", "collaborator"] = "details"
 
 
 class SearchResponse(BaseModel):
@@ -402,6 +411,8 @@ class ExportRequest(BaseModel):
     export_type: Literal["item", "compare", "search", "simulation"]
     export_format: Literal["json", "csv", "markdown", "html", "pdf"]
     reference_id: str | None = None
+    project_id: str | None = None
+    branch_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 

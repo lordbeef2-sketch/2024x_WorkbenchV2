@@ -63,6 +63,7 @@ import {
   CompareDifference,
   ItemDetails,
   JobRecord,
+  SearchResult,
   SessionPreferences,
   SimulationConfig,
   SimulationParameter,
@@ -253,6 +254,10 @@ export default function WorkspacePage() {
   const selectedDocumentId = searchParams.get("doc") ?? undefined;
   const compareLeftId = searchParams.get("compareLeft") ?? "";
   const compareRightId = searchParams.get("compareRight") ?? "";
+  const compareLeftProjectId = searchParams.get("compareLeftProject") ?? undefined;
+  const compareLeftBranchId = searchParams.get("compareLeftBranch") ?? undefined;
+  const compareRightProjectId = searchParams.get("compareRightProject") ?? undefined;
+  const compareRightBranchId = searchParams.get("compareRightBranch") ?? undefined;
   const searchQuery = searchParams.get("q") ?? "";
 
   const updateParams = (updates: Record<string, string | undefined>, replace = false) => {
@@ -328,8 +333,24 @@ export default function WorkspacePage() {
   });
 
   const compareQuery = useQuery({
-    queryKey: ["compare", compareLeftId, compareRightId],
-    queryFn: () => api.compare(compareLeftId, compareRightId),
+    queryKey: [
+      "compare",
+      compareLeftId,
+      compareRightId,
+      compareLeftProjectId,
+      compareLeftBranchId,
+      compareRightProjectId,
+      compareRightBranchId,
+    ],
+    queryFn: () =>
+      api.compare(
+        compareLeftId,
+        compareRightId,
+        compareLeftProjectId ?? selectedProjectId,
+        compareLeftBranchId ?? selectedBranchId,
+        compareRightProjectId ?? selectedProjectId,
+        compareRightBranchId ?? selectedBranchId,
+      ),
     enabled: Boolean(compareLeftId && compareRightId),
   });
 
@@ -686,8 +707,37 @@ export default function WorkspacePage() {
     simulationHistoryQuery.data?.find((job) => job.id === simulationCompareRightId),
   );
 
-  const openItem = (itemId: string, targetTab: WorkspaceTab = "details") => {
-    updateParams({ item: itemId, tab: targetTab });
+  const openItem = (
+    itemId: string,
+    targetTab: WorkspaceTab = "details",
+    projectId?: string | null,
+    branchId?: string | null,
+  ) => {
+    updateParams({
+      project: projectId ?? selectedProjectId,
+      branch: branchId ?? selectedBranchId,
+      item: itemId,
+      doc: undefined,
+      tab: targetTab,
+    });
+  };
+
+  const openDocument = (documentId: string, projectId?: string | null, branchId?: string | null) => {
+    updateParams({
+      project: projectId ?? selectedProjectId,
+      branch: branchId ?? selectedBranchId,
+      item: undefined,
+      doc: documentId,
+      tab: "collaborator",
+    });
+  };
+
+  const openSearchResult = (result: SearchResult) => {
+    if (result.target_tab === "collaborator" && result.document_id) {
+      openDocument(result.document_id, result.project_id, result.branch_id);
+      return;
+    }
+    openItem(result.id, "details", result.project_id, result.branch_id);
   };
 
   const activeJobs = (jobsQuery.data ?? []).filter((job) => job.status === "running" || job.status === "pending");
@@ -891,7 +941,7 @@ export default function WorkspacePage() {
               filter={deferredTreeFilter}
               onSelect={(node) => {
                 if (node.node_type !== "package") {
-                  openItem(node.id, "details");
+                  openItem(node.id, "details", node.metadata.project_id ?? selectedProjectId, node.metadata.branch_id ?? selectedBranchId);
                 }
               }}
             />
@@ -903,7 +953,11 @@ export default function WorkspacePage() {
               </Typography>
               <List dense disablePadding>
                 {(session?.bookmarks ?? []).map((bookmark) => (
-                  <ListItemButton key={bookmark.id} onClick={() => openItem(bookmark.item_id, "details")} sx={{ borderRadius: 2 }}>
+                  <ListItemButton
+                    key={bookmark.id}
+                    onClick={() => openItem(bookmark.item_id, "details", bookmark.project_id, bookmark.branch_id)}
+                    sx={{ borderRadius: 2 }}
+                  >
                     <ListItemText primary={bookmark.title} secondary={bookmark.path} />
                   </ListItemButton>
                 ))}
@@ -916,7 +970,11 @@ export default function WorkspacePage() {
               </Typography>
               <List dense disablePadding>
                 {(session?.recent_items ?? []).map((bookmark) => (
-                  <ListItemButton key={bookmark.id} onClick={() => openItem(bookmark.item_id, "details")} sx={{ borderRadius: 2 }}>
+                  <ListItemButton
+                    key={bookmark.id}
+                    onClick={() => openItem(bookmark.item_id, "details", bookmark.project_id, bookmark.branch_id)}
+                    sx={{ borderRadius: 2 }}
+                  >
                     <ListItemText primary={bookmark.title} secondary={bookmark.path} />
                   </ListItemButton>
                 ))}
@@ -1061,7 +1119,11 @@ export default function WorkspacePage() {
                           <Typography variant="h5">Recent Activity</Typography>
                           <List dense disablePadding>
                             {(dashboardQuery.data?.recent_items ?? []).map((item) => (
-                              <ListItemButton key={item.id} onClick={() => openItem(item.item_id, "details")} sx={{ borderRadius: 2 }}>
+                              <ListItemButton
+                                key={item.id}
+                                onClick={() => openItem(item.item_id, "details", item.project_id, item.branch_id)}
+                                sx={{ borderRadius: 2 }}
+                              >
                                 <ListItemText primary={item.title} secondary={item.path} />
                               </ListItemButton>
                             ))}
@@ -1142,7 +1204,10 @@ export default function WorkspacePage() {
                               {node.path}
                             </Typography>
                             <Chip size="small" label={node.node_type} sx={{ width: "fit-content" }} />
-                            <Button variant="outlined" onClick={() => openItem(node.id, "details")}>
+                            <Button
+                              variant="outlined"
+                              onClick={() => openItem(node.id, "details", node.metadata.project_id ?? selectedProjectId, node.metadata.branch_id ?? selectedBranchId)}
+                            >
                               Open Details
                             </Button>
                           </Stack>
@@ -1173,15 +1238,39 @@ export default function WorkspacePage() {
                             item_id: selectedItem.id,
                             item_type: selectedItem.item_type,
                             path: selectedItem.path,
+                            project_id: selectedItem.project_id,
+                            branch_id: selectedItem.branch_id,
                           })
                         }
                       >
                         Bookmark
                       </Button>
-                      <Button variant="outlined" startIcon={<CompareArrowsRoundedIcon />} onClick={() => updateParams({ compareLeft: selectedItem.id, tab: "compare" })}>
+                      <Button
+                        variant="outlined"
+                        startIcon={<CompareArrowsRoundedIcon />}
+                        onClick={() =>
+                          updateParams({
+                            compareLeft: selectedItem.id,
+                            compareLeftProject: selectedItem.project_id,
+                            compareLeftBranch: selectedItem.branch_id,
+                            tab: "compare",
+                          })
+                        }
+                      >
                         Set Compare Left
                       </Button>
-                      <Button variant="outlined" startIcon={<CompareArrowsRoundedIcon />} onClick={() => updateParams({ compareRight: selectedItem.id, tab: "compare" })}>
+                      <Button
+                        variant="outlined"
+                        startIcon={<CompareArrowsRoundedIcon />}
+                        onClick={() =>
+                          updateParams({
+                            compareRight: selectedItem.id,
+                            compareRightProject: selectedItem.project_id,
+                            compareRightBranch: selectedItem.branch_id,
+                            tab: "compare",
+                          })
+                        }
+                      >
                         Set Compare Right
                       </Button>
                     </Stack>
@@ -1308,6 +1397,8 @@ export default function WorkspacePage() {
                                       export_type: "item",
                                       export_format: format as "json" | "markdown" | "html" | "pdf",
                                       reference_id: selectedItem.id,
+                                      project_id: selectedItem.project_id,
+                                      branch_id: selectedItem.branch_id,
                                       payload: {},
                                     })
                                   }
@@ -1332,7 +1423,21 @@ export default function WorkspacePage() {
                 <Typography variant="h4">Compare</Typography>
                 <Grid container spacing={2}>
                   <Grid item xs={12} md={6}>
-                    <TextField select label="Left Item" fullWidth value={compareLeftId} onChange={(event) => updateParams({ compareLeft: event.target.value })}>
+                    <TextField
+                      select
+                      label="Left Item"
+                      fullWidth
+                      value={compareLeftId}
+                      onChange={(event) => {
+                        const node = selectableNodes.find((candidate) => candidate.id === event.target.value);
+                        updateParams({
+                          compareLeft: event.target.value,
+                          compareLeftProject: node?.metadata.project_id ?? selectedProjectId,
+                          compareLeftBranch: node?.metadata.branch_id ?? selectedBranchId,
+                        });
+                      }}
+                    >
+                      {compareLeftId && !selectableNodes.some((node) => node.id === compareLeftId) ? <MenuItem value={compareLeftId}>{compareLeftId}</MenuItem> : null}
                       {selectableNodes.map((node) => (
                         <MenuItem key={node.id} value={node.id}>
                           {node.label}
@@ -1341,7 +1446,21 @@ export default function WorkspacePage() {
                     </TextField>
                   </Grid>
                   <Grid item xs={12} md={6}>
-                    <TextField select label="Right Item" fullWidth value={compareRightId} onChange={(event) => updateParams({ compareRight: event.target.value })}>
+                    <TextField
+                      select
+                      label="Right Item"
+                      fullWidth
+                      value={compareRightId}
+                      onChange={(event) => {
+                        const node = selectableNodes.find((candidate) => candidate.id === event.target.value);
+                        updateParams({
+                          compareRight: event.target.value,
+                          compareRightProject: node?.metadata.project_id ?? selectedProjectId,
+                          compareRightBranch: node?.metadata.branch_id ?? selectedBranchId,
+                        });
+                      }}
+                    >
+                      {compareRightId && !selectableNodes.some((node) => node.id === compareRightId) ? <MenuItem value={compareRightId}>{compareRightId}</MenuItem> : null}
                       {selectableNodes.map((node) => (
                         <MenuItem key={node.id} value={node.id}>
                           {node.label}
@@ -1760,8 +1879,8 @@ export default function WorkspacePage() {
                               <Chip size="small" label={result.item_type} />
                               <Chip size="small" variant="outlined" label={`Score ${result.score.toFixed(2)}`} />
                             </Stack>
-                            <Button variant="outlined" onClick={() => openItem(result.id, "details")}>
-                              Open Item
+                            <Button variant="outlined" onClick={() => openSearchResult(result)}>
+                              {result.target_tab === "collaborator" ? "Open Document" : "Open Item"}
                             </Button>
                           </Stack>
                         </CardContent>

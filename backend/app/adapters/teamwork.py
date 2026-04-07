@@ -224,6 +224,42 @@ def extract_resource_list(payload: Any) -> list[Any] | None:
     return data if isinstance(data, list) else None
 
 
+def _workspace_objects(payload: Any) -> list[Any]:
+    candidates: list[Any] = []
+
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        nested = _first_list_recursive(payload, "items", "workspaces", "data")
+        if nested is not None:
+            candidates = nested
+        elif isinstance(payload.get("kerml:resources"), list):
+            candidates = [payload]
+
+    workspaces: list[Any] = []
+    for item in candidates:
+        entity = _payload_entity(item, "workspace") if isinstance(item, (dict, list)) else None
+        if isinstance(entity, dict) and isinstance(entity.get("kerml:resources"), list):
+            workspaces.append(item)
+
+    return workspaces
+
+
+def _workspace_resource_ids(workspace_payload: Any) -> list[str]:
+    resource_ids: list[str] = []
+    entity = _payload_entity(workspace_payload, "workspace") if isinstance(workspace_payload, (dict, list)) else None
+    raw_resources = entity.get("kerml:resources") if isinstance(entity, dict) else None
+    if not isinstance(raw_resources, list):
+        return resource_ids
+
+    for raw_resource in raw_resources:
+        resource_id = _reference_id(raw_resource)
+        if resource_id and resource_id not in {"it"} and resource_id not in resource_ids:
+            resource_ids.append(resource_id)
+
+    return resource_ids
+
+
 def _container_member_ids(payload: Any) -> list[str]:
     identifiers: list[str] = []
     data = extract_resource_list(payload) or []
@@ -264,20 +300,22 @@ def map_projects(payload: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
 
-        metadata = item.get("metadata", {})
-        if not isinstance(metadata, dict):
-            continue
+        metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
+        resource_id = _reference_id(item.get("__resource_id")) or _reference_id(item.get("@id") or item.get("id"))
+        workspace_id = item.get("__workspace_id") if isinstance(item.get("__workspace_id"), str) else None
+        name = _first_text(metadata.get("name"), item.get("dcterms:title"), item.get("name"), resource_id or "")
+        branch_uuid = _reference_id(metadata.get("mdResourceBranchUUID"))
 
-        name = metadata.get("name")
-        branch_uuid = metadata.get("mdResourceBranchUUID")
-
-        if name and branch_uuid:
+        if name and resource_id:
             projects.append(
                 {
-                    "id": branch_uuid,
+                    "id": resource_id,
                     "name": name,
                     "branch_uuid": branch_uuid,
-                    "categories": item.get("categoryID"),
+                    "workspace_id": workspace_id,
+                    "resource_id": resource_id,
+                    "categories": item.get("categoryID") if item.get("categoryID") is not None else item.get("kerml:categories"),
+                    "description": _first_text(item.get("dcterms:description"), item.get("description")),
                 }
             )
 
@@ -319,6 +357,15 @@ def _humanize_type(raw_type: str) -> str:
     tail = raw_type.split(":")[-1].rsplit("/", 1)[-1]
     normalized = tail.replace("_", " ").replace("-", " ").strip().lower()
     return normalized or "item"
+
+
+def _flatten_tree_nodes(nodes: list[TreeNode]) -> list[TreeNode]:
+    flattened: list[TreeNode] = []
+    for node in nodes:
+        flattened.append(node)
+        if node.children:
+            flattened.extend(_flatten_tree_nodes(node.children))
+    return flattened
 
 
 class FallbackWorkspaceStore:
@@ -1175,76 +1222,179 @@ class TeamworkAdapter:
 
     async def _list_remote_projects(self) -> list[ProjectSummary]:
         self._last_project_list_issue = None
-        parsed_projects: dict[str, dict[str, Any]] = {}
+        parsed_projects: dict[str, ProjectSummary] = {}
         total_items_received = 0
         sample_project: dict[str, Any] | None = None
-        sample_payload: Any | None = None
-        payload, payload_trace = await self._request_candidates_with_trace(
+        sample_workspace: Any | None = None
+        sample_resolved_resource: dict[str, Any] | None = None
+        workspace_payload, workspace_trace = await self._request_candidates_with_trace(
             "GET",
-            ["/osmc/resources?includeBody=true&includeRemovedResource=false"],
+            ["/osmc/workspaces?includeBody=true"],
         )
-        if payload is None:
-            self._last_project_list_issue = f"Project listing did not return a usable response ({self._trace_summary(payload_trace)})"
-            logger.warning("twc-project-list-resources-failed", server_id=self.context.server.id, trace=payload_trace)
+        if workspace_payload is None:
+            self._last_project_list_issue = f"Workspace listing did not return a usable response ({self._trace_summary(workspace_trace)})"
+            logger.warning("twc-project-list-workspaces-failed", server_id=self.context.server.id, trace=workspace_trace)
             raise RuntimeError(self._last_project_list_issue)
-        if isinstance(payload, dict) and payload.get("restricted"):
-            self._last_project_list_issue = f"Project listing returned HTTP {payload.get('status_code')} for the active Teamwork Cloud session"
-            logger.warning("twc-project-list-resources-restricted", server_id=self.context.server.id, trace=payload_trace)
+        if isinstance(workspace_payload, dict) and workspace_payload.get("restricted"):
+            self._last_project_list_issue = f"Workspace listing returned HTTP {workspace_payload.get('status_code')} for the active Teamwork Cloud session"
+            logger.warning("twc-project-list-workspaces-restricted", server_id=self.context.server.id, trace=workspace_trace)
             raise RuntimeError(self._last_project_list_issue)
 
-        sample_payload = payload
-        if isinstance(payload, list):
-            total_items_received = len(payload)
-        mapped_projects = map_projects(payload)
+        workspace_objects = _workspace_objects(workspace_payload)
+        if workspace_objects:
+            sample_workspace = workspace_objects[0]
+
+        logger.info(
+            "twc-project-list-workspaces-loaded",
+            server_id=self.context.server.id,
+            workspace_count=len(workspace_objects),
+            sample_workspace=sample_workspace,
+        )
+
+        if not workspace_objects:
+            self._last_project_list_issue = "Workspace listing returned no workspace objects with kerml:resources"
+            logger.error(
+                "twc-project-list-workspaces-empty",
+                server_id=self.context.server.id,
+                response_shape=_payload_shape(workspace_payload),
+                full_payload_sample=workspace_payload,
+                full_payload_sample_json=json.dumps(workspace_payload, indent=2, default=str),
+                workspace_trace=workspace_trace,
+            )
+            raise RuntimeError(self._last_project_list_issue)
+
+        resolved_resources: list[dict[str, Any]] = []
+        seen_resource_ids: set[str] = set()
+
+        for workspace in workspace_objects:
+            workspace_id = self._workspace_id_from_payload(workspace, allow_plain_identifier=True)
+            resource_ids = _workspace_resource_ids(workspace)
+            logger.info(
+                "twc-project-list-workspace-resources",
+                server_id=self.context.server.id,
+                selected_workspace_id=workspace_id,
+                resource_ref_count=len(resource_ids),
+            )
+
+            for resource_id in resource_ids:
+                if resource_id in seen_resource_ids:
+                    continue
+
+                resource_payload, resource_trace = await self._request_candidates_with_trace(
+                    "GET",
+                    [f"/osmc/resources/{resource_id}"],
+                )
+                if resource_payload is None:
+                    logger.warning(
+                        "twc-project-list-resource-resolve-failed",
+                        server_id=self.context.server.id,
+                        workspace_id=workspace_id,
+                        resource_id=resource_id,
+                        trace=resource_trace,
+                    )
+                    continue
+                if isinstance(resource_payload, dict) and resource_payload.get("restricted"):
+                    logger.warning(
+                        "twc-project-list-resource-resolve-restricted",
+                        server_id=self.context.server.id,
+                        workspace_id=workspace_id,
+                        resource_id=resource_id,
+                        trace=resource_trace,
+                    )
+                    continue
+
+                resource_entity = _payload_entity(resource_payload, "resource")
+                if resource_entity is None and isinstance(resource_payload, dict):
+                    resource_entity = resource_payload
+                if resource_entity is None:
+                    logger.warning(
+                        "twc-project-list-resource-resolve-unusable",
+                        server_id=self.context.server.id,
+                        workspace_id=workspace_id,
+                        resource_id=resource_id,
+                        response_shape=_payload_shape(resource_payload),
+                    )
+                    continue
+
+                if sample_resolved_resource is None:
+                    sample_resolved_resource = resource_entity
+
+                resolved_resource = dict(resource_entity)
+                resolved_resource["__workspace_id"] = workspace_id
+                resolved_resource["__resource_id"] = resource_id
+                resolved_resources.append(resolved_resource)
+                seen_resource_ids.add(resource_id)
+
+        logger.info(
+            "twc-project-list-resolved-resources",
+            server_id=self.context.server.id,
+            resolved_project_objects=len(resolved_resources),
+            sample_resolved_resource=sample_resolved_resource,
+        )
+
+        total_items_received = len(resolved_resources)
+        mapped_projects = map_projects(resolved_resources)
         if mapped_projects:
             sample_project = mapped_projects[0]
 
         for project in mapped_projects:
-            project_id = project.get("id")
-            if isinstance(project_id, str) and project_id not in parsed_projects:
-                parsed_projects[project_id] = project
+            resource_id = project.get("resource_id")
+            if not isinstance(resource_id, str) or resource_id in parsed_projects:
+                continue
+
+            workspace_id = project.get("workspace_id") if isinstance(project.get("workspace_id"), str) else None
+            branch_uuid = project.get("branch_uuid") if isinstance(project.get("branch_uuid"), str) else None
+            if branch_uuid:
+                branches = [BranchSummary(id=branch_uuid, name=branch_uuid, description="")]
+            else:
+                branches = await self._list_remote_branches(resource_id, workspace_id)
+                if not branches:
+                    logger.warning(
+                        "twc-project-list-branches-missing",
+                        server_id=self.context.server.id,
+                        workspace_id=workspace_id,
+                        resource_id=resource_id,
+                    )
+
+            parsed_projects[resource_id] = ProjectSummary(
+                id=resource_id,
+                name=str(project["name"]),
+                description=str(project.get("description") or ""),
+                branches=branches,
+                workspace_id=workspace_id,
+                resource_id=resource_id,
+                categories=project.get("categories"),
+            )
 
         logger.info(
             "twc-project-list-resource-response",
             server_id=self.context.server.id,
             total_items_received=total_items_received,
             valid_projects_parsed=len(parsed_projects),
-            sample_item_shape=_payload_shape(payload[0]) if isinstance(payload, list) and payload else None,
+            sample_item_shape=_payload_shape(sample_resolved_resource) if sample_resolved_resource is not None else None,
         )
 
         if not parsed_projects:
-            self._last_project_list_issue = "No valid projects parsed from TWC resource listing response"
+            self._last_project_list_issue = "No valid projects resolved from TWC workspace resources"
             logger.error(
                 "twc-project-list-parse-failed",
                 server_id=self.context.server.id,
                 issue=self._last_project_list_issue,
                 total_items_received=total_items_received,
-                sample_item_shape=_payload_shape(sample_payload) if sample_payload is not None else None,
+                sample_item_shape=_payload_shape(sample_resolved_resource) if sample_resolved_resource is not None else None,
                 sample_item=sample_project,
-                full_payload_sample=sample_payload,
-                full_payload_sample_json=json.dumps(sample_payload, indent=2, default=str) if sample_payload is not None else None,
-                resource_trace=payload_trace,
+                full_payload_sample=sample_resolved_resource,
+                full_payload_sample_json=json.dumps(sample_resolved_resource, indent=2, default=str) if sample_resolved_resource is not None else None,
+                workspace_trace=workspace_trace,
             )
             raise RuntimeError(self._last_project_list_issue)
 
-        projects = [
-            ProjectSummary(
-                id=str(project["id"]),
-                name=str(project["name"]),
-                branches=[
-                    BranchSummary(
-                        id=str(project.get("branch_uuid") or project["id"]),
-                        name=str(project.get("branch_uuid") or project["id"]),
-                        description="",
-                    )
-                ],
-            )
-            for project in parsed_projects.values()
-        ]
+        projects = list(parsed_projects.values())
 
         logger.info(
             "twc-project-list-remote",
             server_id=self.context.server.id,
+            workspace_count=len(workspace_objects),
             total_items_received=total_items_received,
             valid_projects_parsed=len(projects),
             sample_item=sample_project,
@@ -1702,27 +1852,83 @@ class TeamworkAdapter:
 
     async def search(self, query: str) -> SearchResponse:
         payload = await self._request_candidates("GET", self.search_candidates(query))
-        if isinstance(payload, dict):
-            items = _first_list(payload, "results", "items", "data")
-            if items is not None:
-                results = [
+        items = _payload_list(payload, "results", "items", "data") if payload is not None else None
+        if items is not None:
+            results: list[SearchResult] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                raw_type = str(item.get("type") or item.get("item_type") or item.get("kind") or "model")
+                lowered_type = raw_type.lower()
+                target_tab = "collaborator" if any(marker in lowered_type for marker in ("document", "collaborator")) else "details"
+                result_id = str(item.get("id") or item.get("document_id") or item.get("documentId") or uuid4().hex)
+                results.append(
                     SearchResult(
-                        id=str(item.get("id") or uuid4().hex),
+                        id=result_id,
                         title=str(item.get("title") or item.get("name") or "Untitled"),
-                        item_type=str(item.get("type") or "model"),
-                        path=str(item.get("path") or ""),
-                        excerpt=str(item.get("excerpt") or item.get("description") or ""),
+                        item_type=raw_type,
+                        path=str(item.get("path") or item.get("breadcrumbs_path") or ""),
+                        excerpt=str(item.get("excerpt") or item.get("description") or item.get("summary") or ""),
                         score=float(item.get("score") or 0.5),
+                        project_id=_first_text(item.get("project_id"), item.get("projectId"), item.get("projectID")) or None,
+                        branch_id=_first_text(item.get("branch_id"), item.get("branchId"), item.get("branchID")) or None,
+                        document_id=(str(item.get("document_id") or item.get("documentId") or result_id) if target_tab == "collaborator" else None),
+                        target_tab=target_tab,
                     )
-                    for item in items
-                ]
+                )
+            if results:
                 return SearchResponse(query=query, total=len(results), results=results)
 
         query_lower = query.lower().strip()
-        results = []
+        if not query_lower:
+            return SearchResponse(query=query, total=0, results=[])
+
+        results: list[SearchResult] = []
+        seen: set[tuple[str, str, str | None, str | None]] = set()
+
+        try:
+            projects = await self._list_remote_projects()
+        except Exception:
+            projects = []
+
+        for project in projects:
+            for branch in project.branches:
+                try:
+                    nodes = await self._load_remote_tree(project.id, branch.id)
+                except Exception:
+                    continue
+                for node in _flatten_tree_nodes(nodes):
+                    if node.node_type == "package":
+                        continue
+                    searchable = f"{node.label} {node.path}".lower()
+                    if query_lower not in searchable:
+                        continue
+                    key = (node.id, "details", project.id, branch.id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    exact_match = node.label.lower() == query_lower
+                    results.append(
+                        SearchResult(
+                            id=node.id,
+                            title=node.label,
+                            item_type=node.node_type,
+                            path=node.path,
+                            excerpt=f"{project.name} / {branch.name}",
+                            score=0.98 if exact_match else 0.9,
+                            project_id=project.id,
+                            branch_id=branch.id,
+                            target_tab="details",
+                        )
+                    )
+
         for item in self.fallback.items().values():
             searchable = f"{item.name} {item.description} {item.documentation_markdown} {item.path}".lower()
             if query_lower and query_lower in searchable:
+                key = (item.id, "details", item.project_id, item.branch_id)
+                if key in seen:
+                    continue
+                seen.add(key)
                 results.append(
                     SearchResult(
                         id=item.id,
@@ -1731,8 +1937,66 @@ class TeamworkAdapter:
                         path=item.path,
                         excerpt=item.description,
                         score=0.92,
+                        project_id=item.project_id,
+                        branch_id=item.branch_id,
+                        target_tab="details",
                     )
                 )
+
+        for document in self.fallback.documents():
+            searchable = f"{document.title} {' '.join(document.breadcrumbs)} {document.body_markdown}".lower()
+            if not query_lower or query_lower not in searchable:
+                continue
+            key = (document.id, "collaborator", document.project_id, document.branch_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            excerpt = next((line.strip() for line in document.body_markdown.splitlines() if line.strip()), document.body_markdown.strip())
+            results.append(
+                SearchResult(
+                    id=document.id,
+                    title=document.title,
+                    item_type="document",
+                    path=" / ".join(document.breadcrumbs) or document.title,
+                    excerpt=excerpt[:240],
+                    score=0.88,
+                    project_id=document.project_id,
+                    branch_id=document.branch_id,
+                    document_id=document.id,
+                    target_tab="collaborator",
+                )
+            )
+
+        try:
+            documents = await self.list_documents()
+        except Exception:
+            documents = []
+
+        for document in documents:
+            searchable = f"{document.title} {' '.join(document.breadcrumbs)} {document.body_markdown}".lower()
+            if query_lower not in searchable:
+                continue
+            key = (document.id, "collaborator", document.project_id, document.branch_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            excerpt = next((line.strip() for line in document.body_markdown.splitlines() if line.strip()), document.body_markdown.strip())
+            results.append(
+                SearchResult(
+                    id=document.id,
+                    title=document.title,
+                    item_type="document",
+                    path=" / ".join(document.breadcrumbs) or document.title,
+                    excerpt=excerpt[:240],
+                    score=0.88,
+                    project_id=document.project_id,
+                    branch_id=document.branch_id,
+                    document_id=document.id,
+                    target_tab="collaborator",
+                )
+            )
+
+        results.sort(key=lambda item: (-item.score, item.title.lower()))
         return SearchResponse(query=query, total=len(results), results=results)
 
     async def list_simulation_configs(self, project_id: str | None = None) -> list[SimulationConfig]:
@@ -1976,9 +2240,17 @@ class TeamworkAdapter:
                         return comment
         return self.fallback.add_comment(document_id, author, content)
 
-    async def compare_items(self, left_id: str, right_id: str) -> CompareResult:
-        left = (await self.get_item(left_id)).model_dump(mode="json")
-        right = (await self.get_item(right_id)).model_dump(mode="json")
+    async def compare_items(
+        self,
+        left_id: str,
+        right_id: str,
+        left_project_id: str | None = None,
+        left_branch_id: str | None = None,
+        right_project_id: str | None = None,
+        right_branch_id: str | None = None,
+    ) -> CompareResult:
+        left = (await self.get_item(left_id, left_project_id, left_branch_id)).model_dump(mode="json")
+        right = (await self.get_item(right_id, right_project_id, right_branch_id)).model_dump(mode="json")
         differences = _dict_diff(left, right)
         return CompareResult(
             compare_type="item",
@@ -1995,7 +2267,7 @@ class TeamworkAdapter:
         return ["/osmc/admin/currentUser"]
 
     def version_candidates(self) -> list[str]:
-        return ["/osmc/resources/version", "/api/version", "/version", "/about"]
+        return ["/osmc/version", "/osmc/resources/version", "/api/version", "/version", "/about"]
 
     def tree_candidates(self, project_id: str | None, branch_id: str | None) -> list[str]:
         project_id = project_id or "aircraft-systems"
@@ -2063,12 +2335,12 @@ class TeamworkAdapter:
 
 class Teamwork2022xAdapter(TeamworkAdapter):
     def version_candidates(self) -> list[str]:
-        return ["/osmc/resources/version", "/api/version", "/version", "/about"]
+        return ["/osmc/version", "/osmc/resources/version", "/api/version", "/version", "/about"]
 
 
 class Teamwork2024xAdapter(TeamworkAdapter):
     def version_candidates(self) -> list[str]:
-        return ["/api/version", "/osmc/resources/version", "/version", "/about"]
+        return ["/osmc/version", "/api/version", "/osmc/resources/version", "/version", "/about"]
 
 
 def create_adapter(server: ServerProfile, tokens: TokenBundle, storage_dir: Path) -> TeamworkAdapter:

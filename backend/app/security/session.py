@@ -173,13 +173,21 @@ class SessionManager:
         return session
 
     def add_recent_item(self, session: SessionData, bookmark: Bookmark) -> SessionData:
-        without_duplicate = [item for item in session.recent_items if item.item_id != bookmark.item_id]
+        without_duplicate = [
+            item
+            for item in session.recent_items
+            if (item.item_id, item.project_id, item.branch_id) != (bookmark.item_id, bookmark.project_id, bookmark.branch_id)
+        ]
         session.recent_items = [bookmark, *without_duplicate][:10]
         self.store.set(session)
         return session
 
     def upsert_bookmark(self, session: SessionData, bookmark: Bookmark) -> SessionData:
-        without_duplicate = [item for item in session.bookmarks if item.item_id != bookmark.item_id]
+        without_duplicate = [
+            item
+            for item in session.bookmarks
+            if (item.item_id, item.project_id, item.branch_id) != (bookmark.item_id, bookmark.project_id, bookmark.branch_id)
+        ]
         session.bookmarks = [bookmark, *without_duplicate]
         self.store.set(session)
         return session
