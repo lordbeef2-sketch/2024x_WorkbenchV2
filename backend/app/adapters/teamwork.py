@@ -208,22 +208,27 @@ def _reference_id(value: Any) -> str | None:
     return segments[-1] if segments else candidate
 
 
-def extract_resource_list(payload: Any) -> list[Any]:
+def extract_resource_list(payload: Any) -> list[Any] | None:
+    data: Any = None
+
     if isinstance(payload, list):
-        return payload
+        data = payload
+    elif isinstance(payload, dict):
+        if "ldp:contains" in payload:
+            data = payload["ldp:contains"]
+        elif "resources" in payload:
+            data = payload["resources"]
+        elif "items" in payload:
+            data = payload["items"]
 
-    if isinstance(payload, dict):
-        for key in ["items", "resources", "ldp:contains"]:
-            value = payload.get(key)
-            if isinstance(value, list):
-                return value
-
-    return []
+    return data if isinstance(data, list) else None
 
 
 def _container_member_ids(payload: Any) -> list[str]:
     identifiers: list[str] = []
-    for item in extract_resource_list(payload):
+    data = extract_resource_list(payload) or []
+
+    for item in data:
         candidate = ""
         if isinstance(item, dict):
             for key in ("branchID", "modelID", "ID", "id", "@id"):
@@ -249,21 +254,13 @@ def _container_member_ids(payload: Any) -> list[str]:
 def map_projects(payload: Any) -> list[dict[str, Any]]:
     projects: list[dict[str, Any]] = []
 
-    data: Any = None
-    if isinstance(payload, list):
-        data = payload
-    elif isinstance(payload, dict):
-        for key in ["items", "resources", "ldp:contains"]:
-            value = payload.get(key)
-            if isinstance(value, list):
-                data = value
-                break
-
+    logger.info(f"Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'list'}")
+    data = extract_resource_list(payload)
     if not isinstance(data, list):
-        logger.error(f"Invalid payload structure: {type(payload)}")
+        logger.error(f"Could not locate resource list. Keys: {list(payload.keys()) if isinstance(payload, dict) else []}")
         return projects
 
-    logger.info(f"Total resources fetched: {len(data)}")
+    logger.info(f"Extracted resource count: {len(data)}")
 
     for item in data:
         if not isinstance(item, dict):
@@ -286,10 +283,7 @@ def map_projects(payload: Any) -> list[dict[str, Any]]:
                 }
             )
 
-    logger.info(f"Total projects parsed: {len(projects)}")
-
-    if not projects:
-        logger.error(f"RAW SAMPLE: {str(payload)[:1000]}")
+    logger.info(f"Parsed project count: {len(projects)}")
 
     return projects
 
@@ -850,68 +844,6 @@ class TeamworkAdapter:
                 parts.append(f"{candidate} -> {attempt['error']}")
         return "; ".join(parts) or "no usable candidate response"
 
-    def _next_page_candidate(self, payload: Any) -> str | None:
-        if not isinstance(payload, dict):
-            return None
-
-        next_value: Any = payload.get("next") or payload.get("ldp:next")
-        if next_value is None:
-            links = payload.get("links")
-            if isinstance(links, dict):
-                next_value = links.get("next")
-
-        if isinstance(next_value, str):
-            candidate = next_value.strip()
-            return candidate or None
-
-        if isinstance(next_value, dict):
-            for key in ("href", "url", "@id"):
-                value = next_value.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-
-        return None
-
-    async def _fetch_all_resource_pages(self, candidates: list[str]) -> dict[str, Any]:
-        payload, trace = await self._request_candidates_with_trace("GET", candidates)
-        result: dict[str, Any] = {
-            "items": [],
-            "first_payload": payload,
-            "trace": trace,
-            "page_count": 0,
-            "restricted": False,
-        }
-
-        if payload is None:
-            return result
-
-        if isinstance(payload, dict) and payload.get("restricted"):
-            result["restricted"] = True
-            result["status_code"] = payload.get("status_code")
-            return result
-
-        current_payload: Any = payload
-        visited: set[str] = set()
-
-        while current_payload is not None:
-            result["page_count"] += 1
-            result["items"].extend(extract_resource_list(current_payload))
-
-            next_candidate = self._next_page_candidate(current_payload)
-            if not next_candidate or next_candidate in visited:
-                break
-
-            visited.add(next_candidate)
-            current_payload, _ = await self._request_candidates_with_trace("GET", [next_candidate])
-            if current_payload is None:
-                break
-            if isinstance(current_payload, dict) and current_payload.get("restricted"):
-                result["restricted"] = True
-                result["status_code"] = current_payload.get("status_code")
-                break
-
-        return result
-
     def _extract_current_username(self, payload: Any) -> str | None:
         candidates: list[dict[str, Any]] = []
         if isinstance(payload, dict):
@@ -1273,13 +1205,20 @@ class TeamworkAdapter:
         total_items_received = 0
         sample_project: dict[str, Any] | None = None
         sample_payload: Any | None = None
-        fallback_trace: dict[str, Any] | None = None
-        fallback_needed = not workspace_ids
+
+        if not workspace_ids:
+            self._last_project_list_issue = "Workspace discovery returned no workspace identifiers"
+            logger.error(
+                "twc-project-list-workspaces-empty",
+                server_id=self.context.server.id,
+                response_shape=_payload_shape(workspace_payload),
+                full_payload_sample=workspace_payload,
+                full_payload_sample_json=json.dumps(workspace_payload, indent=2, default=str),
+            )
+            raise RuntimeError(self._last_project_list_issue)
 
         for workspace_id in workspace_ids:
-            page_result = await self._fetch_all_resource_pages([f"/osmc/workspaces/{workspace_id}/resources?size=1000"])
-            payload = page_result["first_payload"]
-            payload_trace = page_result["trace"]
+            payload, payload_trace = await self._request_candidates_with_trace("GET", [f"/osmc/workspaces/{workspace_id}/resources?size=1000"])
             if payload is None:
                 logger.warning(
                     "twc-project-list-workspace-resources-failed",
@@ -1288,7 +1227,7 @@ class TeamworkAdapter:
                     trace=payload_trace,
                 )
                 continue
-            if page_result.get("restricted"):
+            if isinstance(payload, dict) and payload.get("restricted"):
                 logger.warning(
                     "twc-project-list-workspace-resources-restricted",
                     server_id=self.context.server.id,
@@ -1298,11 +1237,9 @@ class TeamworkAdapter:
                 continue
 
             sample_payload = sample_payload or payload
-            normalized_payload = page_result["items"]
-            total_items_received += len(normalized_payload)
-            mapped_projects = map_projects(normalized_payload)
-            if payload and not mapped_projects:
-                fallback_needed = True
+            extracted_resources = extract_resource_list(payload) or []
+            total_items_received += len(extracted_resources)
+            mapped_projects = map_projects(payload)
             if sample_project is None and mapped_projects:
                 sample_project = mapped_projects[0]
 
@@ -1316,38 +1253,13 @@ class TeamworkAdapter:
                 "twc-project-list-workspace-response",
                 server_id=self.context.server.id,
                 workspace_id=workspace_id,
-                total_items_received=len(normalized_payload),
+                total_items_received=len(extracted_resources),
                 valid_projects_parsed=len(parsed_projects) - valid_before,
-                page_count=page_result["page_count"],
-                sample_item_shape=_payload_shape(normalized_payload[0]) if normalized_payload else None,
+                sample_item_shape=_payload_shape(extracted_resources[0]) if extracted_resources else None,
             )
 
-        if fallback_needed or not parsed_projects:
-            fallback_result = await self._fetch_all_resource_pages(["/osmc/resources?size=1000"])
-            fallback_payload = fallback_result["first_payload"]
-            fallback_trace = fallback_result["trace"]
-            if fallback_payload is not None and not fallback_result.get("restricted"):
-                sample_payload = sample_payload or fallback_payload
-                fallback_resources = fallback_result["items"]
-                total_items_received += len(fallback_resources)
-                fallback_projects = map_projects(fallback_resources)
-                if sample_project is None and fallback_projects:
-                    sample_project = fallback_projects[0]
-                for project in fallback_projects:
-                    project_id = project.get("id")
-                    if isinstance(project_id, str) and project_id not in parsed_projects:
-                        parsed_projects[project_id] = project
-                logger.info(
-                    "twc-project-list-global-fallback",
-                    server_id=self.context.server.id,
-                    total_items_received=len(fallback_resources),
-                    valid_projects_parsed=len(fallback_projects),
-                    page_count=fallback_result["page_count"],
-                    sample_item_shape=_payload_shape(fallback_resources[0]) if fallback_resources else None,
-                )
-
         if not parsed_projects:
-            self._last_project_list_issue = "No valid projects parsed from TWC resource listing response"
+            self._last_project_list_issue = "No valid projects parsed from TWC workspace resource response"
             logger.error(
                 "twc-project-list-parse-failed",
                 server_id=self.context.server.id,
@@ -1358,7 +1270,6 @@ class TeamworkAdapter:
                 full_payload_sample=sample_payload,
                 full_payload_sample_json=json.dumps(sample_payload, indent=2, default=str) if sample_payload is not None else None,
                 workspace_trace=workspace_trace,
-                fallback_trace=fallback_trace,
             )
             raise RuntimeError(self._last_project_list_issue)
 
