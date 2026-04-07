@@ -255,35 +255,49 @@ def map_projects(payload: Any) -> list[dict[str, Any]]:
     projects: list[dict[str, Any]] = []
 
     logger.info(f"Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'list'}")
-    data = extract_resource_list(payload)
-    if not isinstance(data, list):
-        logger.error(f"Could not locate resource list. Keys: {list(payload.keys()) if isinstance(payload, dict) else []}")
+
+    data_list = extract_resource_list(payload)
+    if data_list is None:
+        logger.error(f"Could not find resource list. Keys: {list(payload.keys()) if isinstance(payload, dict) else []}")
         return projects
 
-    logger.info(f"Extracted resource count: {len(data)}")
+    logger.info(f"Extracted list size: {len(data_list)}")
 
-    for item in data:
+    for item in data_list:
         if not isinstance(item, dict):
             continue
 
-        metadata = item.get("metadata", {})
-        if not isinstance(metadata, dict):
+        metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
+
+        raw_project_id = metadata.get("mdResourceBranchUUID") or item.get("id") or item.get("@id")
+        project_id = _reference_id(raw_project_id)
+        if not project_id and isinstance(raw_project_id, (str, int)):
+            candidate = str(raw_project_id).strip()
+            project_id = candidate or None
+        if not project_id:
             continue
 
-        name = metadata.get("name")
-        branch_uuid = metadata.get("mdResourceBranchUUID")
+        name = _first_text(
+            metadata.get("name"),
+            item.get("name"),
+            item.get("label"),
+            item.get("title"),
+            project_id,
+        )
+        branch_uuid = _reference_id(metadata.get("mdResourceBranchUUID"))
 
-        if name and branch_uuid:
-            projects.append(
-                {
-                    "id": branch_uuid,
-                    "name": name,
-                    "branch_uuid": branch_uuid,
-                    "categories": item.get("categoryID"),
-                }
-            )
+        projects.append(
+            {
+                "id": project_id,
+                "name": name,
+                "branch_uuid": branch_uuid,
+                "categories": item.get("categoryID"),
+            }
+        )
 
     logger.info(f"Parsed project count: {len(projects)}")
+    if not projects and data_list:
+        logger.error(f"SAMPLE ITEM: {data_list[0]}")
 
     return projects
 
@@ -1034,15 +1048,17 @@ class TeamworkAdapter:
             capabilities=capabilities,
         )
 
-    def _workspace_id_from_payload(self, payload: Any) -> str | None:
+    def _workspace_id_from_payload(self, payload: Any, allow_plain_identifier: bool = False) -> str | None:
         entity = _payload_entity(payload)
         if not entity:
             return None
+
         for key in ("workspaceId", "workspaceID"):
             value = entity.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
-        for key in ("kerml:resource", "resource", "@base"):
+
+        for key in ("@id", "id", "kerml:resource", "resource", "@base"):
             value = entity.get(key)
             if isinstance(value, dict):
                 value = value.get("@id") or value.get("id") or value.get("href")
@@ -1053,6 +1069,10 @@ class TeamworkAdapter:
                 index = segments.index("workspaces")
                 if index + 1 < len(segments):
                     return segments[index + 1]
+            if allow_plain_identifier and key in {"@id", "id"}:
+                identifier = _reference_id(value)
+                if identifier:
+                    return identifier
         return None
 
     def branch_candidates(self, project_id: str, branch_id: str, workspace_id: str | None = None) -> list[str]:
@@ -1182,10 +1202,12 @@ class TeamworkAdapter:
         if isinstance(workspace_payload, list):
             workspace_entries = [entry for entry in workspace_payload if isinstance(entry, dict)]
         elif isinstance(workspace_payload, dict):
-            raw_workspace_entries = _first_list(workspace_payload, "workspaces", "items", "data")
+            raw_workspace_entries = _first_list(workspace_payload, "workspaces", "data")
+            if raw_workspace_entries is None:
+                raw_workspace_entries = extract_resource_list(workspace_payload)
             if raw_workspace_entries is not None:
                 workspace_entries = [entry for entry in raw_workspace_entries if isinstance(entry, dict)]
-            elif isinstance(workspace_payload.get("workspaceId"), str) or isinstance(workspace_payload.get("workspaceID"), str):
+            elif self._workspace_id_from_payload(workspace_payload, allow_plain_identifier=True):
                 workspace_entries = [workspace_payload]
             else:
                 workspace_entries = []
@@ -1194,10 +1216,7 @@ class TeamworkAdapter:
 
         workspace_ids: list[str] = []
         for entry in workspace_entries:
-            workspace_id = entry.get("workspaceId") or entry.get("workspaceID")
-            if not isinstance(workspace_id, str):
-                continue
-            workspace_id = workspace_id.strip()
+            workspace_id = self._workspace_id_from_payload(entry, allow_plain_identifier=True)
             if workspace_id and workspace_id not in workspace_ids:
                 workspace_ids.append(workspace_id)
 
@@ -1279,8 +1298,8 @@ class TeamworkAdapter:
                 name=str(project["name"]),
                 branches=[
                     BranchSummary(
-                        id=str(project["branch_uuid"]),
-                        name=str(project["branch_uuid"]),
+                        id=str(project.get("branch_uuid") or project["id"]),
+                        name=str(project.get("branch_uuid") or project["id"]),
                         description="",
                     )
                 ],
