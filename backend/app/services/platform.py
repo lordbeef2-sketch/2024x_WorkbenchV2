@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import csv
 import json
 from contextlib import suppress
@@ -40,6 +41,9 @@ from app.models.domain import (
     SessionSnapshot,
     SimulationConfig,
     SimulationRunRequest,
+    SwaggerContractManifest,
+    SwaggerExecuteRequest,
+    SwaggerExecuteResponse,
     TokenBundle,
     TokenLoginRequest,
     TWCVersion,
@@ -48,6 +52,7 @@ from app.models.domain import (
     utcnow,
 )
 from app.security.session import SessionManager
+from app.services.swagger_contract import SwaggerContract
 from app.settings.config import Settings
 
 logger = structlog.get_logger(__name__)
@@ -71,6 +76,10 @@ class PlatformService:
         self.sessions = sessions
         self.jobs = jobs
         self.publisher = publisher
+        contract_path = Path(__file__).resolve().parents[3] / "contracts" / "RealSwagger.json"
+        if not contract_path.exists():
+            contract_path = Path.cwd() / "contracts" / "RealSwagger.json"
+        self.contract = SwaggerContract(contract_path)
 
     def list_servers(self) -> list[ServerProfile]:
         return self.repo.list_servers()
@@ -199,7 +208,7 @@ class PlatformService:
         upstream_groups: list[str] | None = None,
     ) -> SessionData:
         server = self._require_server(payload.server_id, include_disabled=False)
-        credentials = TokenBundle(access_token=payload.token)
+        credentials = self._token_bundle_from_login_token(payload.token)
         return await self._create_authenticated_session(
             server,
             credentials,
@@ -245,7 +254,6 @@ class PlatformService:
     async def refresh_capabilities(self, session: SessionData):
         adapter = self._adapter_for_session(session)
         capabilities = await adapter.discover_capabilities()
-        capabilities.capabilities["publish"] = self.publisher.capability()
         return self.sessions.update_capabilities(session, capabilities).capabilities
 
     def update_preferences(self, session: SessionData, preferences: SessionPreferences) -> SessionPreferences:
@@ -270,14 +278,13 @@ class PlatformService:
         adapter = self._adapter_for_session(session)
         projects = await adapter.list_projects()
         logger.info("twc-project-list-dashboard", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
-        jobs = self.jobs.list_jobs(session.user.preferred_username)[:8]
         return DashboardPayload(
             projects=projects,
             recent_items=session.recent_items,
             bookmarks=session.bookmarks,
             capability_badges=list(session.capabilities.capabilities.values()),
-            active_jobs=jobs,
-            publish_presets=self.publisher.presets(),
+            active_jobs=[],
+            publish_presets=[],
         )
 
     async def list_projects(self, session: SessionData):
@@ -361,6 +368,59 @@ class PlatformService:
             right_project_id,
             right_branch_id,
         )
+
+    def swagger_contract_manifest(self) -> SwaggerContractManifest:
+        return self.contract.manifest()
+
+    async def execute_swagger_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
+        operation, candidate_path = self.contract.build_candidate_path(
+            payload.operation_key,
+            path_params=payload.path_params,
+            query_params=payload.query_params,
+        )
+        content_payload, headers = self._swagger_content_payload(
+            operation_key=payload.operation_key,
+            body=payload.body,
+            content_type=payload.content_type,
+        )
+        response, requested_path = await self._adapter_for_session(session).execute_contract_request(
+            operation.method,
+            candidate_path,
+            content_payload=content_payload,
+            extra_headers=headers,
+            timeout=payload.timeout_seconds,
+        )
+        return self._swagger_response(payload.operation_key, operation.method, operation.path, requested_path, response)
+
+    async def execute_swagger_upload(
+        self,
+        session: SessionData,
+        *,
+        operation_key: str,
+        path_params: dict[str, Any],
+        query_params: dict[str, Any],
+        file_name: str,
+        content_type: str,
+        content: bytes,
+    ) -> SwaggerExecuteResponse:
+        operation, candidate_path = self.contract.build_candidate_path(
+            operation_key,
+            path_params=path_params,
+            query_params=query_params,
+        )
+        if not operation.supports_file_upload:
+            raise ValueError("This Swagger operation does not declare a file upload parameter.")
+        file_parameter = next((parameter for parameter in operation.form_parameters if parameter.is_file), None)
+        if file_parameter is None:
+            raise ValueError("This Swagger operation does not declare a file upload parameter.")
+        files = {file_parameter.name: (file_name, content, content_type or "application/octet-stream")}
+        response, requested_path = await self._adapter_for_session(session).execute_contract_request(
+            operation.method,
+            candidate_path,
+            files=files,
+            timeout=60.0,
+        )
+        return self._swagger_response(operation_key, operation.method, operation.path, requested_path, response)
 
     async def simulation_configs(self, session: SessionData, project_id: str | None) -> list[SimulationConfig]:
         return await self._adapter_for_session(session).list_simulation_configs(project_id)
@@ -538,11 +598,129 @@ class PlatformService:
             return path
         return None
 
+    def _swagger_content_payload(
+        self,
+        *,
+        operation_key: str,
+        body: Any,
+        content_type: str | None,
+    ) -> tuple[str | bytes | None, dict[str, str]]:
+        operation = self.contract.operation(operation_key)
+        if body is None:
+            if operation.request_body and operation.request_body.required:
+                raise ValueError("This Swagger operation requires a request body.")
+            return None, {}
+        if operation.request_body is None:
+            raise ValueError("This Swagger operation does not declare a request body.")
+
+        valid_content_types = operation.request_body.content_types
+        selected_content_type = content_type or (valid_content_types[0] if valid_content_types else "application/json")
+        if valid_content_types and selected_content_type not in valid_content_types:
+            raise ValueError(
+                f"Content-Type '{selected_content_type}' is not declared by this operation. "
+                f"Allowed: {', '.join(valid_content_types)}"
+            )
+
+        if selected_content_type == "text/plain":
+            if isinstance(body, str):
+                content_payload = body
+            elif isinstance(body, (list, tuple, set)):
+                content_payload = ",".join(str(item) for item in body)
+            elif isinstance(body, dict) and "value" in body:
+                content_payload = str(body["value"])
+            else:
+                content_payload = json.dumps(body, separators=(",", ":"))
+        elif "json" in selected_content_type:
+            if isinstance(body, str):
+                try:
+                    json.loads(body)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Request body is not valid JSON for {selected_content_type}: {exc.msg}") from exc
+                content_payload = body
+            else:
+                content_payload = json.dumps(body)
+        else:
+            content_payload = body if isinstance(body, (str, bytes)) else json.dumps(body)
+
+        return content_payload, {"Content-Type": selected_content_type}
+
+    def _swagger_response(
+        self,
+        operation_key: str,
+        method: str,
+        path: str,
+        requested_path: str,
+        response: httpx.Response,
+    ) -> SwaggerExecuteResponse:
+        content_type = response.headers.get("content-type", "")
+        content = response.content or b""
+        body: Any = None
+        text: str | None = None
+        body_base64: str | None = None
+        is_binary = False
+        force_download = "download=true" in requested_path.lower()
+
+        if content:
+            if "application/json" in content_type or "application/ld+json" in content_type or "application/problem+json" in content_type:
+                try:
+                    body = response.json()
+                except ValueError:
+                    text = response.text
+            elif force_download or not self._is_textual_content_type(content_type):
+                body_base64 = base64.b64encode(content).decode("ascii")
+                is_binary = True
+            else:
+                text = response.text
+
+        visible_headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower() not in {"set-cookie", "authorization", "proxy-authorization"}
+        }
+        return SwaggerExecuteResponse(
+            operation_key=operation_key,
+            method=method,
+            path=path,
+            requested_path=requested_path,
+            status_code=response.status_code,
+            ok=200 <= response.status_code < 300,
+            content_type=content_type,
+            headers=visible_headers,
+            body=body,
+            text=text,
+            body_base64=body_base64,
+            is_binary=is_binary,
+            size_bytes=len(content),
+            filename=self._filename_from_content_disposition(response.headers.get("content-disposition", "")),
+        )
+
+    def _is_textual_content_type(self, content_type: str) -> bool:
+        normalized = content_type.lower()
+        return normalized.startswith("text/") or any(marker in normalized for marker in ("xml", "html", "csv"))
+
+    def _filename_from_content_disposition(self, content_disposition: str) -> str | None:
+        for part in content_disposition.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name.lower() == "filename" and value:
+                return value.strip().strip('"')
+        return None
+
     def _adapter_for_session(self, session: SessionData) -> TeamworkAdapter:
         return self._adapter_for_credentials(session.server, self.sessions.get_credentials(session))
 
     def _adapter_for_credentials(self, server: ServerProfile, tokens) -> TeamworkAdapter:
         return create_adapter(server, tokens, self.settings.resolved_data_dir)
+
+    def _token_bundle_from_login_token(self, raw_token: str) -> TokenBundle:
+        token = raw_token.strip()
+        for scheme in ("Basic", "Bearer", "Token"):
+            prefix = f"{scheme} "
+            if token.lower().startswith(prefix.lower()):
+                return TokenBundle(access_token=token[len(prefix):].strip(), token_type=scheme)
+        if ":" in token:
+            encoded = base64.b64encode(token.encode("utf-8")).decode("ascii")
+            return TokenBundle(access_token=encoded, token_type="Basic")
+        return TokenBundle(access_token=token, token_type="Token")
 
     async def _create_authenticated_session(
         self,
@@ -558,7 +736,6 @@ class PlatformService:
         current_user_context = await adapter.current_user_context()
         preferred_username = self._resolve_preferred_username(current_user_context, fallback_username)
         capabilities = await adapter.discover_capabilities()
-        capabilities.capabilities["publish"] = self.publisher.capability()
         if not self._has_remote_access(capabilities):
             raise PermissionError(
                 "The authenticated Teamwork Cloud user did not expose any repository endpoints. Ensure the TWC session or token belongs to a user with repository access."
@@ -627,7 +804,7 @@ class PlatformService:
         return merged
 
     def _has_remote_access(self, capabilities) -> bool:
-        return any(capabilities.reachable_endpoints.get(endpoint) for endpoint in ("projects", "simulation", "collaborator"))
+        return bool(capabilities.reachable_endpoints.get("projects"))
 
     def _user_key(self, preferred_username: str) -> str:
         return preferred_username.strip().lower()

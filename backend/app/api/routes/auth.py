@@ -21,7 +21,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 logger = structlog.get_logger(__name__)
 
 REDIRECT_SIGNIN_MESSAGE = (
-    "Sign in via TWC completes only when the callback receives authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your deployment."
+    "Sign in via TWC redirects to the selected Teamwork Cloud SAML v2 login entry point and completes when the callback receives authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your deployment."
 )
 
 
@@ -155,6 +155,22 @@ def build_callback_url(container: ApplicationContainer, state: str) -> str:
     return f"{container.settings.resolved_twc_auth_callback_url}?{query}"
 
 
+def build_twc_saml_signin_url(container: ApplicationContainer, server, state: str) -> str:
+    callback_url = build_callback_url(container, state)
+    login_path = container.settings.twc_saml_login_path.strip() or "/osmc/login.html"
+    if not login_path.startswith("/"):
+        login_path = f"/{login_path}"
+    login_url = f"{server.base_url.rstrip('/')}{login_path}"
+    query = urlencode(
+        {
+            container.settings.twc_saml_return_url_parameter: callback_url,
+            "RelayState": state,
+        }
+    )
+    separator = "&" if "?" in login_url else "?"
+    return f"{login_url}{separator}{query}"
+
+
 @router.get("/session")
 async def get_session_snapshot(
     request: Request,
@@ -195,13 +211,15 @@ async def signin(server_id: str, container: ApplicationContainer = Depends(get_c
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
 
     state, cookie_value = create_auth_state_cookie(container, server.id)
-    redirect = RedirectResponse(build_callback_url(container, state), status_code=status.HTTP_302_FOUND)
+    twc_signin_url = build_twc_saml_signin_url(container, server, state)
+    redirect = RedirectResponse(twc_signin_url, status_code=status.HTTP_302_FOUND)
     set_pending_server_cookie(redirect, container, server.id)
     set_auth_state_cookie(redirect, container, cookie_value)
     logger.info(
         "auth-mode-selected",
-        auth_mode="redirect-start",
+        auth_mode="twc-saml-redirect-start",
         server_id=server.id,
+        twc_login_path=container.settings.twc_saml_login_path,
         callback=container.settings.resolved_twc_auth_callback_url,
     )
     return redirect
@@ -230,7 +248,9 @@ async def callback(
         logger.warning("auth-callback-failed", auth_mode="redirect-callback", detail="Selected Teamwork Cloud server no longer matches callback state")
         return build_error_redirect(container, "Selected Teamwork Cloud server no longer matches callback state. Start Sign in via TWC again.")
 
-    if state and state != auth_state["state"]:
+    relay_state = request.query_params.get("RelayState")
+    callback_state = state or relay_state
+    if callback_state and callback_state != auth_state["state"]:
         logger.warning("auth-callback-failed", auth_mode="redirect-callback", detail="Authentication state mismatch")
         return build_error_redirect(container, "Authentication state mismatch. Start Sign in via TWC again.")
 
@@ -249,7 +269,7 @@ async def callback(
         )
         return build_error_redirect(
             container,
-            "TWC SSO completed, but the app callback did not receive any Teamwork Cloud session cookies or forwarded access token. Configure the proxy or callback return flow to forward the authenticated TWC context.",
+            "TWC SAML sign-in completed, but the app callback did not receive any Teamwork Cloud session cookies or forwarded access token. Configure the proxy or callback return flow to forward the authenticated TWC context.",
         )
 
     try:

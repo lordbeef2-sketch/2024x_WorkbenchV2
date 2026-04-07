@@ -8,7 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.auth import router as auth_router
-from app.api.routes.jobs import router as jobs_router
 from app.api.routes.servers import router as servers_router
 from app.api.routes.workspace import router as workspace_router
 from app.services.platform import ApplicationContainer
@@ -45,7 +44,6 @@ api_prefix = settings.api_prefix
 app.include_router(auth_router, prefix=api_prefix)
 app.include_router(servers_router, prefix=api_prefix)
 app.include_router(workspace_router, prefix=api_prefix)
-app.include_router(jobs_router, prefix=api_prefix)
 
 frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if frontend_dist.exists():

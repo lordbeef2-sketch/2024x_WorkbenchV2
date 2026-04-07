@@ -443,3 +443,107 @@ class DashboardPayload(BaseModel):
     capability_badges: list[Capability] = Field(default_factory=list)
     active_jobs: list[JobRecord] = Field(default_factory=list)
     publish_presets: list[PublishPreset] = Field(default_factory=list)
+
+
+class SwaggerParameterSpec(BaseModel):
+    name: str
+    location: str
+    required: bool = False
+    schema_type: str = "string"
+    schema_format: str | None = None
+    schema_ref: str | None = None
+    description: str = ""
+    enum: list[Any] = Field(default_factory=list)
+    default: Any = None
+    is_file: bool = False
+
+
+class SwaggerRequestBodySpec(BaseModel):
+    required: bool = False
+    description: str = ""
+    content_types: list[str] = Field(default_factory=list)
+    schema_refs: dict[str, str | None] = Field(default_factory=dict)
+
+
+class SwaggerResponseSpec(BaseModel):
+    status_code: str
+    description: str = ""
+    content_types: list[str] = Field(default_factory=list)
+    schema_ref: str | None = None
+
+
+class SwaggerSchemaProperty(BaseModel):
+    name: str
+    schema_type: str = "object"
+    schema_format: str | None = None
+    schema_ref: str | None = None
+    description: str = ""
+    required: bool = False
+    enum: list[Any] = Field(default_factory=list)
+
+
+class SwaggerSchemaSummary(BaseModel):
+    name: str
+    schema_type: str = "object"
+    description: str = ""
+    required: list[str] = Field(default_factory=list)
+    properties: list[SwaggerSchemaProperty] = Field(default_factory=list)
+
+
+class SwaggerOperationSpec(BaseModel):
+    key: str
+    method: str
+    path: str
+    tag: str
+    tags: list[str] = Field(default_factory=list)
+    operation_id: str | None = None
+    summary: str = ""
+    description: str = ""
+    path_parameters: list[SwaggerParameterSpec] = Field(default_factory=list)
+    query_parameters: list[SwaggerParameterSpec] = Field(default_factory=list)
+    header_parameters: list[SwaggerParameterSpec] = Field(default_factory=list)
+    form_parameters: list[SwaggerParameterSpec] = Field(default_factory=list)
+    request_body: SwaggerRequestBodySpec | None = None
+    responses: list[SwaggerResponseSpec] = Field(default_factory=list)
+    supports_file_upload: bool = False
+    supports_download: bool = False
+    destructive: bool = False
+
+
+class SwaggerContractManifest(BaseModel):
+    openapi: str
+    title: str
+    version: str
+    server_urls: list[str] = Field(default_factory=list)
+    security: list[str] = Field(default_factory=list)
+    operation_counts: dict[str, int] = Field(default_factory=dict)
+    tag_counts: dict[str, int] = Field(default_factory=dict)
+    operations: list[SwaggerOperationSpec] = Field(default_factory=list)
+    schemas: list[SwaggerSchemaSummary] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SwaggerExecuteRequest(BaseModel):
+    operation_key: str
+    path_params: dict[str, Any] = Field(default_factory=dict)
+    query_params: dict[str, Any] = Field(default_factory=dict)
+    body: Any = None
+    content_type: str | None = None
+    timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
+
+
+class SwaggerExecuteResponse(BaseModel):
+    operation_key: str
+    method: str
+    path: str
+    requested_path: str
+    status_code: int
+    ok: bool
+    content_type: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+    body: Any = None
+    text: str | None = None
+    body_base64: str | None = None
+    is_binary: bool = False
+    size_bytes: int = 0
+    filename: str | None = None

@@ -13,7 +13,6 @@ import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 import FolderRoundedIcon from "@mui/icons-material/FolderRounded";
-import PlayCircleOutlineRoundedIcon from "@mui/icons-material/PlayCircleOutlineRounded";
 import SchemaRoundedIcon from "@mui/icons-material/SchemaRounded";
 
 import { TreeNode } from "../models/api";
@@ -28,9 +27,6 @@ interface ProjectTreeProps {
 function iconForNode(nodeType: string) {
   if (nodeType === "package") {
     return <FolderRoundedIcon fontSize="small" />;
-  }
-  if (nodeType === "simulation") {
-    return <PlayCircleOutlineRoundedIcon fontSize="small" />;
   }
   if (nodeType === "diagram") {
     return <SchemaRoundedIcon fontSize="small" />;

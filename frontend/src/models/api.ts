@@ -322,3 +322,107 @@ export interface TokenLoginRequest {
   server_id: string;
   token: string;
 }
+
+export interface SwaggerParameterSpec {
+  name: string;
+  location: string;
+  required: boolean;
+  schema_type: string;
+  schema_format?: string | null;
+  schema_ref?: string | null;
+  description: string;
+  enum: unknown[];
+  default?: unknown;
+  is_file: boolean;
+}
+
+export interface SwaggerRequestBodySpec {
+  required: boolean;
+  description: string;
+  content_types: string[];
+  schema_refs: Record<string, string | null>;
+}
+
+export interface SwaggerResponseSpec {
+  status_code: string;
+  description: string;
+  content_types: string[];
+  schema_ref?: string | null;
+}
+
+export interface SwaggerSchemaProperty {
+  name: string;
+  schema_type: string;
+  schema_format?: string | null;
+  schema_ref?: string | null;
+  description: string;
+  required: boolean;
+  enum: unknown[];
+}
+
+export interface SwaggerSchemaSummary {
+  name: string;
+  schema_type: string;
+  description: string;
+  required: string[];
+  properties: SwaggerSchemaProperty[];
+}
+
+export interface SwaggerOperationSpec {
+  key: string;
+  method: string;
+  path: string;
+  tag: string;
+  tags: string[];
+  operation_id?: string | null;
+  summary: string;
+  description: string;
+  path_parameters: SwaggerParameterSpec[];
+  query_parameters: SwaggerParameterSpec[];
+  header_parameters: SwaggerParameterSpec[];
+  form_parameters: SwaggerParameterSpec[];
+  request_body?: SwaggerRequestBodySpec | null;
+  responses: SwaggerResponseSpec[];
+  supports_file_upload: boolean;
+  supports_download: boolean;
+  destructive: boolean;
+}
+
+export interface SwaggerContractManifest {
+  openapi: string;
+  title: string;
+  version: string;
+  server_urls: string[];
+  security: string[];
+  operation_counts: Record<string, number>;
+  tag_counts: Record<string, number>;
+  operations: SwaggerOperationSpec[];
+  schemas: SwaggerSchemaSummary[];
+  warnings: string[];
+}
+
+export interface SwaggerExecuteRequest {
+  operation_key: string;
+  path_params: Record<string, unknown>;
+  query_params: Record<string, unknown>;
+  body?: unknown;
+  content_type?: string | null;
+  timeout_seconds?: number;
+}
+
+export interface SwaggerExecuteResponse {
+  operation_key: string;
+  method: string;
+  path: string;
+  requested_path: string;
+  status_code: number;
+  ok: boolean;
+  content_type: string;
+  headers: Record<string, string>;
+  body?: unknown;
+  text?: string | null;
+  body_base64?: string | null;
+  is_binary: boolean;
+  size_bytes: number;
+  filename?: string | null;
+}

@@ -216,6 +216,8 @@ def extract_resource_list(payload: Any) -> list[Any] | None:
     elif isinstance(payload, dict):
         if "ldp:contains" in payload:
             data = payload["ldp:contains"]
+        elif "kerml:resources" in payload:
+            data = payload["kerml:resources"]
         elif "resources" in payload:
             data = payload["resources"]
         elif "items" in payload:
@@ -230,7 +232,7 @@ def _workspace_objects(payload: Any) -> list[Any]:
     if isinstance(payload, list):
         candidates = payload
     elif isinstance(payload, dict):
-        nested = _first_list_recursive(payload, "items", "workspaces", "data")
+        nested = _first_list_recursive(payload, "ldp:contains", "items", "workspaces", "data")
         if nested is not None:
             candidates = nested
         elif isinstance(payload.get("kerml:resources"), list):
@@ -239,7 +241,12 @@ def _workspace_objects(payload: Any) -> list[Any]:
     workspaces: list[Any] = []
     for item in candidates:
         entity = _payload_entity(item, "workspace") if isinstance(item, (dict, list)) else None
-        if isinstance(entity, dict) and isinstance(entity.get("kerml:resources"), list):
+        if entity is None and isinstance(item, (dict, list)):
+            entity = _payload_entity(item)
+        if not isinstance(entity, dict):
+            continue
+        raw_types = " ".join(_normalize_types(entity.get("@type"))).lower()
+        if isinstance(entity.get("kerml:resources"), list) or "workspace" in raw_types or _reference_id(entity.get("@id") or entity.get("id")):
             workspaces.append(item)
 
     return workspaces
@@ -258,6 +265,20 @@ def _workspace_resource_ids(workspace_payload: Any) -> list[str]:
             resource_ids.append(resource_id)
 
     return resource_ids
+
+
+def _resource_id_from_payload(payload: Any) -> str | None:
+    entity = _payload_entity(payload, "resource") if isinstance(payload, (dict, list)) else None
+    if entity is None:
+        entity = _payload_entity(payload) if isinstance(payload, (dict, list)) else None
+    if not isinstance(entity, dict):
+        return _reference_id(payload)
+
+    for key in ("__resource_id", "resourceID", "resourceId", "ID", "@base", "kerml:resource", "resource", "id", "@id"):
+        identifier = _reference_id(entity.get(key))
+        if identifier and identifier != "it":
+            return identifier
+    return None
 
 
 def _container_member_ids(payload: Any) -> list[str]:
@@ -301,7 +322,7 @@ def map_projects(payload: Any) -> list[dict[str, Any]]:
             continue
 
         metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
-        resource_id = _reference_id(item.get("__resource_id")) or _reference_id(item.get("@id") or item.get("id"))
+        resource_id = _resource_id_from_payload(item)
         workspace_id = item.get("__workspace_id") if isinstance(item.get("__workspace_id"), str) else None
         name = _first_text(metadata.get("name"), item.get("dcterms:title"), item.get("name"), resource_id or "")
         branch_uuid = _reference_id(metadata.get("mdResourceBranchUUID"))
@@ -701,7 +722,6 @@ class AdapterContext:
 class TeamworkAdapter:
     def __init__(self, context: AdapterContext) -> None:
         self.context = context
-        self.fallback = FallbackWorkspaceStore(context.storage_dir, context.server.id)
         self._detected_version: str | None = None
         self._last_project_list_issue: str | None = None
         self.verify = (
@@ -786,6 +806,8 @@ class TeamworkAdapter:
         extra_headers: dict[str, str] | None = None,
         timeout: float = 20.0,
     ) -> tuple[httpx.Response, str] | None:
+        if not candidates:
+            return None
         client_kwargs: dict[str, Any] = {
             "timeout": timeout,
             "verify": self.verify,
@@ -822,6 +844,39 @@ class TeamworkAdapter:
                 if 200 <= response.status_code < 300 or response.status_code in {401, 403}:
                     return response, candidate
         return None
+
+    async def execute_contract_request(
+        self,
+        method: str,
+        candidate: str,
+        *,
+        content_payload: str | bytes | None = None,
+        files: Any | None = None,
+        extra_headers: dict[str, str] | None = None,
+        timeout: float = 30.0,
+    ) -> tuple[httpx.Response, str]:
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout,
+            "verify": self.verify,
+            "follow_redirects": True,
+        }
+        if self.context.tokens.session_cookies:
+            client_kwargs["cookies"] = self.context.tokens.session_cookies
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            headers = dict(self.headers)
+            if extra_headers:
+                headers.update(extra_headers)
+            request_kwargs: dict[str, Any] = {}
+            if files is not None:
+                request_kwargs["files"] = files
+            elif content_payload is not None:
+                request_kwargs["content"] = content_payload
+            try:
+                response = await client.request(method, self._candidate_url(candidate), headers=headers, **request_kwargs)
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"Teamwork Cloud request failed for {method} {candidate}: {exc}") from exc
+        return response, candidate
 
     async def _request_candidates(
         self,
@@ -999,59 +1054,47 @@ class TeamworkAdapter:
                 if "2022x" in value:
                     self._detected_version = "2022x"
                     return self._detected_version
-        self._detected_version = "2024x"
+        self._detected_version = "2022x"
         return self._detected_version
 
     async def discover_capabilities(self) -> CapabilitySummary:
         version = await self.detect_version()
         health = await self.health()
-        simulation_payload = await self._request_candidates("GET", self.simulation_candidates())
-        collaborator_payload = await self._request_candidates("GET", self.document_candidates())
         project_payload = await self._request_candidates("GET", self.project_candidates())
         project_accessible = bool(project_payload) and "restricted" not in str(project_payload)
-        simulation_ready = bool(simulation_payload) and "restricted" not in str(simulation_payload)
-        collaborator_ready = bool(collaborator_payload) and "restricted" not in str(collaborator_payload)
 
         capabilities = {
-            "simulation": Capability(
-                name="simulation",
-                state=CapabilityState.READY,
+            "repository": Capability(
+                name="repository",
+                state=CapabilityState.READY if project_accessible else CapabilityState.RESTRICTED,
                 reason=(
-                    "Remote simulation endpoint detected."
-                    if simulation_ready
-                    else "Remote simulation endpoint was not detected. The integrated local simulation runner remains available for workspace studies and exports."
+                    "RealSwagger repository resources were accessible with the active TWC session."
+                    if project_accessible
+                    else "RealSwagger repository resources could not be loaded with the active TWC session."
                 ),
-                source="remote" if simulation_ready else "local",
+                source="probe",
             ),
-            "attachment": Capability(
-                name="attachment",
-                state=CapabilityState.READY,
-                reason=(
-                    "Collaborator document endpoints detected."
-                    if collaborator_ready
-                    else "Remote collaborator endpoints were not detected. The local collaborator workspace remains available for documents, attachments, and comments."
-                ),
-                source="remote" if collaborator_ready else "local",
+            "models": Capability(
+                name="models",
+                state=CapabilityState.READY if project_accessible else CapabilityState.RESTRICTED,
+                reason="Model and branch browsing use the RealSwagger resources, branches, models, and elements endpoints.",
+                source="verified-contract",
+            ),
+            "revisiondiff": Capability(
+                name="revisiondiff",
+                state=CapabilityState.READY if project_accessible else CapabilityState.RESTRICTED,
+                reason="Compare supports the RealSwagger resource revisiondiff endpoint when numeric revisions are supplied for the same resource.",
+                source="verified-contract",
             ),
             "edit": Capability(
                 name="edit",
                 state=CapabilityState.READY if project_accessible else CapabilityState.RESTRICTED,
                 reason=(
-                    "Shared 2022xR2 and 2024xR3 contracts include model and resource write operations. Saves use version-aware request serialization and will still be revalidated at runtime."
+                    "RealSwagger includes element update operations. Saves are still revalidated at runtime against the active TWC session."
                     if project_accessible
-                    else "Shared write operations exist in the verified contract, but the active session did not expose enough repository endpoints to safely confirm write access."
+                    else "Element update operations exist in RealSwagger, but the active session did not expose enough repository access to confirm write access."
                 ),
                 source="verified-contract" if project_accessible else "probe",
-            ),
-            "branch_edit": Capability(
-                name="branch_edit",
-                state=CapabilityState.READY if version == "2024x" else CapabilityState.RESTRICTED,
-                reason=(
-                    "Branch rename and metadata update endpoints are verified in the 2024xR3 export."
-                    if version == "2024x"
-                    else "Branch rename and metadata update were not present in the verified 2022xR2 export, so branch editing stays disabled."
-                ),
-                source="verified-contract",
             ),
             "user_access": Capability(
                 name="user_access",
@@ -1063,19 +1106,11 @@ class TeamworkAdapter:
                 ),
                 source="probe",
             ),
-            "publish": Capability(
-                name="publish",
-                state=CapabilityState.UNKNOWN,
-                reason="Publish remains integration-defined and is not part of the verified main Teamwork Cloud contract surface.",
-                source="integration",
-            ),
         }
         return CapabilitySummary(
             detected_version=version,
             reachable_endpoints={
                 "projects": project_accessible,
-                "simulation": simulation_ready,
-                "collaborator": collaborator_ready,
                 **health.get("checks", {}),
             },
             capabilities=capabilities,
@@ -1227,6 +1262,42 @@ class TeamworkAdapter:
         sample_project: dict[str, Any] | None = None
         sample_workspace: Any | None = None
         sample_resolved_resource: dict[str, Any] | None = None
+
+        resolved_resources: list[dict[str, Any]] = []
+        seen_resource_ids: set[str] = set()
+
+        def payload_members(payload: Any) -> list[Any]:
+            members = extract_resource_list(payload)
+            if members is not None:
+                return members
+            if isinstance(payload, list):
+                return payload
+            if isinstance(payload, dict):
+                return [payload]
+            return []
+
+        def append_resource_payload(payload: Any, workspace_id: str | None, fallback_resource_id: str | None = None) -> bool:
+            nonlocal sample_resolved_resource
+            entity = _payload_entity(payload, "resource") if isinstance(payload, (dict, list)) else None
+            if entity is None and isinstance(payload, dict):
+                entity = payload
+            if not isinstance(entity, dict):
+                return False
+
+            resource_id = fallback_resource_id or _resource_id_from_payload(entity) or _reference_id(payload)
+            if not resource_id or resource_id in {"it", "resources"} or resource_id in seen_resource_ids:
+                return False
+
+            if sample_resolved_resource is None:
+                sample_resolved_resource = entity
+
+            resolved_resource = dict(entity)
+            resolved_resource["__workspace_id"] = workspace_id
+            resolved_resource["__resource_id"] = resource_id
+            resolved_resources.append(resolved_resource)
+            seen_resource_ids.add(resource_id)
+            return True
+
         workspace_payload, workspace_trace = await self._request_candidates_with_trace(
             "GET",
             ["/osmc/workspaces?includeBody=true"],
@@ -1234,13 +1305,14 @@ class TeamworkAdapter:
         if workspace_payload is None:
             self._last_project_list_issue = f"Workspace listing did not return a usable response ({self._trace_summary(workspace_trace)})"
             logger.warning("twc-project-list-workspaces-failed", server_id=self.context.server.id, trace=workspace_trace)
-            raise RuntimeError(self._last_project_list_issue)
-        if isinstance(workspace_payload, dict) and workspace_payload.get("restricted"):
+            workspace_objects: list[Any] = []
+        elif isinstance(workspace_payload, dict) and workspace_payload.get("restricted"):
             self._last_project_list_issue = f"Workspace listing returned HTTP {workspace_payload.get('status_code')} for the active Teamwork Cloud session"
             logger.warning("twc-project-list-workspaces-restricted", server_id=self.context.server.id, trace=workspace_trace)
-            raise RuntimeError(self._last_project_list_issue)
+            workspace_objects = []
+        else:
+            workspace_objects = _workspace_objects(workspace_payload)
 
-        workspace_objects = _workspace_objects(workspace_payload)
         if workspace_objects:
             sample_workspace = workspace_objects[0]
 
@@ -1253,18 +1325,12 @@ class TeamworkAdapter:
 
         if not workspace_objects:
             self._last_project_list_issue = "Workspace listing returned no workspace objects with kerml:resources"
-            logger.error(
+            logger.warning(
                 "twc-project-list-workspaces-empty",
                 server_id=self.context.server.id,
-                response_shape=_payload_shape(workspace_payload),
-                full_payload_sample=workspace_payload,
-                full_payload_sample_json=json.dumps(workspace_payload, indent=2, default=str),
+                response_shape=_payload_shape(workspace_payload) if workspace_payload is not None else None,
                 workspace_trace=workspace_trace,
             )
-            raise RuntimeError(self._last_project_list_issue)
-
-        resolved_resources: list[dict[str, Any]] = []
-        seen_resource_ids: set[str] = set()
 
         for workspace in workspace_objects:
             workspace_id = self._workspace_id_from_payload(workspace, allow_plain_identifier=True)
@@ -1282,7 +1348,12 @@ class TeamworkAdapter:
 
                 resource_payload, resource_trace = await self._request_candidates_with_trace(
                     "GET",
-                    [f"/osmc/resources/{resource_id}"],
+                    [
+                        *((
+                            f"/osmc/workspaces/{workspace_id}/resources/{resource_id}",
+                        ) if workspace_id else ()),
+                        f"/osmc/resources/{resource_id}",
+                    ],
                 )
                 if resource_payload is None:
                     logger.warning(
@@ -1303,10 +1374,7 @@ class TeamworkAdapter:
                     )
                     continue
 
-                resource_entity = _payload_entity(resource_payload, "resource")
-                if resource_entity is None and isinstance(resource_payload, dict):
-                    resource_entity = resource_payload
-                if resource_entity is None:
+                if not append_resource_payload(resource_payload, workspace_id, resource_id):
                     logger.warning(
                         "twc-project-list-resource-resolve-unusable",
                         server_id=self.context.server.id,
@@ -1314,16 +1382,47 @@ class TeamworkAdapter:
                         resource_id=resource_id,
                         response_shape=_payload_shape(resource_payload),
                     )
+
+            if workspace_id and not resource_ids:
+                workspace_resources_payload, workspace_resources_trace = await self._request_candidates_with_trace(
+                    "GET",
+                    [
+                        f"/osmc/workspaces/{workspace_id}/resources?includeBody=true&includeRemovedResource=false",
+                        f"/osmc/workspaces/{workspace_id}/resources?includeBody=true",
+                        f"/osmc/workspaces/{workspace_id}/resources",
+                    ],
+                )
+                if workspace_resources_payload is None or (
+                    isinstance(workspace_resources_payload, dict) and workspace_resources_payload.get("restricted")
+                ):
+                    logger.warning(
+                        "twc-project-list-workspace-resource-list-failed",
+                        server_id=self.context.server.id,
+                        workspace_id=workspace_id,
+                        trace=workspace_resources_trace,
+                    )
                     continue
+                for resource_item in payload_members(workspace_resources_payload):
+                    append_resource_payload(resource_item, workspace_id)
 
-                if sample_resolved_resource is None:
-                    sample_resolved_resource = resource_entity
-
-                resolved_resource = dict(resource_entity)
-                resolved_resource["__workspace_id"] = workspace_id
-                resolved_resource["__resource_id"] = resource_id
-                resolved_resources.append(resolved_resource)
-                seen_resource_ids.add(resource_id)
+        if not resolved_resources:
+            direct_resource_payload, direct_resource_trace = await self._request_candidates_with_trace(
+                "GET",
+                [
+                    "/osmc/resources?includeBody=true&includeRemovedResource=false",
+                    "/osmc/resources?includeBody=true",
+                    "/osmc/resources",
+                ],
+            )
+            if direct_resource_payload is None:
+                self._last_project_list_issue = f"Resource listing did not return a usable response ({self._trace_summary(direct_resource_trace)})"
+                logger.warning("twc-project-list-direct-resources-failed", server_id=self.context.server.id, trace=direct_resource_trace)
+            elif isinstance(direct_resource_payload, dict) and direct_resource_payload.get("restricted"):
+                self._last_project_list_issue = f"Resource listing returned HTTP {direct_resource_payload.get('status_code')} for the active Teamwork Cloud session"
+                logger.warning("twc-project-list-direct-resources-restricted", server_id=self.context.server.id, trace=direct_resource_trace)
+            else:
+                for resource_item in payload_members(direct_resource_payload):
+                    append_resource_payload(resource_item, None)
 
         logger.info(
             "twc-project-list-resolved-resources",
@@ -1467,14 +1566,24 @@ class TeamworkAdapter:
         )
 
     async def _load_remote_tree(self, project_id: str, branch_id: str) -> list[TreeNode]:
-        payload = await self._request_candidates("GET", [f"/osmc/resources/{project_id}/branches/{branch_id}/models"])
-        if payload is None:
-            return []
-        model_ids = _container_member_ids(payload)
+        payload = await self._request_candidates(
+            "GET",
+            [
+                f"/osmc/resources/{project_id}/branches/{branch_id}/models",
+                f"/osmc/resources/{project_id}/models",
+            ],
+        )
+        model_ids = _container_member_ids(payload) if payload is not None else []
         nodes: list[TreeNode] = []
         for model_id in model_ids:
-            model_payload = await self._request_candidates("GET", [f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}"])
-            if isinstance(model_payload, dict):
+            model_payload = await self._request_candidates(
+                "GET",
+                [
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
+                    f"/osmc/resources/{project_id}/models/{model_id}",
+                ],
+            )
+            if _payload_entity(model_payload) is not None:
                 nodes.append(self._model_tree_node(model_id, model_payload, project_id, branch_id))
         return nodes
 
@@ -1512,7 +1621,7 @@ class TeamworkAdapter:
             attachment_supported=False,
             collaborators=[],
         )
-        return self._overlay_item(item, project_id, branch_id)
+        return item
 
     def _document_versions(self, payload: dict[str, Any], fallback_versions: list[DocumentVersion] | None = None) -> list[DocumentVersion]:
         versions: list[DocumentVersion] = []
@@ -1743,7 +1852,11 @@ class TeamworkAdapter:
         if not remote_payload:
             return None
 
-        updated_payload = json.loads(json.dumps(remote_payload))
+        remote_entity = _payload_entity(remote_payload)
+        if not isinstance(remote_entity, dict):
+            return None
+
+        updated_payload = json.loads(json.dumps(remote_entity))
         esi_data = updated_payload.setdefault("kerml:esiData", {})
         if not isinstance(esi_data, dict):
             esi_data = {}
@@ -1776,13 +1889,7 @@ class TeamworkAdapter:
             if not response_payload:
                 raise PermissionError("Remote Teamwork Cloud item update could not be confirmed for this element.")
 
-        item = self._remote_item_details(response_payload or remote_payload, item_id, project_id, branch_id)
-        overlay_fields = {
-            key: value
-            for key, value in payload.items()
-            if key in {"name", "description", "documentation_markdown", "metadata", "version"}
-        }
-        return self.fallback.save_item(item.model_copy(update=overlay_fields))
+        return self._remote_item_details(response_payload or remote_payload, item_id, project_id, branch_id)
 
     async def list_projects(self) -> list[ProjectSummary]:
         try:
@@ -1806,7 +1913,7 @@ class TeamworkAdapter:
             items = _first_list(payload, "tree", "items", "data")
             if items:
                 return [TreeNode.model_validate(item) for item in items]
-        return self.fallback.tree(project_id, branch_id)
+        return []
 
     async def get_item(self, item_id: str, project_id: str | None = None, branch_id: str | None = None) -> ItemDetails:
         if project_id and branch_id:
@@ -1820,10 +1927,7 @@ class TeamworkAdapter:
                 return ItemDetails.model_validate(payload)
             except Exception:
                 pass
-        items = self.fallback.items()
-        if item_id not in items:
-            raise KeyError(item_id)
-        return items[item_id]
+        raise KeyError(item_id)
 
     async def update_item(
         self,
@@ -1837,18 +1941,7 @@ class TeamworkAdapter:
             if remote_item is not None:
                 return remote_item
 
-        item = await self.get_item(item_id, project_id, branch_id)
-        if not item.editable:
-            raise PermissionError("This model item is read-only for the active session")
-
-        updated = item.model_copy(
-            update={
-                key: value
-                for key, value in payload.items()
-                if key in {"name", "description", "documentation_markdown", "metadata", "version"}
-            }
-        )
-        return self.fallback.save_item(updated)
+        raise KeyError(item_id)
 
     async def search(self, query: str) -> SearchResponse:
         payload = await self._request_candidates("GET", self.search_candidates(query))
@@ -2249,6 +2342,11 @@ class TeamworkAdapter:
         right_project_id: str | None = None,
         right_branch_id: str | None = None,
     ) -> CompareResult:
+        if left_project_id and left_project_id == right_project_id and left_id.isdigit() and right_id.isdigit():
+            revision_diff = await self._compare_revisions(left_project_id, left_id, right_id)
+            if revision_diff is not None:
+                return revision_diff
+
         left = (await self.get_item(left_id, left_project_id, left_branch_id)).model_dump(mode="json")
         right = (await self.get_item(right_id, right_project_id, right_branch_id)).model_dump(mode="json")
         differences = _dict_diff(left, right)
@@ -2260,87 +2358,100 @@ class TeamworkAdapter:
             differences=differences,
         )
 
+    async def _compare_revisions(self, resource_id: str, source_revision: str, target_revision: str) -> CompareResult | None:
+        payload = await self._request_candidates(
+            "GET",
+            [f"/osmc/resources/{resource_id}/revisiondiff?source={source_revision}&target={target_revision}"],
+        )
+        if not isinstance(payload, dict) or payload.get("restricted"):
+            return None
+
+        differences: list[CompareDifference] = []
+        for section, section_value in sorted(payload.items()):
+            if section.startswith("@"):
+                continue
+            values = section_value if isinstance(section_value, list) else [section_value]
+            for index, value in enumerate(values):
+                differences.append(
+                    CompareDifference(
+                        field_path=f"{section}[{index}]",
+                        left_value=None if section.lower().startswith("added") else value,
+                        right_value=None if section.lower().startswith("removed") else value,
+                        summary=f"{section} revision difference",
+                    )
+                )
+
+        return CompareResult(
+            compare_type="revisiondiff",
+            left_id=source_revision,
+            right_id=target_revision,
+            summary=f"{len(differences)} revision differences detected.",
+            differences=differences,
+        )
+
     def project_candidates(self) -> list[str]:
-        return ["/osmc/resources", "/api/projects", "/projects"]
+        return [
+            "/osmc/resources?includeBody=true&includeRemovedResource=false",
+            "/osmc/resources?includeBody=true",
+            "/osmc/resources",
+            "/osmc/workspaces?includeBody=true",
+        ]
 
     def current_user_candidates(self) -> list[str]:
         return ["/osmc/admin/currentUser"]
 
     def version_candidates(self) -> list[str]:
-        return ["/osmc/version", "/osmc/resources/version", "/api/version", "/version", "/about"]
+        return ["/osmc/version"]
 
     def tree_candidates(self, project_id: str | None, branch_id: str | None) -> list[str]:
-        project_id = project_id or "aircraft-systems"
-        branch_id = branch_id or "main"
+        if not project_id:
+            return []
+        if not branch_id:
+            return [f"/osmc/resources/{project_id}/models"]
         return [
-            f"/api/projects/{project_id}/branches/{branch_id}/tree",
-            f"/osmc/resources/projects/{project_id}/branches/{branch_id}/tree",
-            f"/api/model-tree?projectId={project_id}&branchId={branch_id}",
+            f"/osmc/resources/{project_id}/branches/{branch_id}/models",
+            f"/osmc/resources/{project_id}/models",
         ]
 
     def item_candidates(self, item_id: str) -> list[str]:
-        return [f"/api/items/{item_id}", f"/osmc/resources/items/{item_id}", f"/api/elements/{item_id}"]
+        return []
 
     def search_candidates(self, query: str) -> list[str]:
-        return [f"/api/search?query={query}", f"/osmc/resources/search?query={query}"]
+        return []
 
     def simulation_candidates(self, project_id: str | None = None) -> list[str]:
-        base_candidates = ["/api/simulations/configurations", "/simulation/api/configurations", "/simulations/configurations"]
-        if not project_id:
-            return base_candidates
-        candidates: list[str] = []
-        for candidate in base_candidates:
-            candidates.append(f"{candidate}?projectId={project_id}")
-            candidates.append(candidate)
-        return candidates
+        return []
 
     def simulation_run_candidates(self) -> list[str]:
-        return ["/api/simulations/runs", "/simulation/api/runs", "/simulations/runs"]
+        return []
 
     def document_candidates(self) -> list[str]:
-        return ["/api/collaborator/documents", "/collaborator/api/documents", "/documents"]
+        return []
 
     def document_item_candidates(self, document_id: str) -> list[str]:
-        return [f"/api/collaborator/documents/{document_id}", f"/collaborator/api/documents/{document_id}", f"/documents/{document_id}"]
+        return []
 
     def attachment_candidates(self, document_id: str) -> list[str]:
-        return [
-            f"/api/collaborator/documents/{document_id}/attachments",
-            f"/collaborator/api/documents/{document_id}/attachments",
-            f"/documents/{document_id}/attachments",
-        ]
+        return []
 
     def attachment_item_candidates(self, document_id: str, attachment_id: str) -> list[str]:
-        return [
-            f"/api/collaborator/documents/{document_id}/attachments/{attachment_id}",
-            f"/collaborator/api/documents/{document_id}/attachments/{attachment_id}",
-            f"/documents/{document_id}/attachments/{attachment_id}",
-        ]
+        return []
 
     def attachment_download_candidates(self, document_id: str, attachment_id: str) -> list[str]:
-        return [
-            f"/api/collaborator/documents/{document_id}/attachments/{attachment_id}/download",
-            f"/collaborator/api/documents/{document_id}/attachments/{attachment_id}/download",
-            f"/documents/{document_id}/attachments/{attachment_id}/download",
-            *self.attachment_item_candidates(document_id, attachment_id),
-        ]
+        return []
 
     def comment_candidates(self, document_id: str) -> list[str]:
-        return [
-            f"/api/collaborator/documents/{document_id}/comments",
-            f"/collaborator/api/documents/{document_id}/comments",
-            f"/documents/{document_id}/comments",
-        ]
+        return []
 
 
 class Teamwork2022xAdapter(TeamworkAdapter):
     def version_candidates(self) -> list[str]:
-        return ["/osmc/version", "/osmc/resources/version", "/api/version", "/version", "/about"]
+        return ["/osmc/version"]
 
 
 class Teamwork2024xAdapter(TeamworkAdapter):
     def version_candidates(self) -> list[str]:
-        return ["/osmc/version", "/api/version", "/osmc/resources/version", "/version", "/about"]
+        return ["/osmc/version"]
 
 
 def create_adapter(server: ServerProfile, tokens: TokenBundle, storage_dir: Path) -> TeamworkAdapter:

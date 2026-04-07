@@ -131,7 +131,7 @@ export default function LandingPage() {
               <Stack spacing={2.5}>
                 <Chip icon={<MonitorHeartRoundedIcon />} label="Teamwork Cloud 2022x and 2024x" sx={{ width: "fit-content", color: "white", borderColor: "rgba(255,255,255,0.28)" }} variant="outlined" />
                 <Typography variant="h2" sx={{ maxWidth: 900 }}>
-                  Secure enterprise workbench for modeling, simulation, publishing, and collaborator presentation workflows.
+                  Secure enterprise workbench for Teamwork Cloud repository browsing, item details, and compare workflows.
                 </Typography>
                 <Typography variant="h6" sx={{ maxWidth: 900, color: "rgba(255,255,255,0.82)", fontWeight: 400 }}>
                   Administrators publish the Teamwork Cloud preset catalog centrally. End users can see that server list before app login, choose a target TWC server, and then sign in through that Teamwork Cloud environment.
@@ -160,7 +160,7 @@ export default function LandingPage() {
                     </Stack>
                     <Stack direction="row" spacing={1.5} alignItems="center">
                       <PublicRoundedIcon fontSize="small" />
-                      <Typography variant="body2">Capability-aware UX with server-specific fallbacks</Typography>
+                      <Typography variant="body2">RealSwagger-backed repository workflows</Typography>
                     </Stack>
                   </Stack>
                 </Stack>
@@ -302,10 +302,9 @@ export default function LandingPage() {
                 <Typography variant="h5">Feature Envelope</Typography>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 2 }}>
                   <Chip label="Projects and model browsing" color="success" />
-                  <Chip label="Simulation orchestration" color="success" />
-                  <Chip label="Collaborator presentation" color="success" />
-                  <Chip label="Pluggable publishing" color="success" />
-                  <Chip label="Secure job center" color="success" />
+                  <Chip label="Item details" color="success" />
+                  <Chip label="Compare and revision diff" color="success" />
+                  <Chip label="TWC SAML sign-in" color="success" />
                 </Stack>
               </Paper>
             </Stack>

@@ -1,11 +1,7 @@
-import { ChangeEvent, useDeferredValue, useEffect, useState, startTransition } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { type SyntheticEvent, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import ReactMarkdown from "react-markdown";
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Alert,
   AppBar,
   Box,
@@ -13,19 +9,15 @@ import {
   Card,
   CardContent,
   Chip,
-  Dialog,
+  CircularProgress,
   Divider,
-  FormControlLabel,
   IconButton,
-  InputAdornment,
-  LinearProgress,
   List,
   ListItemButton,
   ListItemText,
   MenuItem,
   Paper,
   Stack,
-  Switch,
   Tab,
   Tabs,
   TextField,
@@ -34,812 +26,1102 @@ import {
   Typography,
 } from "@mui/material";
 import Grid from "@mui/material/GridLegacy";
-import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
-import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
-import BookmarkAddRoundedIcon from "@mui/icons-material/BookmarkAddRounded";
 import CompareArrowsRoundedIcon from "@mui/icons-material/CompareArrowsRounded";
-import DownloadRoundedIcon from "@mui/icons-material/DownloadRounded";
-import EditRoundedIcon from "@mui/icons-material/EditRounded";
-import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
-import FullscreenRoundedIcon from "@mui/icons-material/FullscreenRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
-import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
-import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
-import SwapHorizRoundedIcon from "@mui/icons-material/SwapHorizRounded";
-import UploadRoundedIcon from "@mui/icons-material/UploadRounded";
 
 import CapabilityBadges from "../components/CapabilityBadges";
-import JobStrip from "../components/JobStrip";
 import ProjectTree from "../components/ProjectTree";
 import SettingsDialog from "../components/SettingsDialog";
 import {
-  AttachmentInfo,
-  Bookmark,
-  BranchSummary,
-  CommentEntry,
-  CompareDifference,
   ItemDetails,
-  JobRecord,
-  SearchResult,
+  ProjectSummary,
   SessionPreferences,
-  SimulationConfig,
-  SimulationParameter,
+  SwaggerContractManifest,
+  SwaggerExecuteResponse,
+  SwaggerOperationSpec,
+  SwaggerParameterSpec,
   TreeNode,
 } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
-import { capabilityColor, formatBytes, formatDate, jobStatusColor } from "../utils/format";
 
-type WorkspaceTab =
-  | "dashboard"
-  | "projects"
-  | "models"
-  | "details"
-  | "compare"
-  | "simulation"
-  | "collaborator"
-  | "search"
-  | "jobs";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "api";
 
-const WORKSPACE_TABS: Array<{ value: WorkspaceTab; label: string }> = [
-  { value: "dashboard", label: "Dashboard" },
-  { value: "projects", label: "Project Browser" },
-  { value: "models", label: "Model Browser" },
-  { value: "details", label: "Item Details" },
-  { value: "compare", label: "Compare" },
-  { value: "simulation", label: "Simulation" },
-  { value: "collaborator", label: "Collaborator Workspace" },
-  { value: "search", label: "Search Results" },
-  { value: "jobs", label: "Job Center" },
-];
-
-function flattenNodes(nodes: TreeNode[]): TreeNode[] {
-  return nodes.flatMap((node) => [node, ...flattenNodes(node.children)]);
+function errorMessage(caught: unknown): string {
+  return caught instanceof Error ? caught.message : "The request failed.";
 }
 
-function prettyValue(value: unknown): string {
+function flattenTree(nodes: TreeNode[]): TreeNode[] {
+  const flattened: TreeNode[] = [];
+  const visit = (node: TreeNode) => {
+    flattened.push(node);
+    node.children.forEach(visit);
+  };
+  nodes.forEach(visit);
+  return flattened;
+}
+
+function valueText(value: unknown): string {
   if (value === null || value === undefined) {
-    return "-";
+    return "";
   }
   if (typeof value === "string") {
     return value;
   }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
   return JSON.stringify(value, null, 2);
 }
 
-function notificationMessage(caught: unknown): string {
-  return caught instanceof Error ? caught.message : "The request failed.";
+function branchLabel(project: ProjectSummary | null, branchId: string): string {
+  return project?.branches.find((branch) => branch.id === branchId)?.name ?? branchId;
 }
 
-function buildCompareRows(left: JobRecord | undefined, right: JobRecord | undefined): CompareDifference[] {
-  const leftMetrics = (left?.result?.metrics as Record<string, unknown> | undefined) ?? {};
-  const rightMetrics = (right?.result?.metrics as Record<string, unknown> | undefined) ?? {};
-  const keys = Array.from(new Set([...Object.keys(leftMetrics), ...Object.keys(rightMetrics)])).sort();
-
-  return keys
-    .filter((key) => leftMetrics[key] !== rightMetrics[key])
-    .map((key) => ({
-      field_path: key,
-      left_value: leftMetrics[key],
-      right_value: rightMetrics[key],
-      summary: `${key} changed`,
-    }));
-}
-
-function MetricCard({ label, value, caption }: { label: string; value: string; caption: string }) {
-  return (
-    <Card sx={{ borderRadius: 5, height: "100%" }}>
-      <CardContent>
-        <Typography variant="overline" color="text.secondary">
-          {label}
-        </Typography>
-        <Typography variant="h4" sx={{ mt: 0.5 }}>
-          {value}
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1.25 }}>
-          {caption}
-        </Typography>
-      </CardContent>
-    </Card>
-  );
-}
-
-function ParameterField({
-  parameter,
-  value,
-  onChange,
-}: {
-  parameter: SimulationParameter;
-  value: string | number | boolean;
-  onChange: (value: string | number | boolean) => void;
-}) {
-  if (parameter.kind === "choice") {
-    return (
-      <TextField
-        select
-        label={parameter.label}
-        fullWidth
-        value={String(value)}
-        onChange={(event) => onChange(event.target.value)}
-        helperText={parameter.description}
-      >
-        {parameter.options.map((option) => (
-          <MenuItem key={option} value={option}>
-            {option}
-          </MenuItem>
-        ))}
-      </TextField>
-    );
+function defaultParameterValue(parameter: SwaggerParameterSpec): string {
+  if (parameter.default === null || parameter.default === undefined) {
+    return "";
   }
+  return String(parameter.default);
+}
 
-  if (parameter.kind === "boolean") {
-    return (
-      <TextField
-        select
-        label={parameter.label}
-        fullWidth
-        value={String(value)}
-        onChange={(event) => onChange(event.target.value === "true")}
-        helperText={parameter.description}
-      >
-        <MenuItem value="true">True</MenuItem>
-        <MenuItem value="false">False</MenuItem>
-      </TextField>
-    );
+function coerceParameterValue(parameter: SwaggerParameterSpec, value: string): unknown {
+  if (value === "") {
+    return "";
   }
+  if (parameter.schema_type === "boolean") {
+    return value === "true";
+  }
+  if (parameter.schema_type === "integer") {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isNaN(parsed) ? value : parsed;
+  }
+  if (parameter.schema_type === "number") {
+    const parsed = Number.parseFloat(value);
+    return Number.isNaN(parsed) ? value : parsed;
+  }
+  if (parameter.schema_type === "array") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return value;
+}
 
-  return (
-    <TextField
-      label={parameter.label}
-      type={parameter.kind === "integer" || parameter.kind === "number" ? "number" : "text"}
-      fullWidth
-      value={String(value)}
-      onChange={(event) => {
-        if (parameter.kind === "integer") {
-          onChange(Number.parseInt(event.target.value, 10) || 0);
-          return;
-        }
-        if (parameter.kind === "number") {
-          onChange(Number.parseFloat(event.target.value) || 0);
-          return;
-        }
-        onChange(event.target.value);
-      }}
-      helperText={parameter.description}
-    />
-  );
+function collectParameterValues(parameters: SwaggerParameterSpec[], values: Record<string, string>) {
+  return parameters.reduce<Record<string, unknown>>((collected, parameter) => {
+    const value = values[parameter.name] ?? "";
+    if (value !== "") {
+      collected[parameter.name] = coerceParameterValue(parameter, value);
+    } else if (parameter.location === "path" && parameter.required) {
+      collected[parameter.name] = "";
+    }
+    return collected;
+  }, {});
+}
+
+function requestBodyTemplate(operation: SwaggerOperationSpec | null, manifest: SwaggerContractManifest | null): string {
+  if (!operation?.request_body) {
+    return "";
+  }
+  const contentType = operation.request_body.content_types[0] ?? "";
+  if (contentType === "text/plain") {
+    return "";
+  }
+  const schemaName = Object.values(operation.request_body.schema_refs).find(Boolean);
+  if (!schemaName || !manifest) {
+    return "{}";
+  }
+  const schema = manifest.schemas.find((candidate) => candidate.name === schemaName);
+  if (!schema || !schema.properties.length) {
+    return "{}";
+  }
+  const sample = schema.properties.reduce<Record<string, unknown>>((collected, property) => {
+    if (!property.required && schema.required.length) {
+      return collected;
+    }
+    if (property.schema_type === "boolean") {
+      collected[property.name] = false;
+    } else if (property.schema_type === "integer" || property.schema_type === "number") {
+      collected[property.name] = 0;
+    } else if (property.schema_type === "array") {
+      collected[property.name] = [];
+    } else if (property.schema_type === "object") {
+      collected[property.name] = {};
+    } else {
+      collected[property.name] = "";
+    }
+    return collected;
+  }, {});
+  return JSON.stringify(sample, null, 2);
+}
+
+function responseContent(response: SwaggerExecuteResponse): string {
+  if (response.body !== null && response.body !== undefined) {
+    return JSON.stringify(response.body, null, 2);
+  }
+  if (response.text) {
+    return response.text;
+  }
+  if (response.body_base64) {
+    return `Binary response: ${response.size_bytes} bytes, ${response.content_type || "unknown content type"}.`;
+  }
+  return "No response body.";
+}
+
+function downloadSwaggerResponse(response: SwaggerExecuteResponse) {
+  if (!response.body_base64) {
+    return;
+  }
+  const binary = atob(response.body_base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  const blob = new Blob([bytes], { type: response.content_type || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = response.filename ?? "twc-response.bin";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 export default function WorkspacePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { refreshSession, session } = useSession();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [treeFilter, setTreeFilter] = useState("");
-  const [searchDraft, setSearchDraft] = useState(searchParams.get("q") ?? "");
-  const [itemMetadataDraft, setItemMetadataDraft] = useState("{}");
-  const [itemDraft, setItemDraft] = useState<Partial<ItemDetails>>({});
-  const [documentDraft, setDocumentDraft] = useState("");
-  const [commentDraft, setCommentDraft] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [presentationOpen, setPresentationOpen] = useState(false);
-  const [branchDialogOpen, setBranchDialogOpen] = useState(false);
-  const [documentEditMode, setDocumentEditMode] = useState(false);
-  const [branchDraft, setBranchDraft] = useState<{ name: string; description: string }>({ name: "", description: "" });
-  const [selectedSimulationConfigId, setSelectedSimulationConfigId] = useState("");
-  const [simulationValues, setSimulationValues] = useState<Record<string, string | number | boolean>>({});
-  const [publishForm, setPublishForm] = useState({
-    scope: "full",
-    template: "board-deck",
-    category: "governance",
-    republish: false,
-    open_result: true,
-  });
-  const [simulationCompareLeftId, setSimulationCompareLeftId] = useState("");
-  const [simulationCompareRightId, setSimulationCompareRightId] = useState("");
-  const [banner, setBanner] = useState<{ severity: "success" | "error" | "info"; message: string } | null>(null);
-  const deferredTreeFilter = useDeferredValue(treeFilter);
-
+  const { session, refreshSession } = useSession();
   const csrfToken = session?.csrf_token ?? "";
-  const selectedTab = (searchParams.get("tab") as WorkspaceTab | null) ?? "dashboard";
-  const selectedProjectId = searchParams.get("project") ?? undefined;
-  const selectedBranchId = searchParams.get("branch") ?? undefined;
-  const selectedItemId = searchParams.get("item") ?? undefined;
-  const selectedDocumentId = searchParams.get("doc") ?? undefined;
-  const compareLeftId = searchParams.get("compareLeft") ?? "";
-  const compareRightId = searchParams.get("compareRight") ?? "";
-  const compareLeftProjectId = searchParams.get("compareLeftProject") ?? undefined;
-  const compareLeftBranchId = searchParams.get("compareLeftBranch") ?? undefined;
-  const compareRightProjectId = searchParams.get("compareRightProject") ?? undefined;
-  const compareRightBranchId = searchParams.get("compareRightBranch") ?? undefined;
-  const searchQuery = searchParams.get("q") ?? "";
-
-  const updateParams = (updates: Record<string, string | undefined>, replace = false) => {
-    const next = new URLSearchParams(searchParams);
-    Object.entries(updates).forEach(([key, value]) => {
-      if (!value) {
-        next.delete(key);
-      } else {
-        next.set(key, value);
-      }
-    });
-    startTransition(() => setSearchParams(next, { replace }));
-  };
-
   const capabilities = session?.capabilities?.capabilities ?? {};
-  const canRunSimulation = capabilities.simulation?.state !== "not_available";
-  const canPublish = capabilities.publish?.state !== "not_available";
-  const canEditItems = capabilities.edit?.state !== "not_available";
-  const canAttach = capabilities.attachment?.state !== "not_available";
-  const canEditBranches = capabilities.branch_edit?.state === "ready";
+  const canEdit = capabilities.edit?.state === "ready";
+
+  const [tab, setTab] = useState<WorkspaceTab>("dashboard");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [selectedBranchId, setSelectedBranchId] = useState("");
+  const [treeFilter, setTreeFilter] = useState("");
+  const [selectedItemId, setSelectedItemId] = useState("");
+  const [itemDraft, setItemDraft] = useState<ItemDetails | null>(null);
+  const [compareLeft, setCompareLeft] = useState("");
+  const [compareRight, setCompareRight] = useState("");
+  const [selectedApiTag, setSelectedApiTag] = useState("");
+  const [selectedOperationKey, setSelectedOperationKey] = useState("");
+  const [apiSearch, setApiSearch] = useState("");
+  const [apiPathParams, setApiPathParams] = useState<Record<string, string>>({});
+  const [apiQueryParams, setApiQueryParams] = useState<Record<string, string>>({});
+  const [apiBodyText, setApiBodyText] = useState("");
+  const [apiContentType, setApiContentType] = useState("");
+  const [apiUploadFile, setApiUploadFile] = useState<File | null>(null);
+  const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
 
   const dashboardQuery = useQuery({
-    queryKey: ["dashboard"],
+    queryKey: ["workspace-dashboard"],
     queryFn: api.getDashboard,
-    retry: false,
   });
 
   const projectsQuery = useQuery({
-    queryKey: ["projects"],
+    queryKey: ["workspace-projects"],
     queryFn: api.getProjects,
-    retry: false,
   });
 
+  const contractQuery = useQuery({
+    queryKey: ["workspace-contract"],
+    queryFn: api.getContractManifest,
+  });
+
+  const projects = projectsQuery.data ?? dashboardQuery.data?.projects ?? [];
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId],
+  );
+
+  useEffect(() => {
+    if (!selectedProjectId && projects.length) {
+      setSelectedProjectId(projects[0].id);
+    }
+  }, [projects, selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProject) {
+      return;
+    }
+    if (!selectedProject.branches.length) {
+      setSelectedBranchId("");
+      return;
+    }
+    if (!selectedProject.branches.some((branch) => branch.id === selectedBranchId)) {
+      setSelectedBranchId(selectedProject.branches[0].id);
+    }
+  }, [selectedBranchId, selectedProject]);
+
   const treeQuery = useQuery({
-    queryKey: ["tree", selectedProjectId, selectedBranchId],
-    queryFn: () => api.getTree(selectedProjectId, selectedBranchId),
+    queryKey: ["workspace-tree", selectedProjectId, selectedBranchId],
+    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined),
     enabled: Boolean(selectedProjectId),
   });
 
+  const treeNodes = treeQuery.data ?? [];
+  const flatNodes = useMemo(() => flattenTree(treeNodes), [treeNodes]);
+  const contractManifest = contractQuery.data ?? null;
+  const apiTags = useMemo(
+    () => Object.keys(contractManifest?.tag_counts ?? {}).sort((left, right) => left.localeCompare(right)),
+    [contractManifest],
+  );
+  const apiOperations = useMemo(() => contractManifest?.operations ?? [], [contractManifest]);
+  const filteredApiOperations = useMemo(() => {
+    const search = apiSearch.trim().toLowerCase();
+    return apiOperations
+      .filter((operation) => operation.tag === selectedApiTag)
+      .filter((operation) => {
+        if (!search) {
+          return true;
+        }
+        return `${operation.method} ${operation.path} ${operation.summary} ${operation.description}`.toLowerCase().includes(search);
+      });
+  }, [apiOperations, apiSearch, selectedApiTag]);
+  const selectedOperation = useMemo(
+    () => apiOperations.find((operation) => operation.key === selectedOperationKey) ?? filteredApiOperations[0] ?? null,
+    [apiOperations, filteredApiOperations, selectedOperationKey],
+  );
+  const apiOperationStats = useMemo(
+    () =>
+      Object.entries(contractManifest?.operation_counts ?? {})
+        .map(([method, count]) => `${method} ${count}`)
+        .join(" / "),
+    [contractManifest],
+  );
+
+  const contextParameterValue = (parameter: SwaggerParameterSpec): string => {
+    const normalized = parameter.name.toLowerCase();
+    if (normalized === "workspaceid") {
+      return selectedProject?.workspace_id ?? "";
+    }
+    if (normalized === "resourceid") {
+      return selectedProject?.resource_id ?? selectedProjectId;
+    }
+    if (normalized === "branchid") {
+      return selectedBranchId;
+    }
+    if (normalized === "elementid" || normalized === "modelid") {
+      return selectedItemId;
+    }
+    if (normalized === "source") {
+      return compareLeft;
+    }
+    if (normalized === "target") {
+      return compareRight;
+    }
+    return defaultParameterValue(parameter);
+  };
+
+  useEffect(() => {
+    if (!selectedApiTag && apiTags.length) {
+      setSelectedApiTag(apiTags[0]);
+    }
+  }, [apiTags, selectedApiTag]);
+
+  useEffect(() => {
+    if (!filteredApiOperations.length) {
+      setSelectedOperationKey("");
+      return;
+    }
+    if (!filteredApiOperations.some((operation) => operation.key === selectedOperationKey)) {
+      setSelectedOperationKey(filteredApiOperations[0].key);
+    }
+  }, [filteredApiOperations, selectedOperationKey]);
+
+  useEffect(() => {
+    if (!selectedOperation) {
+      return;
+    }
+    setApiPathParams(
+      selectedOperation.path_parameters.reduce<Record<string, string>>((values, parameter) => {
+        values[parameter.name] = contextParameterValue(parameter);
+        return values;
+      }, {}),
+    );
+    setApiQueryParams(
+      selectedOperation.query_parameters.reduce<Record<string, string>>((values, parameter) => {
+        values[parameter.name] = defaultParameterValue(parameter);
+        return values;
+      }, {}),
+    );
+    setApiContentType(selectedOperation.request_body?.content_types[0] ?? "");
+    setApiBodyText(requestBodyTemplate(selectedOperation, contractManifest));
+    setApiUploadFile(null);
+  }, [
+    selectedOperation,
+    contractManifest,
+    selectedProject?.workspace_id,
+    selectedProject?.resource_id,
+    selectedProjectId,
+    selectedBranchId,
+    selectedItemId,
+    compareLeft,
+    compareRight,
+  ]);
+
   const itemQuery = useQuery({
-    queryKey: ["item", selectedProjectId, selectedBranchId, selectedItemId],
-    queryFn: () => api.getItem(selectedItemId!, selectedProjectId, selectedBranchId),
+    queryKey: ["workspace-item", selectedItemId, selectedProjectId, selectedBranchId],
+    queryFn: () => api.getItem(selectedItemId, selectedProjectId || undefined, selectedBranchId || undefined),
     enabled: Boolean(selectedItemId),
   });
 
-  const documentsQuery = useQuery({
-    queryKey: ["documents"],
-    queryFn: api.getDocuments,
-  });
-
-  const documentQuery = useQuery({
-    queryKey: ["document", selectedDocumentId],
-    queryFn: () => api.getDocument(selectedDocumentId!),
-    enabled: Boolean(selectedDocumentId),
-  });
-
-  const attachmentsQuery = useQuery({
-    queryKey: ["attachments", selectedDocumentId],
-    queryFn: () => api.getAttachments(selectedDocumentId!),
-    enabled: Boolean(selectedDocumentId),
-  });
-
-  const commentsQuery = useQuery({
-    queryKey: ["comments", selectedDocumentId],
-    queryFn: () => api.getComments(selectedDocumentId!),
-    enabled: Boolean(selectedDocumentId),
-  });
-
-  const searchResultsQuery = useQuery({
-    queryKey: ["search", searchQuery],
-    queryFn: () => api.search(searchQuery),
-    enabled: Boolean(searchQuery),
-  });
-
-  const compareQuery = useQuery({
-    queryKey: [
-      "compare",
-      compareLeftId,
-      compareRightId,
-      compareLeftProjectId,
-      compareLeftBranchId,
-      compareRightProjectId,
-      compareRightBranchId,
-    ],
-    queryFn: () =>
-      api.compare(
-        compareLeftId,
-        compareRightId,
-        compareLeftProjectId ?? selectedProjectId,
-        compareLeftBranchId ?? selectedBranchId,
-        compareRightProjectId ?? selectedProjectId,
-        compareRightBranchId ?? selectedBranchId,
-      ),
-    enabled: Boolean(compareLeftId && compareRightId),
-  });
-
-  const simulationConfigsQuery = useQuery({
-    queryKey: ["simulation-configs", selectedProjectId],
-    queryFn: () => api.getSimulationConfigurations(selectedProjectId),
-    enabled: Boolean(selectedProjectId),
-  });
-
-  const simulationHistoryQuery = useQuery({
-    queryKey: ["simulation-history"],
-    queryFn: api.getSimulationHistory,
-  });
-
-  const jobsQuery = useQuery({
-    queryKey: ["jobs"],
-    queryFn: api.listJobs,
-    refetchInterval: session?.preferences.live_log_poll_interval_ms ?? 2500,
-  });
-
-  const refreshCapabilityMutation = useMutation({
-    mutationFn: () => api.refreshCapabilities(csrfToken),
-    onSuccess: async () => {
-      await refreshSession();
-      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      setBanner({ severity: "success", message: "Capabilities refreshed." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
+  useEffect(() => {
+    setItemDraft(itemQuery.data ?? null);
+  }, [itemQuery.data]);
 
   const logoutMutation = useMutation({
     mutationFn: () => api.logout(csrfToken),
     onSuccess: async () => {
-      queryClient.clear();
       await refreshSession();
       navigate("/", { replace: true });
     },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const capabilityMutation = useMutation({
+    mutationFn: () => api.refreshCapabilities(csrfToken),
+    onSuccess: async () => {
+      await refreshSession();
+      setNotice({ severity: "success", message: "Capabilities refreshed from Teamwork Cloud." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const settingsMutation = useMutation({
+    mutationFn: (preferences: SessionPreferences) => api.updatePreferences(preferences, csrfToken),
+    onSuccess: async () => {
+      await refreshSession();
+      setNotice({ severity: "success", message: "Workspace settings saved." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
   const saveItemMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedItemId) {
+    mutationFn: () => {
+      if (!selectedItemId || !itemDraft) {
         throw new Error("Select an item before saving.");
       }
       return api.updateItem(
         selectedItemId,
         {
-          ...itemDraft,
-          metadata: JSON.parse(itemMetadataDraft) as Record<string, string>,
+          name: itemDraft.name,
+          description: itemDraft.description,
         },
         csrfToken,
-        selectedProjectId,
-        selectedBranchId,
+        selectedProjectId || undefined,
+        selectedBranchId || undefined,
       );
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["item", selectedProjectId, selectedBranchId, selectedItemId] });
-      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      setBanner({ severity: "success", message: "Model item saved." });
+    onSuccess: async (savedItem) => {
+      setItemDraft(savedItem);
+      await queryClient.invalidateQueries({ queryKey: ["workspace-item"] });
+      await queryClient.invalidateQueries({ queryKey: ["workspace-tree"] });
+      setNotice({ severity: "success", message: "Item saved to Teamwork Cloud." });
     },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
-  const updateDocumentMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedDocumentId) {
-        throw new Error("Select a collaborator document before saving.");
-      }
-      return api.updateDocument(selectedDocumentId, documentDraft, csrfToken);
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["document", selectedDocumentId] });
-      await queryClient.invalidateQueries({ queryKey: ["documents"] });
-      setBanner({ severity: "success", message: "Collaborator document saved." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const updateBranchMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedProjectId || !selectedBranchId) {
-        throw new Error("Select a project and branch before updating branch settings.");
-      }
-      return api.updateBranch(selectedProjectId, selectedBranchId, branchDraft, csrfToken);
-    },
-    onSuccess: async (branch: BranchSummary) => {
-      await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      setBranchDraft({ name: branch.name, description: branch.description });
-      setBranchDialogOpen(false);
-      setBanner({ severity: "success", message: "Branch metadata saved." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const runSimulationMutation = useMutation({
-    mutationFn: async () => {
-      const config = simulationConfigsQuery.data?.find((candidate) => candidate.id === selectedSimulationConfigId);
-      if (!config || !selectedProjectId || !selectedBranchId) {
-        throw new Error("Choose a simulation configuration, project, and branch.");
-      }
-      return api.runSimulation(
-        {
-          config_id: config.id,
-          project_id: selectedProjectId,
-          branch_id: selectedBranchId,
-          parameters: simulationValues,
-        },
-        csrfToken,
-      );
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      await queryClient.invalidateQueries({ queryKey: ["simulation-history"] });
-      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      updateParams({ tab: "jobs" });
-      setBanner({ severity: "success", message: "Simulation job submitted." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const publishMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedProjectId || !selectedBranchId) {
-        throw new Error("Select a project and branch before publishing.");
-      }
-      return api.publish(
-        {
-          project_id: selectedProjectId,
-          branch_id: selectedBranchId,
-          scope: publishForm.scope,
-          template: publishForm.template,
-          category: publishForm.category,
-          republish: publishForm.republish,
-          open_result: publishForm.open_result,
-          presets: {},
-        },
-        csrfToken,
-      );
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      updateParams({ tab: "jobs" });
-      setBanner({ severity: "success", message: "Publish job submitted." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const exportMutation = useMutation({
-    mutationFn: (payload: Parameters<typeof api.exportData>[0]) => api.exportData(payload, csrfToken),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      updateParams({ tab: "jobs" });
-      setBanner({ severity: "success", message: "Export job submitted." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const uploadAttachmentMutation = useMutation({
-    mutationFn: async (file: File) => {
-      if (!selectedDocumentId) {
-        throw new Error("Select a document before uploading attachments.");
-      }
-      return api.uploadAttachment(selectedDocumentId, file, csrfToken);
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["attachments", selectedDocumentId] });
-      setBanner({ severity: "success", message: "Attachment uploaded." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const deleteAttachmentMutation = useMutation({
-    mutationFn: async (attachmentId: string) => {
-      if (!selectedDocumentId) {
-        throw new Error("Select a document before deleting attachments.");
-      }
-      return api.deleteAttachment(selectedDocumentId, attachmentId, csrfToken);
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["attachments", selectedDocumentId] });
-      setBanner({ severity: "success", message: "Attachment removed." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const addCommentMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedDocumentId) {
-        throw new Error("Select a document before adding comments.");
-      }
-      return api.addComment(selectedDocumentId, commentDraft, csrfToken);
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["comments", selectedDocumentId] });
-      setCommentDraft("");
-      setBanner({ severity: "success", message: "Comment added." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const saveSettingsMutation = useMutation({
-    mutationFn: (preferences: SessionPreferences) => api.updatePreferences(preferences, csrfToken),
-    onSuccess: async () => {
-      await refreshSession();
-      setBanner({ severity: "success", message: "Settings saved." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const saveBookmarkMutation = useMutation({
-    mutationFn: (bookmark: Bookmark) => api.addBookmark(bookmark, csrfToken),
-    onSuccess: async () => {
-      await refreshSession();
-      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      setBanner({ severity: "success", message: "Bookmark saved." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  const saveSearchMutation = useMutation({
-    mutationFn: (payload: { name: string; query: string }) =>
-      api.saveSearch(
-        {
-          id: crypto.randomUUID(),
-          name: payload.name,
-          query: payload.query,
-          filters: {},
-        },
-        csrfToken,
+  const compareMutation = useMutation({
+    mutationFn: () =>
+      api.compare(
+        compareLeft.trim(),
+        compareRight.trim(),
+        selectedProjectId || undefined,
+        selectedBranchId || undefined,
+        selectedProjectId || undefined,
+        selectedBranchId || undefined,
       ),
-    onSuccess: async () => {
-      await refreshSession();
-      setBanner({ severity: "success", message: "Saved search added." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
-  const cancelJobMutation = useMutation({
-    mutationFn: (jobId: string) => api.cancelJob(jobId, csrfToken),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      await queryClient.invalidateQueries({ queryKey: ["simulation-history"] });
-      setBanner({ severity: "success", message: "Job cancellation requested." });
-    },
-    onError: (caught) => setBanner({ severity: "error", message: notificationMessage(caught) }),
-  });
-
-  useEffect(() => {
-    setSearchDraft(searchQuery);
-  }, [searchQuery]);
-
-  useEffect(() => {
-    if (!projectsQuery.data?.length) {
-      return;
-    }
-    const project = projectsQuery.data.find((candidate) => candidate.id === selectedProjectId) ?? projectsQuery.data[0];
-    const branch = project.branches.find((candidate) => candidate.id === selectedBranchId) ?? project.branches[0];
-
-    if (!selectedProjectId || selectedProjectId !== project.id || !selectedBranchId || selectedBranchId !== branch?.id) {
-      updateParams(
+  const apiOperationMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedOperation) {
+        throw new Error("Select a Swagger operation first.");
+      }
+      const pathParams = collectParameterValues(selectedOperation.path_parameters, apiPathParams);
+      const queryParams = collectParameterValues(selectedOperation.query_parameters, apiQueryParams);
+      if (selectedOperation.supports_file_upload) {
+        if (!apiUploadFile) {
+          throw new Error("Select a file before running this upload operation.");
+        }
+        return api.executeContractUpload(selectedOperation.key, pathParams, queryParams, apiUploadFile, csrfToken);
+      }
+      let body: unknown = undefined;
+      const bodyText = apiBodyText.trim();
+      if (selectedOperation.request_body && bodyText) {
+        body = apiContentType === "text/plain" ? apiBodyText : JSON.parse(bodyText);
+      }
+      return api.executeContractOperation(
         {
-          project: project.id,
-          branch: branch?.id,
+          operation_key: selectedOperation.key,
+          path_params: pathParams,
+          query_params: queryParams,
+          body,
+          content_type: selectedOperation.request_body ? apiContentType || selectedOperation.request_body.content_types[0] : null,
+          timeout_seconds: 30,
         },
-        true,
+        csrfToken,
       );
-    }
-  }, [projectsQuery.data, selectedBranchId, selectedProjectId]);
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
 
-  useEffect(() => {
-    if (documentsQuery.data?.length && !selectedDocumentId) {
-      updateParams({ doc: documentsQuery.data[0].id }, true);
-    }
-  }, [documentsQuery.data, selectedDocumentId]);
+  const handleTabChange = (_event: SyntheticEvent, nextTab: WorkspaceTab) => {
+    setTab(nextTab);
+  };
 
-  useEffect(() => {
-    if (!itemQuery.data) {
-      return;
-    }
-    setItemDraft({
-      name: itemQuery.data.name,
-      description: itemQuery.data.description,
-      documentation_markdown: itemQuery.data.documentation_markdown,
-      version: itemQuery.data.version,
-    });
-    setItemMetadataDraft(JSON.stringify(itemQuery.data.metadata ?? {}, null, 2));
-  }, [itemQuery.data]);
+  const selectProject = (projectId: string) => {
+    setSelectedProjectId(projectId);
+    setSelectedItemId("");
+    setItemDraft(null);
+  };
 
-  useEffect(() => {
-    if (!documentQuery.data) {
-      return;
-    }
-    setDocumentDraft(documentQuery.data.body_markdown);
-    setDocumentEditMode(false);
-  }, [documentQuery.data]);
+  const openNode = (node: TreeNode) => {
+    setSelectedItemId(node.id);
+    setTab("details");
+  };
 
-  useEffect(() => {
-    if (branchDialogOpen) {
-      return;
+  const pickCompareSide = (side: "left" | "right", itemId: string) => {
+    if (side === "left") {
+      setCompareLeft(itemId);
+    } else {
+      setCompareRight(itemId);
     }
-    const project = (projectsQuery.data ?? []).find((candidate) => candidate.id === selectedProjectId);
-    const branch = project?.branches.find((candidate) => candidate.id === selectedBranchId) ?? project?.branches[0];
-    setBranchDraft({
-      name: branch?.name ?? "",
-      description: branch?.description ?? "",
-    });
-  }, [branchDialogOpen, projectsQuery.data, selectedBranchId, selectedProjectId]);
+    setTab("compare");
+  };
 
-  useEffect(() => {
-    const configs = simulationConfigsQuery.data ?? [];
-    if (!configs.length) {
-      return;
-    }
-    const config = configs.find((candidate) => candidate.id === selectedSimulationConfigId) ?? configs[0];
-    if (config.id !== selectedSimulationConfigId) {
-      setSelectedSimulationConfigId(config.id);
-    }
-  }, [selectedSimulationConfigId, simulationConfigsQuery.data]);
-
-  useEffect(() => {
-    const config = simulationConfigsQuery.data?.find((candidate) => candidate.id === selectedSimulationConfigId);
-    if (!config) {
-      return;
-    }
-    const nextValues: Record<string, string | number | boolean> = {};
-    config.editable_parameters.forEach((parameter) => {
-      nextValues[parameter.name] =
-        parameter.default_value ?? (parameter.kind === "boolean" ? false : parameter.kind === "choice" ? parameter.options[0] ?? "" : "");
-    });
-    setSimulationValues(nextValues);
-  }, [selectedSimulationConfigId, simulationConfigsQuery.data]);
-
-  useEffect(() => {
-    const history = simulationHistoryQuery.data ?? [];
-    if (history.length && !simulationCompareLeftId) {
-      setSimulationCompareLeftId(history[0].id);
-      setSimulationCompareRightId(history[1]?.id ?? "");
-    }
-  }, [simulationCompareLeftId, simulationHistoryQuery.data]);
-
-  const selectedProject = (projectsQuery.data ?? []).find((project) => project.id === selectedProjectId) ?? null;
-  const selectedBranch = selectedProject?.branches.find((branch) => branch.id === selectedBranchId) ?? selectedProject?.branches[0] ?? null;
-  const selectedConfig = (simulationConfigsQuery.data ?? []).find((config) => config.id === selectedSimulationConfigId) ?? null;
-  const selectedItem = itemQuery.data ?? null;
-  const selectedDocument = documentQuery.data ?? null;
-  const allNodes = flattenNodes(treeQuery.data ?? []);
-  const selectableNodes = allNodes.filter((node) => node.node_type !== "package");
-  const latestSimulationJob = (simulationHistoryQuery.data ?? []).find((job) => job.status === "running") ?? simulationHistoryQuery.data?.[0];
-  const simulationCompareRows = buildCompareRows(
-    simulationHistoryQuery.data?.find((job) => job.id === simulationCompareLeftId),
-    simulationHistoryQuery.data?.find((job) => job.id === simulationCompareRightId),
+  const renderParameterControls = (
+    title: string,
+    parameters: SwaggerParameterSpec[],
+    values: Record<string, string>,
+    onChange: (name: string, value: string) => void,
+  ) => (
+    <Stack spacing={1}>
+      <Typography variant="subtitle2">{title}</Typography>
+      {parameters.length ? (
+        <Grid container spacing={1.5}>
+          {parameters.map((parameter) => {
+            const options = parameter.enum.length
+              ? ["", ...parameter.enum.map((option) => String(option))]
+              : parameter.schema_type === "boolean"
+                ? ["", "true", "false"]
+                : null;
+            return (
+              <Grid item xs={12} md={6} key={`${title}-${parameter.name}`}>
+                <TextField
+                  label={`${parameter.name}${parameter.required ? " *" : ""}`}
+                  value={values[parameter.name] ?? ""}
+                  onChange={(event) => onChange(parameter.name, event.target.value)}
+                  helperText={parameter.description || parameter.schema_type}
+                  fullWidth
+                  select={Boolean(options)}
+                >
+                  {options?.map((option) => (
+                    <MenuItem key={option || "blank"} value={option}>
+                      {option || "Unset"}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
+            );
+          })}
+        </Grid>
+      ) : (
+        <Typography variant="body2" color="text.secondary">
+          No {title.toLowerCase()} declared.
+        </Typography>
+      )}
+    </Stack>
   );
 
-  const openItem = (
-    itemId: string,
-    targetTab: WorkspaceTab = "details",
-    projectId?: string | null,
-    branchId?: string | null,
-  ) => {
-    updateParams({
-      project: projectId ?? selectedProjectId,
-      branch: branchId ?? selectedBranchId,
-      item: itemId,
-      doc: undefined,
-      tab: targetTab,
-    });
-  };
+  const renderDashboard = () => (
+    <Stack spacing={2}>
+      <Grid container spacing={2}>
+        <Grid item xs={12} md={4}>
+          <Card sx={{ height: "100%", borderRadius: 2 }}>
+            <CardContent>
+              <Typography variant="overline" color="text.secondary">
+                Repository
+              </Typography>
+              <Typography variant="h3">{projects.length}</Typography>
+              <Typography color="text.secondary">RealSwagger resource entries available to this TWC user.</Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} md={4}>
+          <Card sx={{ height: "100%", borderRadius: 2 }}>
+            <CardContent>
+              <Typography variant="overline" color="text.secondary">
+                Branches
+              </Typography>
+              <Typography variant="h3">{projects.reduce((count, project) => count + project.branches.length, 0)}</Typography>
+              <Typography color="text.secondary">Branch records loaded through the repository API.</Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} md={4}>
+          <Card sx={{ height: "100%", borderRadius: 2 }}>
+            <CardContent>
+              <Typography variant="overline" color="text.secondary">
+                Model Items
+              </Typography>
+              <Typography variant="h3">{flatNodes.length}</Typography>
+              <Typography color="text.secondary">Loaded for the selected project and branch.</Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Typography variant="h5">Swagger Contract Boundary</Typography>
+          <Typography color="text.secondary">
+            This workspace exposes only Teamwork Cloud operations present in RealSwagger.json. The curated tabs cover the common repository and model flows; API Explorer exposes the complete contract surface for advanced workflows.
+          </Typography>
+          <Typography color="text.secondary">
+            Simulation, collaborator workspaces, global model search, publishing, export jobs, job center, saved searches, bookmarks, comments, documents, and collaborator-style attachments are not shown because this Swagger file does not define those APIs. Swagger artifact upload and download operations are available in API Explorer.
+          </Typography>
+          {contractManifest ? (
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip label={`${contractManifest.operations.length} operations`} />
+              <Chip label={`${Object.keys(contractManifest.tag_counts).length} tags`} variant="outlined" />
+              <Chip label={apiOperationStats || "No operation counts"} variant="outlined" />
+              <Chip label={`${contractManifest.schemas.length} schemas`} variant="outlined" />
+            </Stack>
+          ) : null}
+          {contractManifest?.warnings.map((warning) => (
+            <Alert severity="warning" key={warning}>
+              {warning}
+            </Alert>
+          ))}
+          {dashboardQuery.data?.capability_badges.length ? <CapabilityBadges capabilities={dashboardQuery.data.capability_badges} /> : null}
+        </Stack>
+      </Paper>
+    </Stack>
+  );
 
-  const openDocument = (documentId: string, projectId?: string | null, branchId?: string | null) => {
-    updateParams({
-      project: projectId ?? selectedProjectId,
-      branch: branchId ?? selectedBranchId,
-      item: undefined,
-      doc: documentId,
-      tab: "collaborator",
-    });
-  };
+  const renderProjects = () => (
+    <Stack spacing={2}>
+      <Typography variant="h5">Project Browser</Typography>
+      {projectsQuery.isLoading ? <CircularProgress size={28} /> : null}
+      <Grid container spacing={2}>
+        {projects.map((project) => (
+          <Grid item xs={12} md={6} key={project.id}>
+            <Card variant={selectedProjectId === project.id ? "elevation" : "outlined"} sx={{ height: "100%", borderRadius: 2 }}>
+              <CardContent>
+                <Stack spacing={2}>
+                  <Stack spacing={0.5}>
+                    <Typography variant="h6">{project.name}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {project.description || project.id}
+                    </Typography>
+                  </Stack>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip label={`Resource ${project.resource_id ?? project.id}`} variant="outlined" />
+                    {project.workspace_id ? <Chip label={`Workspace ${project.workspace_id}`} variant="outlined" /> : null}
+                    <Chip label={`${project.branches.length} branches`} />
+                  </Stack>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    {project.branches.map((branch) => (
+                      <Chip key={branch.id} label={branch.name} variant={selectedBranchId === branch.id && selectedProjectId === project.id ? "filled" : "outlined"} />
+                    ))}
+                  </Stack>
+                  <Button variant="contained" onClick={() => selectProject(project.id)}>
+                    Open Project
+                  </Button>
+                </Stack>
+              </CardContent>
+            </Card>
+          </Grid>
+        ))}
+      </Grid>
+    </Stack>
+  );
 
-  const openSearchResult = (result: SearchResult) => {
-    if (result.target_tab === "collaborator" && result.document_id) {
-      openDocument(result.document_id, result.project_id, result.branch_id);
-      return;
+  const renderModels = () => (
+    <Stack spacing={2}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+        <Box>
+          <Typography variant="h5">Model Browser</Typography>
+          <Typography variant="body2" color="text.secondary">
+            {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProject, selectedBranchId)}` : "Select a project to load models."}
+          </Typography>
+        </Box>
+        <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-tree"] })} disabled={!selectedProjectId}>
+          Refresh Models
+        </Button>
+      </Stack>
+      {treeQuery.isLoading ? <CircularProgress size={28} /> : null}
+      {treeQuery.error ? <Alert severity="error">{errorMessage(treeQuery.error)}</Alert> : null}
+      <Grid container spacing={2}>
+        {flatNodes.map((node) => (
+          <Grid item xs={12} md={6} lg={4} key={node.id}>
+            <Card sx={{ height: "100%", borderRadius: 2 }}>
+              <CardContent>
+                <Stack spacing={1.5}>
+                  <Box>
+                    <Typography variant="h6">{node.label}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {node.path}
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip label={node.node_type} size="small" />
+                    {Object.entries(node.metadata).slice(0, 3).map(([key, value]) => (
+                      <Chip key={key} label={`${key}: ${valueText(value)}`} size="small" variant="outlined" />
+                    ))}
+                  </Stack>
+                  <Stack direction="row" spacing={1}>
+                    <Button size="small" variant="contained" onClick={() => openNode(node)}>
+                      Details
+                    </Button>
+                    <Button size="small" onClick={() => pickCompareSide("left", node.id)}>
+                      Compare Left
+                    </Button>
+                    <Button size="small" onClick={() => pickCompareSide("right", node.id)}>
+                      Compare Right
+                    </Button>
+                  </Stack>
+                </Stack>
+              </CardContent>
+            </Card>
+          </Grid>
+        ))}
+      </Grid>
+      {!treeQuery.isLoading && !flatNodes.length ? (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography color="text.secondary">No model entries were returned for the selected project and branch.</Typography>
+        </Paper>
+      ) : null}
+    </Stack>
+  );
+
+  const renderDetails = () => {
+    const selectedItem = itemQuery.data ?? null;
+    const editable = Boolean(selectedItem?.editable && canEdit);
+
+    if (!selectedItemId) {
+      return (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h5">Select a model item</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            Use the model tree or Model Browser to open details from the Swagger-backed element/model endpoints.
+          </Typography>
+        </Paper>
+      );
     }
-    openItem(result.id, "details", result.project_id, result.branch_id);
+
+    if (itemQuery.isLoading || !itemDraft) {
+      return <CircularProgress size={28} />;
+    }
+
+    return (
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">Item Details</Typography>
+            <Typography variant="body2" color="text.secondary">
+              {selectedItem?.path ?? selectedItemId}
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1}>
+            <Button startIcon={<CompareArrowsRoundedIcon />} onClick={() => pickCompareSide("left", selectedItemId)}>
+              Compare Left
+            </Button>
+            <Button startIcon={<CompareArrowsRoundedIcon />} onClick={() => pickCompareSide("right", selectedItemId)}>
+              Compare Right
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={<SaveRoundedIcon />}
+              disabled={!editable || saveItemMutation.isPending}
+              onClick={() => saveItemMutation.mutate()}
+            >
+              Save
+            </Button>
+          </Stack>
+        </Stack>
+        {!editable ? (
+          <Alert severity="info">
+            Editing is disabled for this item unless TWC marks it editable and the RealSwagger element update capability is available to the current session.
+          </Alert>
+        ) : null}
+        <Grid container spacing={2}>
+          <Grid item xs={12} md={7}>
+            <Paper sx={{ p: 3, borderRadius: 2 }}>
+              <Stack spacing={2}>
+                <TextField
+                  label="Name"
+                  value={itemDraft.name}
+                  disabled={!editable}
+                  onChange={(event) => setItemDraft((current) => (current ? { ...current, name: event.target.value } : current))}
+                  fullWidth
+                />
+                <TextField
+                  label="Description"
+                  value={itemDraft.description}
+                  disabled={!editable}
+                  onChange={(event) => setItemDraft((current) => (current ? { ...current, description: event.target.value } : current))}
+                  fullWidth
+                  multiline
+                  minRows={3}
+                />
+                <TextField
+                  label="Documentation"
+                  value={itemDraft.documentation_markdown}
+                  disabled
+                  helperText="Generated from the RealSwagger element/model payload."
+                  fullWidth
+                  multiline
+                  minRows={8}
+                />
+              </Stack>
+            </Paper>
+          </Grid>
+          <Grid item xs={12} md={5}>
+            <Paper sx={{ p: 3, borderRadius: 2 }}>
+              <Stack spacing={2}>
+                <Typography variant="h6">Metadata</Typography>
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                  <Chip label={itemDraft.item_type} />
+                  <Chip label={`Version ${itemDraft.version}`} variant="outlined" />
+                  <Chip label={`Project ${itemDraft.project_id}`} variant="outlined" />
+                  <Chip label={`Branch ${itemDraft.branch_id}`} variant="outlined" />
+                </Stack>
+                <Divider />
+                {Object.entries(itemDraft.metadata).length ? (
+                  <List dense disablePadding>
+                    {Object.entries(itemDraft.metadata).map(([key, value]) => (
+                      <ListItemButton key={key} dense>
+                        <ListItemText primary={key} secondary={valueText(value)} />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                ) : (
+                  <Typography color="text.secondary">No metadata returned for this item.</Typography>
+                )}
+                <Divider />
+                <Typography variant="h6">Relationships</Typography>
+                {itemDraft.relationships.length ? (
+                  <List dense disablePadding>
+                    {itemDraft.relationships.map((relationship, index) => (
+                      <ListItemButton key={`${relationship.type ?? "relationship"}-${index}`} dense>
+                        <ListItemText primary={valueText(relationship.type ?? `Relationship ${index + 1}`)} secondary={valueText(relationship)} />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                ) : (
+                  <Typography color="text.secondary">No relationships returned for this item.</Typography>
+                )}
+              </Stack>
+            </Paper>
+          </Grid>
+        </Grid>
+      </Stack>
+    );
   };
 
-  const activeJobs = (jobsQuery.data ?? []).filter((job) => job.status === "running" || job.status === "pending");
-  const dashboardErrorMessage = dashboardQuery.error ? notificationMessage(dashboardQuery.error) : null;
-  const projectsErrorMessage = projectsQuery.error ? notificationMessage(projectsQuery.error) : null;
+  const renderCompare = () => (
+    <Stack spacing={2}>
+      <Typography variant="h5">Compare</Typography>
+      <Typography variant="body2" color="text.secondary">
+        Compare element/model IDs in the current project context. Numeric left and right IDs on the same project use the RealSwagger revision diff endpoint.
+      </Typography>
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Grid container spacing={2}>
+          <Grid item xs={12} md={5}>
+            <TextField label="Left ID or revision" value={compareLeft} onChange={(event) => setCompareLeft(event.target.value)} fullWidth />
+          </Grid>
+          <Grid item xs={12} md={5}>
+            <TextField label="Right ID or revision" value={compareRight} onChange={(event) => setCompareRight(event.target.value)} fullWidth />
+          </Grid>
+          <Grid item xs={12} md={2}>
+            <Button
+              fullWidth
+              sx={{ height: "100%" }}
+              variant="contained"
+              startIcon={<CompareArrowsRoundedIcon />}
+              disabled={!compareLeft.trim() || !compareRight.trim() || compareMutation.isPending}
+              onClick={() => compareMutation.mutate()}
+            >
+              Compare
+            </Button>
+          </Grid>
+        </Grid>
+      </Paper>
+      {compareMutation.isPending ? <CircularProgress size={28} /> : null}
+      {compareMutation.data ? (
+        <Paper sx={{ p: 3, borderRadius: 2 }}>
+          <Stack spacing={2}>
+            <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+              <Typography variant="h6">{compareMutation.data.summary}</Typography>
+              <Chip label={compareMutation.data.compare_type} />
+              <Chip label={`${compareMutation.data.differences.length} differences`} variant="outlined" />
+            </Stack>
+            <List disablePadding>
+              {compareMutation.data.differences.map((difference) => (
+                <ListItemButton key={difference.field_path} alignItems="flex-start">
+                  <ListItemText
+                    primary={difference.field_path}
+                    secondary={
+                      <Box component="span" sx={{ display: "block", mt: 1 }}>
+                        <Typography component="span" variant="body2" sx={{ display: "block" }}>
+                          {difference.summary}
+                        </Typography>
+                        <Typography component="pre" variant="caption" sx={{ display: "block", whiteSpace: "pre-wrap", mt: 1, mb: 0 }}>
+                          {`Left: ${valueText(difference.left_value)}\nRight: ${valueText(difference.right_value)}`}
+                        </Typography>
+                      </Box>
+                    }
+                  />
+                </ListItemButton>
+              ))}
+            </List>
+          </Stack>
+        </Paper>
+      ) : null}
+    </Stack>
+  );
 
-  const handleItemSave = async () => {
-    try {
-      await saveItemMutation.mutateAsync();
-      await itemQuery.refetch();
-    } catch {
-      return;
-    }
-  };
-
-  const handleDocumentSave = async () => {
-    try {
-      await updateDocumentMutation.mutateAsync();
-      await documentQuery.refetch();
-    } catch {
-      return;
-    }
-  };
-
-  const handleSearchSubmit = () => {
-    if (!searchDraft.trim()) {
-      updateParams({ q: undefined });
-      return;
-    }
-    updateParams({ q: searchDraft.trim(), tab: "search" });
-  };
-
-  const triggerExport = async (payload: Parameters<typeof api.exportData>[0]) => {
-    try {
-      await exportMutation.mutateAsync(payload);
-    } catch {
-      return;
-    }
-  };
-
-  const openBranchDialog = () => {
-    if (!selectedBranch) {
-      return;
-    }
-    setBranchDraft({
-      name: selectedBranch.name,
-      description: selectedBranch.description,
-    });
-    setBranchDialogOpen(true);
+  const renderApiExplorer = () => {
+    const response = apiOperationMutation.data ?? null;
+    return (
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">API Explorer</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Every action here is generated from RealSwagger.json and executed only through declared method/path/parameter combinations.
+            </Typography>
+          </Box>
+          <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-contract"] })}>
+            Refresh Contract
+          </Button>
+        </Stack>
+        {contractQuery.isLoading ? <CircularProgress size={28} /> : null}
+        {contractQuery.error ? <Alert severity="error">{errorMessage(contractQuery.error)}</Alert> : null}
+        {contractManifest ? (
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={4}>
+              <Paper sx={{ p: 2, borderRadius: 2 }}>
+                <Stack spacing={2}>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip label={contractManifest.version || contractManifest.title} />
+                    <Chip label={`${contractManifest.operations.length} operations`} variant="outlined" />
+                    <Chip label={`${contractManifest.schemas.length} schemas`} variant="outlined" />
+                  </Stack>
+                  <TextField select label="Functional Area" value={selectedApiTag} onChange={(event) => setSelectedApiTag(event.target.value)} fullWidth>
+                    {apiTags.map((tag) => (
+                      <MenuItem key={tag} value={tag}>
+                        {tag} ({contractManifest.tag_counts[tag]})
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                  <TextField label="Filter operations" value={apiSearch} onChange={(event) => setApiSearch(event.target.value)} fullWidth />
+                  <List dense disablePadding sx={{ maxHeight: 560, overflow: "auto" }}>
+                    {filteredApiOperations.map((operation) => (
+                      <ListItemButton
+                        key={operation.key}
+                        selected={selectedOperation?.key === operation.key}
+                        onClick={() => setSelectedOperationKey(operation.key)}
+                      >
+                        <ListItemText
+                          primary={
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <Chip label={operation.method} size="small" color={operation.destructive ? "warning" : "default"} />
+                              <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
+                                {operation.path}
+                              </Typography>
+                            </Stack>
+                          }
+                          secondary={operation.summary || operation.description || operation.key}
+                        />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                  {!filteredApiOperations.length ? <Typography color="text.secondary">No operations match this filter.</Typography> : null}
+                </Stack>
+              </Paper>
+            </Grid>
+            <Grid item xs={12} md={8}>
+              {selectedOperation ? (
+                <Stack spacing={2}>
+                  <Paper sx={{ p: 3, borderRadius: 2 }}>
+                    <Stack spacing={2}>
+                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+                        <Chip label={selectedOperation.method} color={selectedOperation.destructive ? "warning" : "default"} />
+                        <Typography variant="h6" sx={{ wordBreak: "break-all" }}>
+                          {selectedOperation.path}
+                        </Typography>
+                      </Stack>
+                      {selectedOperation.summary || selectedOperation.description ? (
+                        <Typography color="text.secondary">{selectedOperation.summary || selectedOperation.description}</Typography>
+                      ) : null}
+                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                        {selectedOperation.request_body?.content_types.map((contentType) => (
+                          <Chip key={contentType} label={contentType} variant="outlined" />
+                        ))}
+                        {selectedOperation.supports_file_upload ? <Chip label="File upload" color="info" variant="outlined" /> : null}
+                        {selectedOperation.supports_download ? <Chip label="Download-capable" color="info" variant="outlined" /> : null}
+                        {selectedOperation.responses.map((apiResponse) => (
+                          <Chip
+                            key={`${apiResponse.status_code}-${apiResponse.schema_ref ?? "response"}`}
+                            label={`${apiResponse.status_code}${apiResponse.schema_ref ? ` ${apiResponse.schema_ref}` : ""}`}
+                            size="small"
+                            variant="outlined"
+                          />
+                        ))}
+                      </Stack>
+                      {selectedOperation.destructive ? (
+                        <Alert severity="warning">
+                          This operation can change or delete data. It is still executed only against the Swagger-declared TWC endpoint and will use the current authenticated TWC session.
+                        </Alert>
+                      ) : null}
+                    </Stack>
+                  </Paper>
+                  <Paper sx={{ p: 3, borderRadius: 2 }}>
+                    <Stack spacing={2}>
+                      {renderParameterControls("Path Parameters", selectedOperation.path_parameters, apiPathParams, (name, value) =>
+                        setApiPathParams((current) => ({ ...current, [name]: value })),
+                      )}
+                      <Divider />
+                      {renderParameterControls("Query Parameters", selectedOperation.query_parameters, apiQueryParams, (name, value) =>
+                        setApiQueryParams((current) => ({ ...current, [name]: value })),
+                      )}
+                      {selectedOperation.request_body && !selectedOperation.supports_file_upload ? (
+                        <>
+                          <Divider />
+                          <Stack spacing={1.5}>
+                            <Typography variant="subtitle2">Request Body</Typography>
+                            <TextField
+                              select
+                              label="Content-Type"
+                              value={apiContentType}
+                              onChange={(event) => {
+                                setApiContentType(event.target.value);
+                                setApiBodyText(event.target.value === "text/plain" ? "" : requestBodyTemplate(selectedOperation, contractManifest));
+                              }}
+                              fullWidth
+                            >
+                              {selectedOperation.request_body.content_types.map((contentType) => (
+                                <MenuItem key={contentType} value={contentType}>
+                                  {contentType}
+                                </MenuItem>
+                              ))}
+                            </TextField>
+                            <TextField
+                              label={apiContentType === "text/plain" ? "Text payload" : "JSON payload"}
+                              value={apiBodyText}
+                              onChange={(event) => setApiBodyText(event.target.value)}
+                              fullWidth
+                              multiline
+                              minRows={8}
+                              helperText={selectedOperation.request_body.description || "Payload shape is derived from the Swagger requestBody schema."}
+                            />
+                          </Stack>
+                        </>
+                      ) : null}
+                      {selectedOperation.supports_file_upload ? (
+                        <>
+                          <Divider />
+                          <Stack spacing={1.5}>
+                            <Typography variant="subtitle2">File Upload</Typography>
+                            <Button variant="outlined" component="label">
+                              Choose File
+                              <input
+                                hidden
+                                type="file"
+                                onChange={(event) => setApiUploadFile(event.target.files?.[0] ?? null)}
+                              />
+                            </Button>
+                            <Typography variant="body2" color="text.secondary">
+                              {apiUploadFile ? `${apiUploadFile.name} (${apiUploadFile.size} bytes)` : "No file selected."}
+                            </Typography>
+                          </Stack>
+                        </>
+                      ) : null}
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+                        <Button
+                          variant="contained"
+                          disabled={!selectedOperation || !csrfToken || apiOperationMutation.isPending}
+                          onClick={() => apiOperationMutation.mutate()}
+                        >
+                          Execute Operation
+                        </Button>
+                        {apiOperationMutation.isPending ? <CircularProgress size={24} /> : null}
+                      </Stack>
+                    </Stack>
+                  </Paper>
+                  {response ? (
+                    <Paper sx={{ p: 3, borderRadius: 2 }}>
+                      <Stack spacing={2}>
+                        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+                          <Typography variant="h6">Response</Typography>
+                          <Chip label={`${response.status_code}`} color={response.ok ? "success" : "error"} />
+                          <Chip label={response.content_type || "no content type"} variant="outlined" />
+                          <Chip label={`${response.size_bytes} bytes`} variant="outlined" />
+                        </Stack>
+                        <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-all" }}>
+                          {response.method} {response.requested_path}
+                        </Typography>
+                        {response.body_base64 ? (
+                          <Button variant="outlined" onClick={() => downloadSwaggerResponse(response)}>
+                            Download Response Body
+                          </Button>
+                        ) : null}
+                        <TextField
+                          label="Response body"
+                          value={responseContent(response)}
+                          fullWidth
+                          multiline
+                          minRows={10}
+                          InputProps={{ readOnly: true }}
+                        />
+                        <TextField
+                          label="Response headers"
+                          value={JSON.stringify(response.headers, null, 2)}
+                          fullWidth
+                          multiline
+                          minRows={4}
+                          InputProps={{ readOnly: true }}
+                        />
+                      </Stack>
+                    </Paper>
+                  ) : null}
+                </Stack>
+              ) : (
+                <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+                  <Typography color="text.secondary">Select an operation to build a Swagger-backed request.</Typography>
+                </Paper>
+              )}
+            </Grid>
+          </Grid>
+        ) : null}
+      </Stack>
+    );
   };
 
   return (
-    <Box sx={{ minHeight: "100vh", display: "grid", gridTemplateRows: "auto 1fr auto" }}>
-      <AppBar position="sticky" elevation={0}>
-        <Toolbar sx={{ gap: 1.5, flexWrap: "wrap", py: 1 }}>
-          <IconButton onClick={() => navigate(-1)}>
-            <ArrowBackRoundedIcon />
-          </IconButton>
-          <IconButton onClick={() => navigate(1)}>
-            <ArrowForwardRoundedIcon />
-          </IconButton>
-          <Stack sx={{ minWidth: 220, flex: 1 }}>
-            <Typography variant="h5">TWC Workbench</Typography>
-            <Typography variant="body2" color="text.secondary">
-              Signed in as {session?.user?.preferred_username} on {session?.server?.name}
+    <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
+      <AppBar position="sticky" color="default" elevation={1}>
+        <Toolbar sx={{ gap: 2 }}>
+          <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+            <Typography variant="h6" noWrap>
+              TWC Workbench
             </Typography>
-            <Typography variant="body2" color="text.secondary">
-              The active server comes from the selected preset server, not from `.env`.
+            <Typography variant="caption" color="text.secondary" noWrap>
+              {session?.server?.name ?? "Teamwork Cloud"} / {session?.user?.preferred_username ?? "authenticated user"}
             </Typography>
-          </Stack>
-          <TextField
-            value={searchDraft}
-            onChange={(event) => setSearchDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                handleSearchSubmit();
-              }
-            }}
-            size="small"
-            placeholder="Global search"
-            sx={{ minWidth: { xs: "100%", md: 360 } }}
-            InputProps={{
-              endAdornment: (
-                <InputAdornment position="end">
-                  <IconButton onClick={handleSearchSubmit}>
-                    <SearchRoundedIcon />
-                  </IconButton>
-                </InputAdornment>
-              ),
-            }}
-          />
-          <Button
-            variant="outlined"
-            startIcon={<SwapHorizRoundedIcon />}
-            onClick={() => logoutMutation.mutate()}
-            disabled={logoutMutation.isPending}
-          >
-            Switch Server
-          </Button>
-          <Tooltip title="Refresh capabilities and workspace state">
+          </Box>
+          {session?.capabilities ? <CapabilityBadges capabilities={session.capabilities.capabilities} /> : null}
+          <Tooltip title="Refresh capabilities">
             <span>
-              <IconButton onClick={() => refreshCapabilityMutation.mutate()} disabled={refreshCapabilityMutation.isPending}>
+              <IconButton onClick={() => capabilityMutation.mutate()} disabled={!csrfToken || capabilityMutation.isPending}>
                 <RefreshRoundedIcon />
               </IconButton>
             </span>
@@ -851,1261 +1133,86 @@ export default function WorkspacePage() {
           </Tooltip>
           <Tooltip title="Sign out">
             <span>
-              <IconButton onClick={() => logoutMutation.mutate()} disabled={logoutMutation.isPending}>
+              <IconButton onClick={() => logoutMutation.mutate()} disabled={!csrfToken || logoutMutation.isPending}>
                 <LogoutRoundedIcon />
               </IconButton>
             </span>
           </Tooltip>
         </Toolbar>
       </AppBar>
-
-      <Box
-        sx={{
-          display: "grid",
-          gridTemplateColumns: { xs: "1fr", xl: "320px minmax(0, 1fr) 320px" },
-          gap: 2,
-          p: 2,
-          minHeight: 0,
-        }}
-      >
-        <Paper sx={{ p: 2.5, borderRadius: 5, minHeight: 0, overflow: "auto" }}>
-          <Stack spacing={2.5}>
-            <div>
-              <Typography variant="h6">Navigation</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Projects, branches, bookmarks, recent items, and saved searches.
-              </Typography>
-            </div>
-
+      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "360px 1fr" }, gap: 2, p: { xs: 2, md: 3 } }}>
+        <Paper component="aside" sx={{ p: 2, borderRadius: 2, height: "fit-content" }}>
+          <Stack spacing={2}>
             <TextField
               select
               label="Project"
-              value={selectedProjectId ?? ""}
-              onChange={(event) => updateParams({ project: event.target.value, branch: undefined }, false)}
+              value={selectedProjectId}
+              onChange={(event) => selectProject(event.target.value)}
               fullWidth
+              disabled={!projects.length}
             >
-              {(projectsQuery.data ?? []).map((project) => (
+              {projects.map((project) => (
                 <MenuItem key={project.id} value={project.id}>
                   {project.name}
                 </MenuItem>
               ))}
             </TextField>
-
-            <Stack spacing={1}>
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "flex-start" }}>
-                <TextField
-                  select
-                  label="Branch"
-                  value={selectedBranchId ?? ""}
-                  onChange={(event) => updateParams({ branch: event.target.value })}
-                  fullWidth
-                  disabled={!selectedProject}
-                >
-                  {(selectedProject?.branches ?? []).map((branch) => (
-                    <MenuItem key={branch.id} value={branch.id}>
-                      {branch.name}
-                    </MenuItem>
-                  ))}
-                </TextField>
-                <Button
-                  variant="outlined"
-                  startIcon={<EditRoundedIcon />}
-                  disabled={!selectedBranch || !canEditBranches}
-                  onClick={openBranchDialog}
-                >
-                  Edit
-                </Button>
-              </Stack>
-              {selectedBranch?.description ? (
-                <Typography variant="body2" color="text.secondary">
-                  {selectedBranch.description}
-                </Typography>
-              ) : null}
-              {capabilities.branch_edit && !canEditBranches ? (
-                <Typography variant="caption" color="text.secondary">
-                  {capabilities.branch_edit.reason}
-                </Typography>
-              ) : null}
-            </Stack>
-
             <TextField
-              label="Filter tree"
-              value={treeFilter}
-              onChange={(event) => setTreeFilter(event.target.value)}
+              select
+              label="Branch"
+              value={selectedBranchId}
+              onChange={(event) => setSelectedBranchId(event.target.value)}
               fullWidth
-            />
-
-            <ProjectTree
-              nodes={treeQuery.data ?? []}
-              selectedId={selectedItemId}
-              filter={deferredTreeFilter}
-              onSelect={(node) => {
-                if (node.node_type !== "package") {
-                  openItem(node.id, "details", node.metadata.project_id ?? selectedProjectId, node.metadata.branch_id ?? selectedBranchId);
-                }
-              }}
-            />
-
+              disabled={!selectedProject?.branches.length}
+            >
+              {selectedProject?.branches.length ? (
+                selectedProject.branches.map((branch) => (
+                  <MenuItem key={branch.id} value={branch.id}>
+                    {branch.name}
+                  </MenuItem>
+                ))
+              ) : (
+                <MenuItem value="">Default</MenuItem>
+              )}
+            </TextField>
+            <TextField label="Filter model tree" value={treeFilter} onChange={(event) => setTreeFilter(event.target.value)} fullWidth />
             <Divider />
-            <div>
-              <Typography variant="subtitle1" fontWeight={700}>
-                Bookmarks
-              </Typography>
-              <List dense disablePadding>
-                {(session?.bookmarks ?? []).map((bookmark) => (
-                  <ListItemButton
-                    key={bookmark.id}
-                    onClick={() => openItem(bookmark.item_id, "details", bookmark.project_id, bookmark.branch_id)}
-                    sx={{ borderRadius: 2 }}
-                  >
-                    <ListItemText primary={bookmark.title} secondary={bookmark.path} />
-                  </ListItemButton>
-                ))}
-              </List>
-            </div>
-
-            <div>
-              <Typography variant="subtitle1" fontWeight={700}>
-                Recent Items
-              </Typography>
-              <List dense disablePadding>
-                {(session?.recent_items ?? []).map((bookmark) => (
-                  <ListItemButton
-                    key={bookmark.id}
-                    onClick={() => openItem(bookmark.item_id, "details", bookmark.project_id, bookmark.branch_id)}
-                    sx={{ borderRadius: 2 }}
-                  >
-                    <ListItemText primary={bookmark.title} secondary={bookmark.path} />
-                  </ListItemButton>
-                ))}
-              </List>
-            </div>
-
-            <div>
-              <Typography variant="subtitle1" fontWeight={700}>
-                Saved Searches
-              </Typography>
-              <List dense disablePadding>
-                {(session?.saved_searches ?? []).map((savedSearch) => (
-                  <ListItemButton key={savedSearch.id} onClick={() => updateParams({ q: savedSearch.query, tab: "search" })} sx={{ borderRadius: 2 }}>
-                    <ListItemText primary={savedSearch.name} secondary={savedSearch.query} />
-                  </ListItemButton>
-                ))}
-              </List>
-            </div>
+            <ProjectTree nodes={treeNodes} selectedId={selectedItemId} filter={treeFilter} onSelect={openNode} />
           </Stack>
         </Paper>
-
-        <Paper sx={{ borderRadius: 5, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          <Box sx={{ px: 2, pt: 1 }}>
-            <Tabs value={selectedTab} onChange={(_, value: WorkspaceTab) => updateParams({ tab: value })} variant="scrollable" scrollButtons="auto">
-              {WORKSPACE_TABS.map((tab) => (
-                <Tab key={tab.value} value={tab.value} label={tab.label} />
-              ))}
+        <Stack spacing={2} component="main">
+          {notice ? <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.message}</Alert> : null}
+          {dashboardQuery.error ? <Alert severity="error">{errorMessage(dashboardQuery.error)}</Alert> : null}
+          {projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
+          <Paper sx={{ borderRadius: 2 }}>
+            <Tabs value={tab} onChange={handleTabChange} variant="scrollable" scrollButtons="auto">
+              <Tab label="Dashboard" value="dashboard" />
+              <Tab label="Project Browser" value="projects" />
+              <Tab label="Model Browser" value="models" />
+              <Tab label="Item Details" value="details" />
+              <Tab label="Compare" value="compare" />
+              <Tab label="API Explorer" value="api" />
             </Tabs>
+          </Paper>
+          <Box>
+            {tab === "dashboard" ? renderDashboard() : null}
+            {tab === "projects" ? renderProjects() : null}
+            {tab === "models" ? renderModels() : null}
+            {tab === "details" ? renderDetails() : null}
+            {tab === "compare" ? renderCompare() : null}
+            {tab === "api" ? renderApiExplorer() : null}
           </Box>
-          <Divider />
-          <Box sx={{ p: 2.5, overflow: "auto", minHeight: 0, flex: 1 }}>
-            {banner ? <Alert severity={banner.severity} sx={{ mb: 2 }}>{banner.message}</Alert> : null}
-            {dashboardErrorMessage ? <Alert severity="error" sx={{ mb: 2 }}>Dashboard data could not be loaded from Teamwork Cloud: {dashboardErrorMessage}</Alert> : null}
-            {projectsErrorMessage ? <Alert severity="error" sx={{ mb: 2 }}>Project listing failed: {projectsErrorMessage}</Alert> : null}
-
-            {selectedTab === "dashboard" ? (
-              <Stack spacing={2.5}>
-                <Typography variant="h4">Workspace Dashboard</Typography>
-                <Grid container spacing={2}>
-                  <Grid item xs={12} md={6} xl={3}>
-                    <MetricCard label="Projects" value={dashboardQuery.isError ? "Unavailable" : String((dashboardQuery.data?.projects ?? []).length)} caption="Projects visible to the active Teamwork Cloud session." />
-                  </Grid>
-                  <Grid item xs={12} md={6} xl={3}>
-                    <MetricCard label="Active Jobs" value={String(activeJobs.length)} caption="Simulation, publish, and export work currently running." />
-                  </Grid>
-                  <Grid item xs={12} md={6} xl={3}>
-                    <MetricCard label="Bookmarks" value={String(session?.bookmarks.length ?? 0)} caption="Pinned assets for repeat review and presentation paths." />
-                  </Grid>
-                  <Grid item xs={12} md={6} xl={3}>
-                    <MetricCard label="Saved Searches" value={String(session?.saved_searches.length ?? 0)} caption="Reusable search lenses for model review workflows." />
-                  </Grid>
-                </Grid>
-
-                <Card sx={{ borderRadius: 5 }}>
-                  <CardContent>
-                    <Stack spacing={2}>
-                      <Typography variant="h5">Capability Envelope</Typography>
-                      <CapabilityBadges capabilities={capabilities} size="medium" />
-                      <Typography variant="body2" color="text.secondary">
-                        Actions are enabled or softened based on live capability probes and safe fallback adapters.
-                      </Typography>
-                    </Stack>
-                  </CardContent>
-                </Card>
-
-                <Grid container spacing={2}>
-                  <Grid item xs={12} lg={7}>
-                    <Card sx={{ borderRadius: 5, height: "100%" }}>
-                      <CardContent>
-                        <Stack spacing={2}>
-                          <Typography variant="h5">Publish to Collaborator</Typography>
-                          {capabilities.publish ? (
-                            <Alert severity={capabilityColor(capabilities.publish.state) === "success" ? "success" : "warning"}>
-                              {capabilities.publish.reason}
-                            </Alert>
-                          ) : null}
-                          <Grid container spacing={2}>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="Scope"
-                                fullWidth
-                                value={publishForm.scope}
-                                onChange={(event) => setPublishForm((current) => ({ ...current, scope: event.target.value }))}
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                select
-                                label="Preset"
-                                fullWidth
-                                value={`${publishForm.template}::${publishForm.category}`}
-                                onChange={(event) => {
-                                  const [template, category] = event.target.value.split("::");
-                                  setPublishForm((current) => ({ ...current, template, category }));
-                                }}
-                              >
-                                {(dashboardQuery.data?.publish_presets ?? []).map((preset) => (
-                                  <MenuItem key={preset.id} value={`${preset.template}::${preset.category}`}>
-                                    {preset.name}
-                                  </MenuItem>
-                                ))}
-                              </TextField>
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="Template"
-                                fullWidth
-                                value={publishForm.template}
-                                onChange={(event) => setPublishForm((current) => ({ ...current, template: event.target.value }))}
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="Category"
-                                fullWidth
-                                value={publishForm.category}
-                                onChange={(event) => setPublishForm((current) => ({ ...current, category: event.target.value }))}
-                              />
-                            </Grid>
-                          </Grid>
-                          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                            <FormControlLabel
-                              control={<Switch checked={publishForm.republish} onChange={(event) => setPublishForm((current) => ({ ...current, republish: event.target.checked }))} />}
-                              label="Republish"
-                            />
-                            <FormControlLabel
-                              control={<Switch checked={publishForm.open_result} onChange={(event) => setPublishForm((current) => ({ ...current, open_result: event.target.checked }))} />}
-                              label="Open result when ready"
-                            />
-                          </Stack>
-                          <Button variant="contained" disabled={!canPublish || publishMutation.isPending} onClick={() => publishMutation.mutate()}>
-                            Submit Publish Job
-                          </Button>
-                        </Stack>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                  <Grid item xs={12} lg={5}>
-                    <Card sx={{ borderRadius: 5, height: "100%" }}>
-                      <CardContent>
-                        <Stack spacing={2}>
-                          <Typography variant="h5">Recent Activity</Typography>
-                          <List dense disablePadding>
-                            {(dashboardQuery.data?.recent_items ?? []).map((item) => (
-                              <ListItemButton
-                                key={item.id}
-                                onClick={() => openItem(item.item_id, "details", item.project_id, item.branch_id)}
-                                sx={{ borderRadius: 2 }}
-                              >
-                                <ListItemText primary={item.title} secondary={item.path} />
-                              </ListItemButton>
-                            ))}
-                          </List>
-                        </Stack>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                </Grid>
-              </Stack>
-            ) : null}
-
-            {selectedTab === "projects" ? (
-              <Stack spacing={2.5}>
-                <Typography variant="h4">Project Browser</Typography>
-                {projectsQuery.isLoading ? (
-                  <Paper sx={{ p: 4, borderRadius: 5 }}>
-                    <Typography color="text.secondary">Loading Teamwork Cloud projects...</Typography>
-                  </Paper>
-                ) : projectsQuery.isError ? (
-                  <Paper sx={{ p: 4, borderRadius: 5 }}>
-                    <Typography variant="h6">Project data is unavailable</Typography>
-                    <Typography color="text.secondary" sx={{ mt: 1 }}>
-                      The app did not switch to the 2-project demo fallback for this authenticated session. Check the error banner and backend logs for the failed TWC project request path.
-                    </Typography>
-                  </Paper>
-                ) : !(projectsQuery.data ?? []).length ? (
-                  <Paper sx={{ p: 4, borderRadius: 5 }}>
-                    <Typography variant="h6">No projects returned</Typography>
-                    <Typography color="text.secondary" sx={{ mt: 1 }}>
-                      Teamwork Cloud accepted the session but returned no visible projects for this user.
-                    </Typography>
-                  </Paper>
-                ) : (
-                  <Grid container spacing={2}>
-                    {(projectsQuery.data ?? []).map((project) => (
-                      <Grid item xs={12} md={6} key={project.id}>
-                        <Card sx={{ borderRadius: 5, height: "100%" }}>
-                          <CardContent>
-                            <Stack spacing={1.5}>
-                              <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Typography variant="h5">{project.name}</Typography>
-                                <Chip size="small" label={project.favorite ? "favorite" : "project"} />
-                              </Stack>
-                              <Typography color="text.secondary">{project.description}</Typography>
-                              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                {project.branches.map((branch) => (
-                                  <Chip key={branch.id} label={branch.name} variant={branch.id === selectedBranchId && project.id === selectedProjectId ? "filled" : "outlined"} />
-                                ))}
-                              </Stack>
-                              <Button variant="contained" onClick={() => updateParams({ project: project.id, branch: project.branches[0]?.id, tab: "models" })}>
-                                Open Project
-                              </Button>
-                            </Stack>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                    ))}
-                  </Grid>
-                )}
-              </Stack>
-            ) : null}
-
-            {selectedTab === "models" ? (
-              <Stack spacing={2.5}>
-                <Typography variant="h4">Model Browser</Typography>
-                <Alert severity="info">
-                  Browse packages, branches, and model elements from the left navigation tree. The center view shows the currently loaded model slice for the selected project and branch.
-                </Alert>
-                <Grid container spacing={2}>
-                  {selectableNodes.map((node) => (
-                    <Grid item xs={12} md={6} lg={4} key={node.id}>
-                      <Card sx={{ borderRadius: 5, height: "100%" }}>
-                        <CardContent>
-                          <Stack spacing={1.5}>
-                            <Typography variant="h6">{node.label}</Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              {node.path}
-                            </Typography>
-                            <Chip size="small" label={node.node_type} sx={{ width: "fit-content" }} />
-                            <Button
-                              variant="outlined"
-                              onClick={() => openItem(node.id, "details", node.metadata.project_id ?? selectedProjectId, node.metadata.branch_id ?? selectedBranchId)}
-                            >
-                              Open Details
-                            </Button>
-                          </Stack>
-                        </CardContent>
-                      </Card>
-                    </Grid>
-                  ))}
-                </Grid>
-              </Stack>
-            ) : null}
-
-            {selectedTab === "details" ? (
-              selectedItem ? (
-                <Stack spacing={2.5}>
-                  <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" spacing={2}>
-                    <div>
-                      <Typography variant="h4">{selectedItem.name}</Typography>
-                      <Typography color="text.secondary">{selectedItem.path}</Typography>
-                    </div>
-                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                      <Button
-                        variant="outlined"
-                        startIcon={<BookmarkAddRoundedIcon />}
-                        onClick={() =>
-                          saveBookmarkMutation.mutate({
-                            id: crypto.randomUUID(),
-                            title: selectedItem.name,
-                            item_id: selectedItem.id,
-                            item_type: selectedItem.item_type,
-                            path: selectedItem.path,
-                            project_id: selectedItem.project_id,
-                            branch_id: selectedItem.branch_id,
-                          })
-                        }
-                      >
-                        Bookmark
-                      </Button>
-                      <Button
-                        variant="outlined"
-                        startIcon={<CompareArrowsRoundedIcon />}
-                        onClick={() =>
-                          updateParams({
-                            compareLeft: selectedItem.id,
-                            compareLeftProject: selectedItem.project_id,
-                            compareLeftBranch: selectedItem.branch_id,
-                            tab: "compare",
-                          })
-                        }
-                      >
-                        Set Compare Left
-                      </Button>
-                      <Button
-                        variant="outlined"
-                        startIcon={<CompareArrowsRoundedIcon />}
-                        onClick={() =>
-                          updateParams({
-                            compareRight: selectedItem.id,
-                            compareRightProject: selectedItem.project_id,
-                            compareRightBranch: selectedItem.branch_id,
-                            tab: "compare",
-                          })
-                        }
-                      >
-                        Set Compare Right
-                      </Button>
-                    </Stack>
-                  </Stack>
-
-                  {!selectedItem.editable || !canEditItems ? (
-                    <Alert severity="info">
-                      This item is currently read-only. Editable items can be saved when both the active branch and capability probe permit updates.
-                    </Alert>
-                  ) : (
-                    <Alert severity={capabilities.edit?.state === "restricted" ? "warning" : "success"}>
-                      {capabilities.edit?.reason ?? "Editing is enabled for this item."}
-                    </Alert>
-                  )}
-
-                  <Grid container spacing={2}>
-                    <Grid item xs={12} lg={8}>
-                      <Card sx={{ borderRadius: 5 }}>
-                        <CardContent>
-                          <Stack spacing={2}>
-                            <TextField
-                              label="Name"
-                              fullWidth
-                              value={itemDraft.name ?? ""}
-                              disabled={!selectedItem.editable || !canEditItems}
-                              onChange={(event) => setItemDraft((current) => ({ ...current, name: event.target.value }))}
-                            />
-                            <TextField
-                              label="Description"
-                              fullWidth
-                              multiline
-                              minRows={3}
-                              value={itemDraft.description ?? ""}
-                              disabled={!selectedItem.editable || !canEditItems}
-                              onChange={(event) => setItemDraft((current) => ({ ...current, description: event.target.value }))}
-                            />
-                            <TextField
-                              label="Documentation"
-                              fullWidth
-                              multiline
-                              minRows={10}
-                              value={itemDraft.documentation_markdown ?? ""}
-                              disabled={!selectedItem.editable || !canEditItems}
-                              onChange={(event) => setItemDraft((current) => ({ ...current, documentation_markdown: event.target.value }))}
-                            />
-                            <Grid container spacing={2}>
-                              <Grid item xs={12} md={4}>
-                                <TextField
-                                  label="Version"
-                                  fullWidth
-                                  value={itemDraft.version ?? ""}
-                                  disabled={!selectedItem.editable || !canEditItems}
-                                  onChange={(event) => setItemDraft((current) => ({ ...current, version: event.target.value }))}
-                                />
-                              </Grid>
-                              <Grid item xs={12} md={8}>
-                                <TextField
-                                  label="Metadata JSON"
-                                  fullWidth
-                                  multiline
-                                  minRows={6}
-                                  value={itemMetadataDraft}
-                                  disabled={!selectedItem.editable || !canEditItems}
-                                  onChange={(event) => setItemMetadataDraft(event.target.value)}
-                                />
-                              </Grid>
-                            </Grid>
-                            <Stack direction="row" spacing={1}>
-                              <Button
-                                variant="contained"
-                                startIcon={<SaveRoundedIcon />}
-                                disabled={!selectedItem.editable || !canEditItems || saveItemMutation.isPending}
-                                onClick={handleItemSave}
-                              >
-                                Save
-                              </Button>
-                              <Button
-                                variant="outlined"
-                                disabled={saveItemMutation.isPending}
-                                onClick={() => itemQuery.refetch()}
-                              >
-                                Revert from Server
-                              </Button>
-                              <Button
-                                variant="text"
-                                onClick={() => {
-                                  setItemDraft({
-                                    name: selectedItem.name,
-                                    description: selectedItem.description,
-                                    documentation_markdown: selectedItem.documentation_markdown,
-                                    version: selectedItem.version,
-                                  });
-                                  setItemMetadataDraft(JSON.stringify(selectedItem.metadata ?? {}, null, 2));
-                                }}
-                              >
-                                Discard Draft
-                              </Button>
-                            </Stack>
-                          </Stack>
-                        </CardContent>
-                      </Card>
-                    </Grid>
-                    <Grid item xs={12} lg={4}>
-                      <Card sx={{ borderRadius: 5 }}>
-                        <CardContent>
-                          <Stack spacing={2}>
-                            <Typography variant="h6">Relationships</Typography>
-                            <List dense disablePadding>
-                              {selectedItem.relationships.map((relationship, index) => (
-                                <ListItemButton key={`${relationship.type}-${relationship.target}-${index}`} sx={{ borderRadius: 2 }}>
-                                  <ListItemText primary={`${relationship.type} → ${relationship.target}`} />
-                                </ListItemButton>
-                              ))}
-                            </List>
-                            <Divider />
-                            <Typography variant="h6">Export</Typography>
-                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                              {["json", "markdown", "html", "pdf"].map((format) => (
-                                <Button
-                                  key={format}
-                                  variant="outlined"
-                                  onClick={() =>
-                                    triggerExport({
-                                      export_type: "item",
-                                      export_format: format as "json" | "markdown" | "html" | "pdf",
-                                      reference_id: selectedItem.id,
-                                      project_id: selectedItem.project_id,
-                                      branch_id: selectedItem.branch_id,
-                                      payload: {},
-                                    })
-                                  }
-                                >
-                                  {format.toUpperCase()}
-                                </Button>
-                              ))}
-                            </Stack>
-                          </Stack>
-                        </CardContent>
-                      </Card>
-                    </Grid>
-                  </Grid>
-                </Stack>
-              ) : (
-                <Alert severity="info">Select a model item from the navigation tree or search results to inspect and edit details.</Alert>
-              )
-            ) : null}
-
-            {selectedTab === "compare" ? (
-              <Stack spacing={2.5}>
-                <Typography variant="h4">Compare</Typography>
-                <Grid container spacing={2}>
-                  <Grid item xs={12} md={6}>
-                    <TextField
-                      select
-                      label="Left Item"
-                      fullWidth
-                      value={compareLeftId}
-                      onChange={(event) => {
-                        const node = selectableNodes.find((candidate) => candidate.id === event.target.value);
-                        updateParams({
-                          compareLeft: event.target.value,
-                          compareLeftProject: node?.metadata.project_id ?? selectedProjectId,
-                          compareLeftBranch: node?.metadata.branch_id ?? selectedBranchId,
-                        });
-                      }}
-                    >
-                      {compareLeftId && !selectableNodes.some((node) => node.id === compareLeftId) ? <MenuItem value={compareLeftId}>{compareLeftId}</MenuItem> : null}
-                      {selectableNodes.map((node) => (
-                        <MenuItem key={node.id} value={node.id}>
-                          {node.label}
-                        </MenuItem>
-                      ))}
-                    </TextField>
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <TextField
-                      select
-                      label="Right Item"
-                      fullWidth
-                      value={compareRightId}
-                      onChange={(event) => {
-                        const node = selectableNodes.find((candidate) => candidate.id === event.target.value);
-                        updateParams({
-                          compareRight: event.target.value,
-                          compareRightProject: node?.metadata.project_id ?? selectedProjectId,
-                          compareRightBranch: node?.metadata.branch_id ?? selectedBranchId,
-                        });
-                      }}
-                    >
-                      {compareRightId && !selectableNodes.some((node) => node.id === compareRightId) ? <MenuItem value={compareRightId}>{compareRightId}</MenuItem> : null}
-                      {selectableNodes.map((node) => (
-                        <MenuItem key={node.id} value={node.id}>
-                          {node.label}
-                        </MenuItem>
-                      ))}
-                    </TextField>
-                  </Grid>
-                </Grid>
-
-                {compareQuery.data ? (
-                  <Card sx={{ borderRadius: 5 }}>
-                    <CardContent>
-                      <Stack spacing={2}>
-                        <Stack direction="row" justifyContent="space-between" alignItems="center">
-                          <Typography variant="h5">Item Comparison</Typography>
-                          <Button
-                            variant="outlined"
-                            onClick={() =>
-                              triggerExport({
-                                export_type: "compare",
-                                export_format: "json",
-                                payload: compareQuery.data as unknown as Record<string, unknown>,
-                              })
-                            }
-                          >
-                            Export Comparison
-                          </Button>
-                        </Stack>
-                        <Typography color="text.secondary">{compareQuery.data.summary}</Typography>
-                        <List dense disablePadding>
-                          {compareQuery.data.differences.map((difference) => (
-                            <ListItemButton key={difference.field_path} sx={{ borderRadius: 2 }}>
-                              <ListItemText
-                                primary={difference.field_path}
-                                secondary={`Left: ${prettyValue(difference.left_value)} | Right: ${prettyValue(difference.right_value)}`}
-                              />
-                            </ListItemButton>
-                          ))}
-                        </List>
-                      </Stack>
-                    </CardContent>
-                  </Card>
-                ) : (
-                  <Alert severity="info">Choose two items to compare structure, metadata, and documentation fields.</Alert>
-                )}
-
-                <Card sx={{ borderRadius: 5 }}>
-                  <CardContent>
-                    <Stack spacing={2}>
-                      <Typography variant="h5">Simulation Run Comparison</Typography>
-                      <Grid container spacing={2}>
-                        <Grid item xs={12} md={6}>
-                          <TextField select label="Left Run" fullWidth value={simulationCompareLeftId} onChange={(event) => setSimulationCompareLeftId(event.target.value)}>
-                            {(simulationHistoryQuery.data ?? []).map((job) => (
-                              <MenuItem key={job.id} value={job.id}>
-                                {job.title} · {formatDate(job.created_at)}
-                              </MenuItem>
-                            ))}
-                          </TextField>
-                        </Grid>
-                        <Grid item xs={12} md={6}>
-                          <TextField select label="Right Run" fullWidth value={simulationCompareRightId} onChange={(event) => setSimulationCompareRightId(event.target.value)}>
-                            {(simulationHistoryQuery.data ?? []).map((job) => (
-                              <MenuItem key={job.id} value={job.id}>
-                                {job.title} · {formatDate(job.created_at)}
-                              </MenuItem>
-                            ))}
-                          </TextField>
-                        </Grid>
-                      </Grid>
-                      <List dense disablePadding>
-                        {simulationCompareRows.map((difference) => (
-                          <ListItemButton key={difference.field_path} sx={{ borderRadius: 2 }}>
-                            <ListItemText
-                              primary={difference.field_path}
-                              secondary={`Left: ${prettyValue(difference.left_value)} | Right: ${prettyValue(difference.right_value)}`}
-                            />
-                          </ListItemButton>
-                        ))}
-                      </List>
-                    </Stack>
-                  </CardContent>
-                </Card>
-              </Stack>
-            ) : null}
-
-            {selectedTab === "simulation" ? (
-              <Stack spacing={2.5}>
-                <Typography variant="h4">Simulation</Typography>
-                {capabilities.simulation ? (
-                  <Alert severity={capabilities.simulation.state === "ready" ? "success" : "warning"}>
-                    {capabilities.simulation.reason}
-                  </Alert>
-                ) : null}
-
-                <Grid container spacing={2}>
-                  <Grid item xs={12} lg={7}>
-                    <Card sx={{ borderRadius: 5 }}>
-                      <CardContent>
-                        <Stack spacing={2}>
-                          <TextField
-                            select
-                            label="Simulation Configuration"
-                            fullWidth
-                            value={selectedSimulationConfigId}
-                            onChange={(event) => setSelectedSimulationConfigId(event.target.value)}
-                          >
-                            {(simulationConfigsQuery.data ?? []).map((config) => (
-                              <MenuItem key={config.id} value={config.id}>
-                                {config.name}
-                              </MenuItem>
-                            ))}
-                          </TextField>
-                          <Typography color="text.secondary">{selectedConfig?.description}</Typography>
-                          <Grid container spacing={2}>
-                            {(selectedConfig?.editable_parameters ?? []).map((parameter) => (
-                              <Grid item xs={12} md={6} key={parameter.name}>
-                                <ParameterField
-                                  parameter={parameter}
-                                  value={simulationValues[parameter.name] ?? ""}
-                                  onChange={(value) => setSimulationValues((current) => ({ ...current, [parameter.name]: value }))}
-                                />
-                              </Grid>
-                            ))}
-                          </Grid>
-                          <Button
-                            variant="contained"
-                            startIcon={<PlayArrowRoundedIcon />}
-                            disabled={!canRunSimulation || runSimulationMutation.isPending}
-                            onClick={() => runSimulationMutation.mutate()}
-                          >
-                            Run Simulation
-                          </Button>
-                        </Stack>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                  <Grid item xs={12} lg={5}>
-                    <Card sx={{ borderRadius: 5, height: "100%" }}>
-                      <CardContent>
-                        <Stack spacing={2}>
-                          <Typography variant="h5">Latest Result</Typography>
-                          {latestSimulationJob?.result?.metrics ? (
-                            <Grid container spacing={2}>
-                              {Object.entries(latestSimulationJob.result.metrics as Record<string, unknown>).map(([key, value]) => (
-                                <Grid item xs={12} sm={6} key={key}>
-                                  <Paper sx={{ p: 2, borderRadius: 4 }}>
-                                    <Typography variant="overline" color="text.secondary">
-                                      {key}
-                                    </Typography>
-                                    <Typography variant="h5">{prettyValue(value)}</Typography>
-                                  </Paper>
-                                </Grid>
-                              ))}
-                            </Grid>
-                          ) : (
-                            <Typography color="text.secondary">Run a simulation to populate live metrics and result packages.</Typography>
-                          )}
-                          {latestSimulationJob ? (
-                            <Box>
-                              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                                Live Logs
-                              </Typography>
-                              <Paper sx={{ p: 2, borderRadius: 4, bgcolor: "background.default", maxHeight: 220, overflow: "auto" }}>
-                                <Typography component="pre" sx={{ m: 0, fontFamily: '"IBM Plex Mono", Consolas, monospace', whiteSpace: "pre-wrap" }}>
-                                  {latestSimulationJob.logs.join("\n") || "No logs yet."}
-                                </Typography>
-                              </Paper>
-                            </Box>
-                          ) : null}
-                        </Stack>
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                </Grid>
-
-                <Card sx={{ borderRadius: 5 }}>
-                  <CardContent>
-                    <Stack spacing={2}>
-                      <Typography variant="h5">Run History</Typography>
-                      <List dense disablePadding>
-                        {(simulationHistoryQuery.data ?? []).map((job) => (
-                          <ListItemButton key={job.id} sx={{ borderRadius: 2 }}>
-                            <ListItemText
-                              primary={job.title}
-                              secondary={`${job.status} · ${formatDate(job.created_at)} · ${job.message}`}
-                            />
-                            {job.artifact_path ? (
-                              <Button component="a" href={api.jobArtifactUrl(job.id)} target="_blank" rel="noreferrer" startIcon={<DownloadRoundedIcon />}>
-                                Artifact
-                              </Button>
-                            ) : null}
-                          </ListItemButton>
-                        ))}
-                      </List>
-                    </Stack>
-                  </CardContent>
-                </Card>
-              </Stack>
-            ) : null}
-
-            {selectedTab === "collaborator" ? (
-              selectedDocument ? (
-                <Stack spacing={2.5}>
-                  <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" spacing={2}>
-                    <div>
-                      <Typography variant="h4">{selectedDocument.title}</Typography>
-                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
-                        {selectedDocument.breadcrumbs.map((crumb) => (
-                          <Chip key={crumb} label={crumb} variant="outlined" />
-                        ))}
-                      </Stack>
-                    </div>
-                    <Stack direction="row" spacing={1}>
-                      <Button variant="outlined" startIcon={<FullscreenRoundedIcon />} onClick={() => setPresentationOpen(true)}>
-                        Presentation Mode
-                      </Button>
-                      <TextField
-                        select
-                        size="small"
-                        label="Document"
-                        value={selectedDocument.id}
-                        onChange={(event) => updateParams({ doc: event.target.value })}
-                        sx={{ minWidth: 220 }}
-                      >
-                        {(documentsQuery.data ?? []).map((document) => (
-                          <MenuItem key={document.id} value={document.id}>
-                            {document.title}
-                          </MenuItem>
-                        ))}
-                      </TextField>
-                    </Stack>
-                  </Stack>
-
-                  {!selectedDocument.editable || !canEditItems ? (
-                    <Alert severity="info">Document editing is currently read-only for this session or branch.</Alert>
-                  ) : (
-                    <Alert severity={capabilities.edit?.state === "restricted" ? "warning" : "success"}>{capabilities.edit?.reason}</Alert>
-                  )}
-
-                  <Grid container spacing={2}>
-                    <Grid item xs={12} lg={8}>
-                      <Card sx={{ borderRadius: 5 }}>
-                        <CardContent>
-                          <Stack spacing={2}>
-                            <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
-                              <Typography variant="h5">Document View</Typography>
-                              {selectedDocument.editable ? (
-                                <FormControlLabel
-                                  control={<Switch checked={documentEditMode} onChange={(event) => setDocumentEditMode(event.target.checked)} />}
-                                  label="Edit Mode"
-                                />
-                              ) : null}
-                            </Stack>
-                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                              {selectedDocument.toc.map((entry) => (
-                                <Chip key={entry} label={entry} variant="outlined" />
-                              ))}
-                            </Stack>
-                            {documentEditMode && selectedDocument.editable && canEditItems ? (
-                              <Stack spacing={2}>
-                                <TextField
-                                  value={documentDraft}
-                                  onChange={(event) => setDocumentDraft(event.target.value)}
-                                  fullWidth
-                                  multiline
-                                  minRows={18}
-                                />
-                                <Stack direction="row" spacing={1}>
-                                  <Button variant="contained" startIcon={<SaveRoundedIcon />} onClick={handleDocumentSave} disabled={updateDocumentMutation.isPending}>
-                                    Save
-                                  </Button>
-                                  <Button variant="outlined" onClick={() => documentQuery.refetch()}>
-                                    Revert from Server
-                                  </Button>
-                                  <Button variant="text" onClick={() => setDocumentDraft(selectedDocument.body_markdown)}>
-                                    Discard Draft
-                                  </Button>
-                                </Stack>
-                              </Stack>
-                            ) : (
-                              <Paper sx={{ p: 3, borderRadius: 4, bgcolor: "background.default" }}>
-                                <ReactMarkdown>{selectedDocument.body_markdown}</ReactMarkdown>
-                              </Paper>
-                            )}
-                          </Stack>
-                        </CardContent>
-                      </Card>
-                    </Grid>
-                    <Grid item xs={12} lg={4}>
-                      <Stack spacing={2}>
-                        <Card sx={{ borderRadius: 5 }}>
-                          <CardContent>
-                            <Stack spacing={2}>
-                              <Typography variant="h5">Attachments</Typography>
-                              {capabilities.attachment ? (
-                                <Alert severity={capabilities.attachment.state === "ready" ? "success" : "warning"}>
-                                  {capabilities.attachment.reason}
-                                </Alert>
-                              ) : null}
-                              <Button component="label" variant="outlined" startIcon={<UploadRoundedIcon />} disabled={!selectedDocument.attachments_supported || !canAttach}>
-                                Upload Attachment
-                                <input
-                                  hidden
-                                  type="file"
-                                  onChange={(event: ChangeEvent<HTMLInputElement>) => {
-                                    const file = event.target.files?.[0];
-                                    if (file) {
-                                      uploadAttachmentMutation.mutate(file);
-                                    }
-                                  }}
-                                />
-                              </Button>
-                              <Stack spacing={1.5}>
-                                {(attachmentsQuery.data ?? []).map((attachment: AttachmentInfo) => (
-                                  <Paper key={attachment.id} sx={{ p: 1.5, borderRadius: 4 }}>
-                                    <Stack spacing={1.25}>
-                                      {attachment.content_type.startsWith("image/") ? (
-                                        <Box
-                                          component="img"
-                                          src={api.attachmentDownloadUrl(attachment.document_id, attachment.id)}
-                                          alt={attachment.file_name}
-                                          sx={{ width: "100%", borderRadius: 3, maxHeight: 160, objectFit: "cover" }}
-                                        />
-                                      ) : null}
-                                      <Typography fontWeight={600}>{attachment.file_name}</Typography>
-                                      <Typography variant="body2" color="text.secondary">
-                                        {formatBytes(attachment.size_bytes)} · {attachment.content_type}
-                                      </Typography>
-                                      <Stack direction="row" spacing={1}>
-                                        <Button component="a" href={api.attachmentDownloadUrl(attachment.document_id, attachment.id)} target="_blank" rel="noreferrer" size="small">
-                                          Download
-                                        </Button>
-                                        <Button color="error" size="small" onClick={() => deleteAttachmentMutation.mutate(attachment.id)}>
-                                          Remove
-                                        </Button>
-                                      </Stack>
-                                    </Stack>
-                                  </Paper>
-                                ))}
-                              </Stack>
-                            </Stack>
-                          </CardContent>
-                        </Card>
-
-                        <Card sx={{ borderRadius: 5 }}>
-                          <CardContent>
-                            <Stack spacing={2}>
-                              <Typography variant="h5">Comments and Notes</Typography>
-                              <TextField
-                                multiline
-                                minRows={3}
-                                value={commentDraft}
-                                onChange={(event) => setCommentDraft(event.target.value)}
-                                placeholder="Add a reviewer note or annotation"
-                              />
-                              <Button variant="contained" onClick={() => addCommentMutation.mutate()} disabled={!commentDraft.trim()}>
-                                Add Comment
-                              </Button>
-                              <List dense disablePadding>
-                                {(commentsQuery.data ?? []).map((comment: CommentEntry) => (
-                                  <ListItemButton key={comment.id} sx={{ borderRadius: 2 }}>
-                                    <ListItemText primary={`${comment.author} · ${formatDate(comment.created_at)}`} secondary={comment.content} />
-                                  </ListItemButton>
-                                ))}
-                              </List>
-                            </Stack>
-                          </CardContent>
-                        </Card>
-                      </Stack>
-                    </Grid>
-                  </Grid>
-                </Stack>
-              ) : (
-                <Alert severity="info">Select a collaborator document to review, present, annotate, or edit.</Alert>
-              )
-            ) : null}
-
-            {selectedTab === "search" ? (
-              <Stack spacing={2.5}>
-                <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" spacing={2}>
-                  <div>
-                    <Typography variant="h4">Search Results</Typography>
-                    <Typography color="text.secondary">Search models, documents, and normalized workspace items.</Typography>
-                  </div>
-                  <Button
-                    variant="outlined"
-                    disabled={!searchQuery}
-                    onClick={() => {
-                      const suggestedName = window.prompt("Saved search name", `Search: ${searchQuery}`);
-                      if (suggestedName) {
-                        saveSearchMutation.mutate({ name: suggestedName, query: searchQuery });
-                      }
-                    }}
-                  >
-                    Save Search
-                  </Button>
-                </Stack>
-                {searchQuery ? (
-                  <Typography color="text.secondary">Results for “{searchQuery}”</Typography>
-                ) : (
-                  <Alert severity="info">Run a global search from the toolbar to populate this view.</Alert>
-                )}
-                <Grid container spacing={2}>
-                  {(searchResultsQuery.data?.results ?? []).map((result) => (
-                    <Grid item xs={12} md={6} key={result.id}>
-                      <Card sx={{ borderRadius: 5, height: "100%" }}>
-                        <CardContent>
-                          <Stack spacing={1.5}>
-                            <Typography variant="h6">{result.title}</Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              {result.path}
-                            </Typography>
-                            <Typography variant="body2">{result.excerpt}</Typography>
-                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                              <Chip size="small" label={result.item_type} />
-                              <Chip size="small" variant="outlined" label={`Score ${result.score.toFixed(2)}`} />
-                            </Stack>
-                            <Button variant="outlined" onClick={() => openSearchResult(result)}>
-                              {result.target_tab === "collaborator" ? "Open Document" : "Open Item"}
-                            </Button>
-                          </Stack>
-                        </CardContent>
-                      </Card>
-                    </Grid>
-                  ))}
-                </Grid>
-              </Stack>
-            ) : null}
-
-            {selectedTab === "jobs" ? (
-              <Stack spacing={2.5}>
-                <Typography variant="h4">Job Center</Typography>
-                {(jobsQuery.data ?? []).map((job) => (
-                  <Accordion key={job.id} sx={{ borderRadius: 4, overflow: "hidden" }}>
-                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ xs: "flex-start", md: "center" }} sx={{ width: "100%" }}>
-                        <Typography fontWeight={700} sx={{ flex: 1 }}>
-                          {job.title}
-                        </Typography>
-                        <Chip size="small" color={jobStatusColor(job.status)} label={job.status} />
-                        <Chip size="small" variant="outlined" label={job.job_type} />
-                      </Stack>
-                    </AccordionSummary>
-                    <AccordionDetails>
-                      <Stack spacing={2}>
-                        <Typography variant="body2" color="text.secondary">
-                          {job.message} · Created {formatDate(job.created_at)}
-                        </Typography>
-                        <LinearProgress variant="determinate" value={job.progress} sx={{ borderRadius: 999, height: 8 }} />
-                        <Stack direction="row" spacing={1}>
-                          {job.artifact_path ? (
-                            <Button component="a" href={api.jobArtifactUrl(job.id)} target="_blank" rel="noreferrer" startIcon={<DownloadRoundedIcon />}>
-                              Download Artifact
-                            </Button>
-                          ) : null}
-                          {(job.status === "running" || job.status === "pending") && !job.cancel_requested ? (
-                            <Button color="warning" onClick={() => cancelJobMutation.mutate(job.id)}>
-                              Cancel Job
-                            </Button>
-                          ) : null}
-                        </Stack>
-                        <Paper sx={{ p: 2, borderRadius: 4, bgcolor: "background.default" }}>
-                          <Typography component="pre" sx={{ m: 0, fontFamily: '"IBM Plex Mono", Consolas, monospace', whiteSpace: "pre-wrap" }}>
-                            {job.logs.join("\n") || "No logs yet."}
-                          </Typography>
-                        </Paper>
-                        {job.result ? (
-                          <Paper sx={{ p: 2, borderRadius: 4, bgcolor: "background.default" }}>
-                            <Typography component="pre" sx={{ m: 0, fontFamily: '"IBM Plex Mono", Consolas, monospace', whiteSpace: "pre-wrap" }}>
-                              {JSON.stringify(job.result, null, 2)}
-                            </Typography>
-                          </Paper>
-                        ) : null}
-                      </Stack>
-                    </AccordionDetails>
-                  </Accordion>
-                ))}
-              </Stack>
-            ) : null}
-          </Box>
-        </Paper>
-
-        <Paper sx={{ p: 2.5, borderRadius: 5, minHeight: 0, overflow: "auto" }}>
-          <Stack spacing={2.5}>
-            <div>
-              <Typography variant="h6">Inspector</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Session context, capability badges, and details for the current selection.
-              </Typography>
-            </div>
-
-            <Card sx={{ borderRadius: 5 }}>
-              <CardContent>
-                <Stack spacing={1.5}>
-                  <Typography variant="subtitle1" fontWeight={700}>
-                    Session
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Server: {session?.server?.name}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    User: {session?.user?.preferred_username}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Version: {session?.capabilities?.detected_version ?? "unknown"}
-                  </Typography>
-                </Stack>
-              </CardContent>
-            </Card>
-
-            <Card sx={{ borderRadius: 5 }}>
-              <CardContent>
-                <Stack spacing={2}>
-                  <Typography variant="subtitle1" fontWeight={700}>
-                    Capabilities
-                  </Typography>
-                  <CapabilityBadges capabilities={capabilities} />
-                </Stack>
-              </CardContent>
-            </Card>
-
-            {selectedItem ? (
-              <Card sx={{ borderRadius: 5 }}>
-                <CardContent>
-                  <Stack spacing={1.5}>
-                    <Typography variant="subtitle1" fontWeight={700}>
-                      Selected Item
-                    </Typography>
-                    <Typography variant="body1">{selectedItem.name}</Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {selectedItem.path}
-                    </Typography>
-                    <Chip size="small" label={selectedItem.item_type} sx={{ width: "fit-content" }} />
-                    <Typography variant="body2" color="text.secondary">
-                      Version {selectedItem.version}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Collaborators: {selectedItem.collaborators.join(", ") || "-"}
-                    </Typography>
-                  </Stack>
-                </CardContent>
-              </Card>
-            ) : null}
-
-            {selectedDocument ? (
-              <Card sx={{ borderRadius: 5 }}>
-                <CardContent>
-                  <Stack spacing={1.5}>
-                    <Typography variant="subtitle1" fontWeight={700}>
-                      Document Versions
-                    </Typography>
-                    {(selectedDocument.versions ?? []).map((version) => (
-                      <Paper key={version.id} sx={{ p: 1.5, borderRadius: 3 }}>
-                        <Typography fontWeight={600}>{version.label}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {formatDate(version.created_at)} · {version.summary}
-                        </Typography>
-                      </Paper>
-                    ))}
-                  </Stack>
-                </CardContent>
-              </Card>
-            ) : null}
-          </Stack>
-        </Paper>
+        </Stack>
       </Box>
-
-      <Box sx={{ p: 2, pt: 0 }}>
-        <JobStrip jobs={(jobsQuery.data ?? []).slice(0, 4)} onCancel={(jobId) => cancelJobMutation.mutate(jobId)} />
-      </Box>
-
       <SettingsDialog
         open={settingsOpen}
-        preferences={session?.preferences ?? {
-          theme_mode: "system",
-          font_scale: 1,
-          request_timeout_seconds: 30,
-          live_log_poll_interval_ms: 2500,
-          presentation_font_scale: 1.2,
-        }}
-        saving={saveSettingsMutation.isPending}
+        preferences={session?.preferences ?? { theme_mode: "system", font_scale: 1, request_timeout_seconds: 30, live_log_poll_interval_ms: 2500, presentation_font_scale: 1.2 }}
+        saving={settingsMutation.isPending}
         onClose={() => setSettingsOpen(false)}
         onSave={async (preferences) => {
-          await saveSettingsMutation.mutateAsync(preferences);
+          await settingsMutation.mutateAsync(preferences);
         }}
       />
-
-      <Dialog open={branchDialogOpen} onClose={() => setBranchDialogOpen(false)} fullWidth maxWidth="sm">
-        <Box sx={{ p: 3 }}>
-          <Stack spacing={2}>
-            <div>
-              <Typography variant="h5">Edit Branch</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Rename the active branch or update its description metadata.
-              </Typography>
-            </div>
-            <TextField
-              label="Branch Name"
-              fullWidth
-              value={branchDraft.name}
-              onChange={(event) => setBranchDraft((current) => ({ ...current, name: event.target.value }))}
-            />
-            <TextField
-              label="Description"
-              fullWidth
-              multiline
-              minRows={4}
-              value={branchDraft.description}
-              onChange={(event) => setBranchDraft((current) => ({ ...current, description: event.target.value }))}
-            />
-            <Stack direction="row" spacing={1} justifyContent="flex-end">
-              <Button variant="text" onClick={() => setBranchDialogOpen(false)} disabled={updateBranchMutation.isPending}>
-                Cancel
-              </Button>
-              <Button
-                variant="contained"
-                onClick={() => updateBranchMutation.mutate()}
-                disabled={!branchDraft.name.trim() || updateBranchMutation.isPending}
-              >
-                Save Branch
-              </Button>
-            </Stack>
-          </Stack>
-        </Box>
-      </Dialog>
-
-      <Dialog fullScreen open={presentationOpen} onClose={() => setPresentationOpen(false)}>
-        <Box sx={{ p: { xs: 3, md: 6 }, bgcolor: "background.default", minHeight: "100%" }}>
-          <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={2} sx={{ mb: 3 }}>
-            <div>
-              <Typography variant="h3">{selectedDocument?.title}</Typography>
-              <Typography color="text.secondary">Presentation mode for collaborator review and room display.</Typography>
-            </div>
-            <Button variant="outlined" onClick={() => setPresentationOpen(false)}>
-              Exit Presentation
-            </Button>
-          </Stack>
-          <Paper sx={{ p: { xs: 3, md: 5 }, borderRadius: 6 }}>
-            <Box sx={{ fontSize: `${(session?.preferences.presentation_font_scale ?? 1.2) * 1.1}rem`, lineHeight: 1.8 }}>
-              <ReactMarkdown>{selectedDocument?.body_markdown ?? ""}</ReactMarkdown>
-            </Box>
-          </Paper>
-        </Box>
-      </Dialog>
     </Box>
   );
 }

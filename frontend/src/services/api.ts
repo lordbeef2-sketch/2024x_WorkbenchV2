@@ -1,30 +1,20 @@
 import {
-  AttachmentInfo,
   AuthOptions,
-  Bookmark,
-  BranchSummary,
-  BranchUpdateRequest,
-  CollaboratorDocument,
-  CommentEntry,
+  CapabilitySummary,
   CompareResult,
   DashboardPayload,
-  ExportRequest,
-  JobRecord,
+  ItemDetails,
   ProjectSummary,
-  SavedSearch,
-  SearchResponse,
   ServerHealth,
   ServerProfile,
   ServerProfileInput,
   SessionPreferences,
   SessionSnapshot,
-  SimulationConfig,
-  SimulationRunRequest,
+  SwaggerContractManifest,
+  SwaggerExecuteRequest,
+  SwaggerExecuteResponse,
   TokenLoginRequest,
   TreeNode,
-  ItemDetails,
-  PublishRequest,
-  CapabilitySummary,
 } from "../models/api";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -79,12 +69,6 @@ export const api = {
   errorClass: ApiError,
   signInUrl(serverId: string) {
     return `${API_BASE}/auth/signin/${serverId}`;
-  },
-  jobArtifactUrl(jobId: string) {
-    return `${API_BASE}/jobs/${jobId}/artifact`;
-  },
-  attachmentDownloadUrl(documentId: string, attachmentId: string) {
-    return `${API_BASE}/workspace/collaborator/documents/${documentId}/attachments/${attachmentId}/download`;
   },
   getSession() {
     return request<SessionSnapshot>("/auth/session");
@@ -144,15 +128,36 @@ export const api = {
   getDashboard() {
     return request<DashboardPayload>("/workspace/dashboard");
   },
-  getProjects() {
-    return request<ProjectSummary[]>("/workspace/projects");
+  getContractManifest() {
+    return request<SwaggerContractManifest>("/workspace/contract");
   },
-  updateBranch(projectId: string, branchId: string, payload: BranchUpdateRequest, csrfToken: string) {
-    return request<BranchSummary>(`/workspace/projects/${projectId}/branches/${branchId}`, {
-      method: "PATCH",
+  executeContractOperation(payload: SwaggerExecuteRequest, csrfToken: string) {
+    return request<SwaggerExecuteResponse>("/workspace/contract/execute", {
+      method: "POST",
       headers: jsonHeaders(csrfToken),
       body: JSON.stringify(payload),
     });
+  },
+  executeContractUpload(
+    operationKey: string,
+    pathParams: Record<string, unknown>,
+    queryParams: Record<string, unknown>,
+    file: File,
+    csrfToken: string,
+  ) {
+    const body = new FormData();
+    body.set("operationKey", operationKey);
+    body.set("pathParams", JSON.stringify(pathParams));
+    body.set("queryParams", JSON.stringify(queryParams));
+    body.set("file", file);
+    return request<SwaggerExecuteResponse>("/workspace/contract/execute-upload", {
+      method: "POST",
+      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : undefined,
+      body,
+    });
+  },
+  getProjects() {
+    return request<ProjectSummary[]>("/workspace/projects");
   },
   getTree(projectId?: string, branchId?: string) {
     const params = new URLSearchParams();
@@ -191,9 +196,6 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
-  search(query: string) {
-    return request<SearchResponse>(`/workspace/search?query=${encodeURIComponent(query)}`);
-  },
   compare(
     leftId: string,
     rightId: string,
@@ -220,72 +222,10 @@ export const api = {
     }
     return request<CompareResult>(`/workspace/compare?${params.toString()}`);
   },
-  getSimulationConfigurations(projectId?: string) {
-    const suffix = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
-    return request<SimulationConfig[]>(`/workspace/simulations/configurations${suffix}`);
-  },
-  getSimulationHistory() {
-    return request<JobRecord[]>("/workspace/simulations/history");
-  },
-  runSimulation(payload: SimulationRunRequest, csrfToken: string) {
-    return request<JobRecord>("/workspace/simulations/runs", {
-      method: "POST",
-      headers: jsonHeaders(csrfToken),
-      body: JSON.stringify(payload),
-    });
-  },
   refreshCapabilities(csrfToken: string) {
     return request<CapabilitySummary>("/workspace/capabilities/refresh", {
       method: "POST",
       headers: jsonHeaders(csrfToken),
-    });
-  },
-  publish(payload: PublishRequest, csrfToken: string) {
-    return request<JobRecord>("/workspace/publish", {
-      method: "POST",
-      headers: jsonHeaders(csrfToken),
-      body: JSON.stringify(payload),
-    });
-  },
-  getDocuments() {
-    return request<CollaboratorDocument[]>("/workspace/collaborator/documents");
-  },
-  getDocument(documentId: string) {
-    return request<CollaboratorDocument>(`/workspace/collaborator/documents/${documentId}`);
-  },
-  updateDocument(documentId: string, bodyMarkdown: string, csrfToken: string) {
-    return request<CollaboratorDocument>(`/workspace/collaborator/documents/${documentId}`, {
-      method: "PUT",
-      headers: jsonHeaders(csrfToken),
-      body: JSON.stringify({ body_markdown: bodyMarkdown }),
-    });
-  },
-  getAttachments(documentId: string) {
-    return request<AttachmentInfo[]>(`/workspace/collaborator/documents/${documentId}/attachments`);
-  },
-  async uploadAttachment(documentId: string, file: File, csrfToken: string) {
-    const formData = new FormData();
-    formData.append("file", file);
-    return request<AttachmentInfo>(`/workspace/collaborator/documents/${documentId}/attachments`, {
-      method: "POST",
-      headers: csrfToken ? { "X-CSRF-Token": csrfToken } : undefined,
-      body: formData,
-    });
-  },
-  deleteAttachment(documentId: string, attachmentId: string, csrfToken: string) {
-    return request<{ ok: boolean }>(`/workspace/collaborator/documents/${documentId}/attachments/${attachmentId}`, {
-      method: "DELETE",
-      headers: jsonHeaders(csrfToken),
-    });
-  },
-  getComments(documentId: string) {
-    return request<CommentEntry[]>(`/workspace/collaborator/documents/${documentId}/comments`);
-  },
-  addComment(documentId: string, content: string, csrfToken: string) {
-    return request<CommentEntry>(`/workspace/collaborator/documents/${documentId}/comments`, {
-      method: "POST",
-      headers: jsonHeaders(csrfToken),
-      body: JSON.stringify({ content }),
     });
   },
   getPreferences() {
@@ -296,58 +236,6 @@ export const api = {
       method: "PUT",
       headers: jsonHeaders(csrfToken),
       body: JSON.stringify(payload),
-    });
-  },
-  addBookmark(payload: Bookmark, csrfToken: string) {
-    return request<Bookmark[]>("/workspace/bookmarks", {
-      method: "POST",
-      headers: jsonHeaders(csrfToken),
-      body: JSON.stringify(payload),
-    });
-  },
-  deleteBookmark(bookmarkId: string, csrfToken: string) {
-    return request<Bookmark[]>(`/workspace/bookmarks/${bookmarkId}`, {
-      method: "DELETE",
-      headers: jsonHeaders(csrfToken),
-    });
-  },
-  saveSearch(payload: SavedSearch, csrfToken: string) {
-    return request<SavedSearch[]>("/workspace/saved-searches", {
-      method: "POST",
-      headers: jsonHeaders(csrfToken),
-      body: JSON.stringify(payload),
-    });
-  },
-  deleteSearch(searchId: string, csrfToken: string) {
-    return request<SavedSearch[]>(`/workspace/saved-searches/${searchId}`, {
-      method: "DELETE",
-      headers: jsonHeaders(csrfToken),
-    });
-  },
-  addRecent(payload: Bookmark, csrfToken: string) {
-    return request<Bookmark[]>("/workspace/recent", {
-      method: "POST",
-      headers: jsonHeaders(csrfToken),
-      body: JSON.stringify(payload),
-    });
-  },
-  exportData(payload: ExportRequest, csrfToken: string) {
-    return request<JobRecord>("/workspace/exports", {
-      method: "POST",
-      headers: jsonHeaders(csrfToken),
-      body: JSON.stringify(payload),
-    });
-  },
-  listJobs() {
-    return request<JobRecord[]>("/jobs");
-  },
-  getJob(jobId: string) {
-    return request<JobRecord>(`/jobs/${jobId}`);
-  },
-  cancelJob(jobId: string, csrfToken: string) {
-    return request<JobRecord>(`/jobs/${jobId}/cancel`, {
-      method: "POST",
-      headers: jsonHeaders(csrfToken),
     });
   },
 };
