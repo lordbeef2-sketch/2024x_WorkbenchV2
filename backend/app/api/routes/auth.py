@@ -157,7 +157,7 @@ def build_callback_url(container: ApplicationContainer, state: str) -> str:
 
 def build_twc_saml_signin_url(container: ApplicationContainer, server, state: str) -> str:
     callback_url = build_callback_url(container, state)
-    login_path = container.settings.twc_saml_login_path.strip() or "/osmc/login.html"
+    login_path = container.settings.twc_saml_login_path.strip() or "/osmc/authen/login"
     if not login_path.startswith("/"):
         login_path = f"/{login_path}"
     login_url = f"{server.base_url.rstrip('/')}{login_path}"

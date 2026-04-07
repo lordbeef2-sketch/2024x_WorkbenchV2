@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     twc_auth_callback_path: str | None = None
     twc_auth_scope: str = "openid"
     twc_auth_state_ttl_minutes: int = 15
-    twc_saml_login_path: str = "/osmc/login.html"
+    twc_saml_login_path: str = "/osmc/authen/login"
     twc_saml_return_url_parameter: str = "redirect"
     session_ttl_minutes: int = 480
     secure_cookies: bool = False
@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     @classmethod
     def blank_login_path_to_default(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
-            return "/osmc/login.html"
+            return "/osmc/authen/login"
         return value
 
     @field_validator("twc_saml_return_url_parameter", mode="before")
