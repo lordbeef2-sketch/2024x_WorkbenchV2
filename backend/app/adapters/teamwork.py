@@ -224,6 +224,36 @@ def extract_resource_list(payload: Any) -> list[Any] | None:
     return data if isinstance(data, list) else None
 
 
+def _pick_project_resource_list(payload: Any) -> tuple[str | None, list[dict[str, Any]]]:
+    candidates: list[tuple[str, list[Any]]] = []
+    empty_candidate_key: str | None = None
+
+    if isinstance(payload, list):
+        candidates.append(("list", payload))
+    elif isinstance(payload, dict):
+        for key in ("items", "resources", "data", "ldp:contains"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                candidates.append((key, value))
+
+    for key, candidate in candidates:
+        if not candidate:
+            empty_candidate_key = empty_candidate_key or key
+            continue
+        if any(isinstance(item, str) for item in candidate):
+            logger.warning(
+                "Rejected candidate list because it contains strings, not resource objects",
+                candidate_key=key,
+            )
+            continue
+        if all(isinstance(item, dict) for item in candidate):
+            return key, [item for item in candidate if isinstance(item, dict)]
+
+    if empty_candidate_key is not None:
+        return empty_candidate_key, []
+    return None, []
+
+
 def _container_member_ids(payload: Any) -> list[str]:
     identifiers: list[str] = []
     data = extract_resource_list(payload) or []
@@ -256,46 +286,41 @@ def map_projects(payload: Any) -> list[dict[str, Any]]:
 
     logger.info(f"Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'list'}")
 
-    data_list = extract_resource_list(payload)
-    if data_list is None:
+    chosen_key, data_list = _pick_project_resource_list(payload)
+    if chosen_key is None:
         logger.error(f"Could not find resource list. Keys: {list(payload.keys()) if isinstance(payload, dict) else []}")
         return projects
 
-    logger.info(f"Extracted list size: {len(data_list)}")
+    logger.info(f"Chosen resource list key: {chosen_key}")
+    logger.info(f"Raw items: {len(data_list)}")
+    logger.info(f"First item type: {type(data_list[0]).__name__ if data_list else 'none'}")
+    logger.info(f"First item keys: {list(data_list[0].keys()) if data_list and isinstance(data_list[0], dict) else 'n/a'}")
 
     for item in data_list:
         if not isinstance(item, dict):
             continue
 
-        metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
-
-        raw_project_id = metadata.get("mdResourceBranchUUID") or item.get("id") or item.get("@id")
+        raw_project_id = item.get("id") or item.get("@id")
         project_id = _reference_id(raw_project_id)
         if not project_id and isinstance(raw_project_id, (str, int)):
             candidate = str(raw_project_id).strip()
+            if "#" in candidate:
+                candidate = candidate.split("#")[-1]
+            if "/" in candidate:
+                candidate = candidate.rstrip("/").split("/")[-1]
             project_id = candidate or None
-        if not project_id:
-            continue
 
-        name = _first_text(
-            metadata.get("name"),
-            item.get("name"),
-            item.get("label"),
-            item.get("title"),
-            project_id,
-        )
-        branch_uuid = _reference_id(metadata.get("mdResourceBranchUUID"))
+        if project_id and project_id != "it":
+            projects.append(
+                {
+                    "id": project_id,
+                    "name": project_id,
+                    "branch_uuid": None,
+                    "categories": item.get("categoryID"),
+                }
+            )
 
-        projects.append(
-            {
-                "id": project_id,
-                "name": name,
-                "branch_uuid": branch_uuid,
-                "categories": item.get("categoryID"),
-            }
-        )
-
-    logger.info(f"Parsed project count: {len(projects)}")
+    logger.info(f"Extracted project IDs: {len(projects)}")
     if not projects and data_list:
         logger.error(f"SAMPLE ITEM: {data_list[0]}")
 
@@ -1256,7 +1281,7 @@ class TeamworkAdapter:
                 continue
 
             sample_payload = sample_payload or payload
-            extracted_resources = extract_resource_list(payload) or []
+            _, extracted_resources = _pick_project_resource_list(payload)
             total_items_received += len(extracted_resources)
             mapped_projects = map_projects(payload)
             if sample_project is None and mapped_projects:
