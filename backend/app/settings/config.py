@@ -103,6 +103,8 @@ class Settings(BaseSettings):
     def blank_login_path_to_default(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return "/authentication/authorize"
+        if isinstance(value, str) and value.strip().lower() in {"/osmc/authen/login", "/osmc/login.html"}:
+            return "/authentication/authorize"
         return value
 
     @field_validator("twc_saml_login_port", mode="before")
