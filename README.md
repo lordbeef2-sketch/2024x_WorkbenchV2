@@ -64,7 +64,7 @@ Copy `backend/.env.example` to `backend/.env` and set values appropriate for you
 `TWC_PRESET_SERVERS` is the authoritative JSON catalog for pre-login Teamwork Cloud discovery. Each preset includes `id`, `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
 The backend loads that catalog at startup and exposes enabled presets on the landing page before authentication. Users do not create their own target servers just to connect; the app persists only each user’s selected and last-used server state separately.
 To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` and restart the backend.
-`Sign In via TWC` is the primary sign-in path. It redirects to the selected Teamwork Cloud Authentication Server authorize endpoint, derived by default as `https://<selected-twc-host>:8443/authentication/authorize`, requests an authorization code, exchanges that code for a token through `/authentication/api/token`, and validates the user through the RealSwagger `/osmc/admin/currentUser` REST endpoint. `Use TWC Token` remains the explicit fallback.
+`Sign In via TWC` is the primary sign-in path. It redirects to the Authentication Server for the selected Teamwork Cloud preset, derived by default as `https://<selected-twc-host>:8443/authentication/authorize`, requests an authorization code, exchanges that code for a token through `/authentication/api/token`, and validates the user through the RealSwagger `/osmc/admin/currentUser` REST endpoint. The single Workbench callback URL belongs to this app, while AuthServer hosts and client registrations can vary by selected preset through `TWC_AUTH_SERVER_OVERRIDES`. `Use TWC Token` remains the explicit fallback.
 Preset-management authorization is derived from Teamwork Cloud or trusted reverse-proxy role and group context. When no upstream role or group claims are available, the app defaults to allowing authenticated users rather than maintaining a separate authorization list.
 
 Important settings:
@@ -85,7 +85,9 @@ Important settings:
 - `TWC_SAML_AUTHORIZE_URL`: optional complete SAML/AuthServer authorize URL. Leave blank to derive it from the selected server.
 - `TWC_SAML_LOGIN_PATH`: authorize path used when `TWC_SAML_AUTHORIZE_URL` is blank. Defaults to `/authentication/authorize`.
 - `TWC_SAML_LOGIN_PORT`: authorize port used when `TWC_SAML_AUTHORIZE_URL` is blank. Defaults to `8443`.
+- `TWC_SAML_TOKEN_URL`: optional complete AuthServer token URL. Leave blank to derive it from the selected server or authorize URL.
 - `TWC_SAML_RETURN_URL_PARAMETER`: query parameter used to pass the app callback URL to the TWC authorize endpoint. Defaults to `redirect_uri`.
+- `TWC_AUTH_SERVER_OVERRIDES`: optional JSON object keyed by preset server id for per-server AuthServer hosts, client ids, secrets, ports, paths, scopes, and return parameter names.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
 Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through `TWC_PRESET_SERVERS`, not through `HOST`.
 
@@ -223,8 +225,10 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 - Preset Teamwork Cloud servers are loaded from `TWC_PRESET_SERVERS` at startup and are readable on the landing page before app login.
 - Users select a preset server first, then authenticate against that selected Teamwork Cloud server.
 - The post-login app session is bound to the selected server, not the other way around.
-- Redirect-based `Sign In via TWC` sends the browser to TWC's SAML v2 login front door, preserves the selected preset server, and completes the app session on the callback route.
-- The callback must receive authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your proxy or auth gateway.
+- Redirect-based `Sign In via TWC` sends the browser to the selected preset's AuthServer authorize endpoint, preserves the selected preset server, and completes the app session on the callback route after exchanging the returned authorization code.
+- The callback URL is the Workbench app URL, normally `https://<workbench-host>/api/auth/callback`; whitelist that same callback in every TWC/AuthServer client registration that should be able to return users to this app.
+- If 2022x and 2024x environments use different AuthServer hosts, client ids, secrets, or paths, put those differences in `TWC_AUTH_SERVER_OVERRIDES` keyed by the matching `TWC_PRESET_SERVERS` id.
+- If your deployment bypasses the AuthServer code flow, the callback must receive authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your proxy or auth gateway.
 - `Use TWC Token` remains the explicit fallback when your deployment cannot return authenticated TWC context to the callback.
 - If your proxy cannot forward Teamwork Cloud session cookies, configure `UPSTREAM_ACCESS_TOKEN_HEADERS` to pass a user-scoped TWC token instead.
 - Direct token sign-in is also supported from the landing page. The backend validates the supplied token against `/osmc/admin/currentUser` before opening a workbench session.

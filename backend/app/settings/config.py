@@ -6,10 +6,58 @@ from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.models.domain import PresetServerDefinition
+
+
+LEGACY_TWC_AUTH_PATHS = {
+    "/osmc/authen/login",
+    "/osmc/login.html",
+    "/authentication/saml2/sso/tssd-twc2024x",
+}
+
+
+class TWCAuthServerOverride(BaseModel):
+    authorize_url: str | None = None
+    token_url: str | None = None
+    login_path: str | None = None
+    login_port: int | None = None
+    token_path: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    scope: str | None = None
+    return_url_parameter: str | None = None
+
+    @field_validator(
+        "authorize_url",
+        "token_url",
+        "login_path",
+        "token_path",
+        "client_id",
+        "client_secret",
+        "scope",
+        "return_url_parameter",
+        mode="before",
+    )
+    @classmethod
+    def blank_strings_to_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if text.lower() in LEGACY_TWC_AUTH_PATHS:
+                return "/authentication/authorize"
+            return text
+        return value
+
+    @field_validator("login_port", mode="before")
+    @classmethod
+    def blank_login_port_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class Settings(BaseSettings):
@@ -34,9 +82,11 @@ class Settings(BaseSettings):
     twc_auth_callback_path: str | None = None
     twc_auth_scope: str = "openid"
     twc_auth_state_ttl_minutes: int = 15
+    twc_auth_server_overrides: dict[str, TWCAuthServerOverride] = Field(default_factory=dict)
     twc_saml_authorize_url: str | None = None
     twc_saml_login_path: str = "/authentication/authorize"
     twc_saml_login_port: int | None = 8443
+    twc_saml_token_url: str | None = None
     twc_saml_token_path: str = "/authentication/api/token"
     twc_saml_return_url_parameter: str = "redirect_uri"
     session_ttl_minutes: int = 480
@@ -91,6 +141,7 @@ class Settings(BaseSettings):
         "twc_auth_client_secret",
         "twc_auth_callback_path",
         "twc_saml_authorize_url",
+        "twc_saml_token_url",
         mode="before",
     )
     @classmethod
@@ -104,12 +155,15 @@ class Settings(BaseSettings):
     def blank_login_path_to_default(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return "/authentication/authorize"
-        if isinstance(value, str) and value.strip().lower() in {
-            "/osmc/authen/login",
-            "/osmc/login.html",
-            "/authentication/saml2/sso/tssd-twc2024x",
-        }:
+        if isinstance(value, str) and value.strip().lower() in LEGACY_TWC_AUTH_PATHS:
             return "/authentication/authorize"
+        return value
+
+    @field_validator("twc_auth_scope", mode="before")
+    @classmethod
+    def blank_auth_scope_to_default(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return "openid"
         return value
 
     @field_validator("twc_saml_token_path", mode="before")
@@ -148,6 +202,24 @@ class Settings(BaseSettings):
                 raise ValueError("TWC_PRESET_SERVERS must be a JSON array of preset server objects") from exc
             if not isinstance(payload, list):
                 raise ValueError("TWC_PRESET_SERVERS must be a JSON array of preset server objects")
+            return payload
+        return value
+
+    @field_validator("twc_auth_server_overrides", mode="before")
+    @classmethod
+    def parse_twc_auth_server_overrides(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return {}
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("TWC_AUTH_SERVER_OVERRIDES must be a JSON object keyed by preset server id") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("TWC_AUTH_SERVER_OVERRIDES must be a JSON object keyed by preset server id")
             return payload
         return value
 
@@ -192,6 +264,9 @@ class Settings(BaseSettings):
     @property
     def resolved_twc_auth_callback_url(self) -> str:
         return f"{self.resolved_app_origin}{self.resolved_twc_auth_callback_path}"
+
+    def twc_auth_override_for_server(self, server_id: str) -> TWCAuthServerOverride | None:
+        return self.twc_auth_server_overrides.get(server_id) or self.twc_auth_server_overrides.get("*")
 
     def extract_upstream_auth_cookies(self, cookies: Mapping[str, str]) -> dict[str, str]:
         allowed = {name.strip() for name in self.upstream_auth_cookie_names if name.strip()}

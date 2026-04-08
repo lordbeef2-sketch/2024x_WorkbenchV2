@@ -22,7 +22,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 logger = structlog.get_logger(__name__)
 
 REDIRECT_SIGNIN_MESSAGE = (
-    "Sign in via TWC redirects to the selected Teamwork Cloud SAML v2 login entry point and completes when the callback receives authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your deployment."
+    "Sign in via TWC redirects to the selected Teamwork Cloud Authentication Server authorize endpoint, exchanges the returned code for a user token, and validates the session through /osmc/admin/currentUser."
 )
 
 
@@ -156,15 +156,76 @@ def build_callback_url(container: ApplicationContainer, state: str) -> str:
     return f"{container.settings.resolved_twc_auth_callback_url}?{query}"
 
 
+def _auth_override(container: ApplicationContainer, server):
+    return container.settings.twc_auth_override_for_server(server.id)
+
+
+def _auth_client_id(container: ApplicationContainer, server) -> str | None:
+    override = _auth_override(container, server)
+    return (override.client_id if override and override.client_id else None) or container.settings.twc_auth_client_id
+
+
+def _auth_client_secret(container: ApplicationContainer, server) -> str | None:
+    override = _auth_override(container, server)
+    return (override.client_secret if override and override.client_secret else None) or container.settings.twc_auth_client_secret
+
+
+def _auth_scope(container: ApplicationContainer, server) -> str:
+    override = _auth_override(container, server)
+    return (override.scope if override and override.scope else None) or container.settings.twc_auth_scope
+
+
+def _auth_return_url_parameter(container: ApplicationContainer, server) -> str:
+    override = _auth_override(container, server)
+    return (
+        (override.return_url_parameter if override and override.return_url_parameter else None)
+        or container.settings.twc_saml_return_url_parameter
+    )
+
+
+def _url_with_path(url: str, path_or_url: str) -> str:
+    if path_or_url.startswith(("http://", "https://")):
+        return path_or_url
+    if not path_or_url.startswith("/"):
+        path_or_url = f"/{path_or_url}"
+    parsed = urlparse(url)
+    return urlunparse((parsed.scheme, parsed.netloc, path_or_url, "", "", ""))
+
+
 def build_twc_authorize_base_url(container: ApplicationContainer, server) -> str:
+    override = _auth_override(container, server)
+    if override and override.authorize_url:
+        return override.authorize_url
     configured_url = (container.settings.twc_saml_authorize_url or "").strip()
     if configured_url:
         return configured_url
 
-    return build_twc_auth_server_url(container, server, container.settings.twc_saml_login_path or "/authentication/authorize")
+    login_path = (override.login_path if override and override.login_path else None) or container.settings.twc_saml_login_path
+    login_port = (override.login_port if override and override.login_port is not None else None)
+    if login_port is None:
+        login_port = container.settings.twc_saml_login_port
+    return build_twc_auth_server_url(container, server, login_path or "/authentication/authorize", port=login_port)
 
 
-def build_twc_auth_server_url(container: ApplicationContainer, server, path_or_url: str) -> str:
+def build_twc_token_url(container: ApplicationContainer, server) -> str:
+    override = _auth_override(container, server)
+    if override and override.token_url:
+        return override.token_url
+    if container.settings.twc_saml_token_url:
+        return container.settings.twc_saml_token_url
+
+    token_path = (override.token_path if override and override.token_path else None) or container.settings.twc_saml_token_path
+    authorize_url = (override.authorize_url if override and override.authorize_url else None) or container.settings.twc_saml_authorize_url
+    if authorize_url:
+        return _url_with_path(authorize_url, token_path or "/authentication/api/token")
+
+    login_port = (override.login_port if override and override.login_port is not None else None)
+    if login_port is None:
+        login_port = container.settings.twc_saml_login_port
+    return build_twc_auth_server_url(container, server, token_path or "/authentication/api/token", port=login_port)
+
+
+def build_twc_auth_server_url(container: ApplicationContainer, server, path_or_url: str, *, port: int | None = None) -> str:
     path_or_url = path_or_url.strip()
     if path_or_url.startswith(("http://", "https://")):
         return path_or_url
@@ -172,24 +233,25 @@ def build_twc_auth_server_url(container: ApplicationContainer, server, path_or_u
         path_or_url = f"/{path_or_url}"
     parsed = urlparse(server.base_url.rstrip("/"))
     netloc = parsed.hostname or parsed.netloc
-    if container.settings.twc_saml_login_port is not None and parsed.hostname:
+    if port is not None and parsed.hostname:
         host = parsed.hostname
         if ":" in host and not host.startswith("["):
             host = f"[{host}]"
-        netloc = f"{host}:{container.settings.twc_saml_login_port}"
+        netloc = f"{host}:{port}"
     return urlunparse((parsed.scheme or "https", netloc, path_or_url, "", "", ""))
 
 
 def build_twc_saml_signin_url(container: ApplicationContainer, server, state: str) -> str:
-    if not container.settings.twc_auth_client_id:
+    client_id = _auth_client_id(container, server)
+    if not client_id:
         raise ValueError("TWC_AUTH_CLIENT_ID must be configured for Teamwork Cloud AuthServer sign-in.")
     callback_url = build_callback_url(container, state)
     login_url = build_twc_authorize_base_url(container, server)
     query = urlencode(
         {
-            "scope": container.settings.twc_auth_scope,
-            container.settings.twc_saml_return_url_parameter: callback_url,
-            "client_id": container.settings.twc_auth_client_id,
+            "scope": _auth_scope(container, server),
+            _auth_return_url_parameter(container, server): callback_url,
+            "client_id": client_id,
             "response_type": "code",
             "state": state,
         }
@@ -199,20 +261,22 @@ def build_twc_saml_signin_url(container: ApplicationContainer, server, state: st
 
 
 async def exchange_twc_auth_code(container: ApplicationContainer, server, code: str, state: str) -> TokenBundle:
-    if not container.settings.twc_auth_client_id or not container.settings.twc_auth_client_secret:
+    client_id = _auth_client_id(container, server)
+    client_secret = _auth_client_secret(container, server)
+    if not client_id or not client_secret:
         raise PermissionError("TWC_AUTH_CLIENT_ID and TWC_AUTH_CLIENT_SECRET must be configured for AuthServer code exchange.")
 
     callback_url = build_callback_url(container, state)
-    token_url = build_twc_auth_server_url(container, server, container.settings.twc_saml_token_path)
+    token_url = build_twc_token_url(container, server)
     verify = server.ca_bundle_path if server.verify_tls and server.ca_bundle_path else server.verify_tls
     async with httpx.AsyncClient(timeout=20.0, verify=verify, follow_redirects=True) as client:
         response = await client.post(
             token_url,
-            headers={"X-Auth-Secret": container.settings.twc_auth_client_secret},
+            headers={"X-Auth-Secret": client_secret},
             data={
-                "scope": container.settings.twc_auth_scope,
+                "scope": _auth_scope(container, server),
                 "redirect_uri": callback_url,
-                "client_id": container.settings.twc_auth_client_id,
+                "client_id": client_id,
                 "grant_type": "authorization_code",
                 "code": code,
             },
