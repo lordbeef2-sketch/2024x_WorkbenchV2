@@ -8,12 +8,13 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode, urlparse, urlunparse
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from app.api.deps import get_container, require_csrf
-from app.models.domain import TokenLoginRequest
+from app.models.domain import TokenBundle, TokenLoginRequest
 from app.services.platform import ApplicationContainer
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -160,12 +161,15 @@ def build_twc_authorize_base_url(container: ApplicationContainer, server) -> str
     if configured_url:
         return configured_url
 
-    login_path = container.settings.twc_saml_login_path.strip() or "/authentication/saml2/sso/tssd-twc2024x"
-    if login_path.startswith(("http://", "https://")):
-        return login_path
-    if not login_path.startswith("/"):
-        login_path = f"/{login_path}"
+    return build_twc_auth_server_url(container, server, container.settings.twc_saml_login_path or "/authentication/authorize")
 
+
+def build_twc_auth_server_url(container: ApplicationContainer, server, path_or_url: str) -> str:
+    path_or_url = path_or_url.strip()
+    if path_or_url.startswith(("http://", "https://")):
+        return path_or_url
+    if not path_or_url.startswith("/"):
+        path_or_url = f"/{path_or_url}"
     parsed = urlparse(server.base_url.rstrip("/"))
     netloc = parsed.hostname or parsed.netloc
     if container.settings.twc_saml_login_port is not None and parsed.hostname:
@@ -173,20 +177,63 @@ def build_twc_authorize_base_url(container: ApplicationContainer, server) -> str
         if ":" in host and not host.startswith("["):
             host = f"[{host}]"
         netloc = f"{host}:{container.settings.twc_saml_login_port}"
-    return urlunparse((parsed.scheme or "https", netloc, login_path, "", "", ""))
+    return urlunparse((parsed.scheme or "https", netloc, path_or_url, "", "", ""))
 
 
 def build_twc_saml_signin_url(container: ApplicationContainer, server, state: str) -> str:
+    if not container.settings.twc_auth_client_id:
+        raise ValueError("TWC_AUTH_CLIENT_ID must be configured for Teamwork Cloud AuthServer sign-in.")
     callback_url = build_callback_url(container, state)
     login_url = build_twc_authorize_base_url(container, server)
     query = urlencode(
         {
+            "scope": container.settings.twc_auth_scope,
             container.settings.twc_saml_return_url_parameter: callback_url,
-            "RelayState": state,
+            "client_id": container.settings.twc_auth_client_id,
+            "response_type": "code",
+            "state": state,
         }
     )
     separator = "&" if "?" in login_url else "?"
     return f"{login_url}{separator}{query}"
+
+
+async def exchange_twc_auth_code(container: ApplicationContainer, server, code: str, state: str) -> TokenBundle:
+    if not container.settings.twc_auth_client_id or not container.settings.twc_auth_client_secret:
+        raise PermissionError("TWC_AUTH_CLIENT_ID and TWC_AUTH_CLIENT_SECRET must be configured for AuthServer code exchange.")
+
+    callback_url = build_callback_url(container, state)
+    token_url = build_twc_auth_server_url(container, server, container.settings.twc_saml_token_path)
+    verify = server.ca_bundle_path if server.verify_tls and server.ca_bundle_path else server.verify_tls
+    async with httpx.AsyncClient(timeout=20.0, verify=verify, follow_redirects=True) as client:
+        response = await client.post(
+            token_url,
+            headers={"X-Auth-Secret": container.settings.twc_auth_client_secret},
+            data={
+                "scope": container.settings.twc_auth_scope,
+                "redirect_uri": callback_url,
+                "client_id": container.settings.twc_auth_client_id,
+                "grant_type": "authorization_code",
+                "code": code,
+            },
+        )
+    if response.status_code >= 400:
+        raise PermissionError(f"TWC AuthServer token exchange failed with HTTP {response.status_code}: {response.text[:500]}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise PermissionError("TWC AuthServer token exchange did not return JSON.") from exc
+    id_token = payload.get("id_token")
+    access_token = payload.get("access_token") or id_token
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise PermissionError("TWC AuthServer token exchange did not return an id_token or access_token.")
+    refresh_token = payload.get("refresh_token") if isinstance(payload.get("refresh_token"), str) else None
+    return TokenBundle(
+        access_token=access_token.strip(),
+        refresh_token=refresh_token,
+        id_token=id_token if isinstance(id_token, str) else None,
+        token_type="Token",
+    )
 
 
 @router.get("/session")
@@ -229,15 +276,19 @@ async def signin(server_id: str, container: ApplicationContainer = Depends(get_c
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
 
     state, cookie_value = create_auth_state_cookie(container, server.id)
-    twc_signin_url = build_twc_saml_signin_url(container, server, state)
+    try:
+        twc_signin_url = build_twc_saml_signin_url(container, server, state)
+    except ValueError as exc:
+        logger.warning("auth-signin-failed", auth_mode="twc-authserver-redirect-start", server_id=server.id, detail=str(exc))
+        return build_error_redirect(container, str(exc))
     redirect = RedirectResponse(twc_signin_url, status_code=status.HTTP_302_FOUND)
     set_pending_server_cookie(redirect, container, server.id)
     set_auth_state_cookie(redirect, container, cookie_value)
     logger.info(
         "auth-mode-selected",
-        auth_mode="twc-saml-redirect-start",
+        auth_mode="twc-authserver-redirect-start",
         server_id=server.id,
-        twc_login_path=container.settings.twc_saml_login_path,
+        twc_authorize_url=build_twc_authorize_base_url(container, server),
         callback=container.settings.resolved_twc_auth_callback_url,
     )
     return redirect
@@ -277,31 +328,46 @@ async def callback(
         logger.warning("auth-callback-failed", auth_mode="redirect-callback", detail="Preset server not found")
         return build_error_redirect(container, "Preset server not found")
 
+    session = None
+    if code:
+        try:
+            token_bundle = await exchange_twc_auth_code(container, server, code, auth_state["state"])
+            session = await container.platform.login_with_token_bundle(
+                server.id,
+                token_bundle,
+                upstream_roles=container.settings.extract_upstream_roles(request.headers),
+                upstream_groups=container.settings.extract_upstream_groups(request.headers),
+            )
+        except PermissionError as exc:
+            logger.warning("auth-callback-failed", auth_mode="authserver-code-callback", server_id=server.id, detail=str(exc))
+            return build_error_redirect(container, str(exc))
+
     access_token, session_cookies, preferred_username = upstream_signin_context(request, container)
-    if not access_token and not session_cookies:
+    if session is None and not access_token and not session_cookies:
         logger.warning(
             "auth-callback-failed",
             auth_mode="redirect-callback",
             server_id=server.id,
-            detail="No upstream Teamwork Cloud session or token was forwarded to the callback.",
+            detail="No Teamwork Cloud AuthServer code, upstream session, or upstream token was available at the callback.",
         )
         return build_error_redirect(
             container,
-            "TWC SAML sign-in completed, but the app callback did not receive any Teamwork Cloud session cookies or forwarded access token. Configure the proxy or callback return flow to forward the authenticated TWC context.",
+            "TWC sign-in returned to the app, but the callback did not receive an AuthServer code, Teamwork Cloud session cookies, or forwarded access token.",
         )
 
-    try:
-        session = await container.platform.login_with_upstream_session(
-            server.id,
-            access_token=access_token,
-            session_cookies=session_cookies,
-            preferred_username=preferred_username,
-            upstream_roles=container.settings.extract_upstream_roles(request.headers),
-            upstream_groups=container.settings.extract_upstream_groups(request.headers),
-        )
-    except PermissionError as exc:
-        logger.warning("auth-callback-failed", auth_mode="redirect-callback", server_id=server.id, detail=str(exc))
-        return build_error_redirect(container, str(exc))
+    if session is None:
+        try:
+            session = await container.platform.login_with_upstream_session(
+                server.id,
+                access_token=access_token,
+                session_cookies=session_cookies,
+                preferred_username=preferred_username,
+                upstream_roles=container.settings.extract_upstream_roles(request.headers),
+                upstream_groups=container.settings.extract_upstream_groups(request.headers),
+            )
+        except PermissionError as exc:
+            logger.warning("auth-callback-failed", auth_mode="redirect-callback", server_id=server.id, detail=str(exc))
+            return build_error_redirect(container, str(exc))
 
     logger.info(
         "auth-mode-selected",

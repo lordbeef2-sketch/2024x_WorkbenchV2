@@ -3,7 +3,7 @@
 This FastAPI service is the secure integration layer for TWC Workbench. It manages delegated Teamwork Cloud sessions, direct Teamwork Cloud token sign-in, HTTP-only app sessions, startup-loaded Teamwork Cloud preset servers from `TWC_PRESET_SERVERS`, pre-login selected-server state, per-user post-login server selection state, Teamwork Cloud adapters, and capability probing.
 
 To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` in `backend/.env` and restart the backend.
-`Sign In via TWC` is the primary path. It sends the browser to the selected Teamwork Cloud server's SAML/AuthServer authorize endpoint, derived by default as `https://<selected-twc-host>:8443/authentication/saml2/sso/tssd-twc2024x`, and completes when the deployment returns authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token to the app callback. `Use TWC Token` remains the explicit fallback. The backend does not require app-owned OAuth or OIDC client registration.
+`Sign In via TWC` is the primary path. It sends the browser to the selected Teamwork Cloud Authentication Server authorize endpoint, derived by default as `https://<selected-twc-host>:8443/authentication/authorize`, exchanges the returned authorization code at `/authentication/api/token`, and validates the user through `/osmc/admin/currentUser`. `Use TWC Token` remains the explicit fallback. The Authentication Server must have this app's callback URL whitelisted and its client id/secret configured.
 
 Preset-management authorization is derived from Teamwork Cloud user context and trusted upstream role or group headers when they are available. The backend does not keep a separate hardcoded admin-user list.
 
