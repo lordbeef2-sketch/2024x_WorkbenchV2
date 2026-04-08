@@ -151,7 +151,7 @@ export default function LandingPage() {
                     <Chip label="User-scoped TWC auth" sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
                   </Stack>
                   <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.8)" }}>
-                    TWC remains the authentication and authorization authority. Sign in via TWC is the primary path, and token sign-in remains available as a fallback when your deployment does not forward authenticated TWC context back to the app.
+                    TWC remains the authentication and authorization authority. Sign in via TWC uses the selected server's Authentication Server and its configured SAML login, while token sign-in remains available as a fallback.
                   </Typography>
                   <Stack spacing={1.5}>
                     <Stack direction="row" spacing={1.5} alignItems="center">
@@ -282,7 +282,7 @@ export default function LandingPage() {
                     Preset servers are visible before login so users can choose the target Teamwork Cloud server first. Sign in via TWC preserves that selected server until the callback finishes the app session.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    The app does not implement SAML itself. It completes login only after the callback receives authenticated Teamwork Cloud cookies, a forwarded user-scoped token, or trusted upstream user headers from your deployment.
+                    TWC Authentication Server handles SAML. After login, the app exchanges the returned code using the registered client id and Authentication Server secret, then validates the user against Teamwork Cloud.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Use TWC Token remains available as a fallback. The backend validates that token against the selected Teamwork Cloud server before opening a workbench session.

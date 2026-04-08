@@ -22,7 +22,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 logger = structlog.get_logger(__name__)
 
 REDIRECT_SIGNIN_MESSAGE = (
-    "Sign in via TWC redirects to the selected Teamwork Cloud Authentication Server authorize endpoint, exchanges the returned code for a user token, and validates the session through /osmc/admin/currentUser."
+    "Sign in via TWC redirects to the selected Teamwork Cloud Authentication Server, uses that server's configured SAML login, exchanges the returned code with authentication.client.secret, and validates the session through /osmc/admin/currentUser."
 )
 
 
@@ -162,12 +162,12 @@ def _auth_override(container: ApplicationContainer, server):
 
 def _auth_client_id(container: ApplicationContainer, server) -> str | None:
     override = _auth_override(container, server)
-    return (override.client_id if override and override.client_id else None) or container.settings.twc_auth_client_id
+    return (override.client_id if override and override.client_id else None) or container.settings.resolved_twc_auth_client_id
 
 
 def _auth_client_secret(container: ApplicationContainer, server) -> str | None:
     override = _auth_override(container, server)
-    return (override.client_secret if override and override.client_secret else None) or container.settings.twc_auth_client_secret
+    return (override.client_secret if override and override.client_secret else None) or container.settings.resolved_twc_auth_client_secret
 
 
 def _auth_scope(container: ApplicationContainer, server) -> str:
@@ -244,7 +244,10 @@ def build_twc_auth_server_url(container: ApplicationContainer, server, path_or_u
 def build_twc_saml_signin_url(container: ApplicationContainer, server, state: str) -> str:
     client_id = _auth_client_id(container, server)
     if not client_id:
-        raise ValueError("TWC_AUTH_CLIENT_ID must be configured for Teamwork Cloud AuthServer sign-in.")
+        raise ValueError(
+            "A TWC AuthServer client id must be configured for Teamwork Cloud SSO. "
+            "Use TWC_AUTH_CLIENT_ID or a per-server TWC_AUTH_SERVER_OVERRIDES entry from authentication.client.ids."
+        )
     callback_url = build_callback_url(container, state)
     login_url = build_twc_authorize_base_url(container, server)
     query = urlencode(
@@ -264,7 +267,10 @@ async def exchange_twc_auth_code(container: ApplicationContainer, server, code: 
     client_id = _auth_client_id(container, server)
     client_secret = _auth_client_secret(container, server)
     if not client_id or not client_secret:
-        raise PermissionError("TWC_AUTH_CLIENT_ID and TWC_AUTH_CLIENT_SECRET must be configured for AuthServer code exchange.")
+        raise PermissionError(
+            "A TWC AuthServer client id and authentication.client.secret must be configured for SSO code exchange. "
+            "Use TWC_AUTH_CLIENT_ID/TWC_AUTH_CLIENT_SECRET or per-server TWC_AUTH_SERVER_OVERRIDES."
+        )
 
     callback_url = build_callback_url(container, state)
     token_url = build_twc_token_url(container, server)

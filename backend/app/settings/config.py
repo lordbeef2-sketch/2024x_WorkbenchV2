@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.models.domain import PresetServerDefinition
@@ -29,6 +29,37 @@ class TWCAuthServerOverride(BaseModel):
     client_secret: str | None = None
     scope: str | None = None
     return_url_parameter: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_authserver_property_names(cls, raw: object) -> object:
+        if not isinstance(raw, dict):
+            return raw
+        payload = dict(raw)
+        alias_groups = {
+            "authorize_url": ("authorization_endpoint", "authentication_authorize_url"),
+            "token_url": ("token_endpoint", "authentication_token_url"),
+            "client_id": (
+                "authentication.client.id",
+                "authentication.client.ids",
+                "authentication_client_id",
+                "authentication_client_ids",
+                "client_ids",
+            ),
+            "client_secret": (
+                "authentication.client.secret",
+                "authentication_client_secret",
+            ),
+        }
+        for target, aliases in alias_groups.items():
+            if payload.get(target):
+                continue
+            for alias in aliases:
+                if alias not in payload:
+                    continue
+                payload[target] = _first_config_value(payload[alias])
+                break
+        return payload
 
     @field_validator(
         "authorize_url",
@@ -79,6 +110,9 @@ class Settings(BaseSettings):
     twc_preset_servers: list[PresetServerDefinition] = Field(default_factory=list)
     twc_auth_client_id: str | None = None
     twc_auth_client_secret: str | None = None
+    twc_authentication_client_id: str | None = None
+    twc_authentication_client_ids: str | None = None
+    twc_authentication_client_secret: str | None = None
     twc_auth_callback_path: str | None = None
     twc_auth_scope: str = "openid"
     twc_auth_state_ttl_minutes: int = 15
@@ -139,6 +173,9 @@ class Settings(BaseSettings):
         "app_origin",
         "twc_auth_client_id",
         "twc_auth_client_secret",
+        "twc_authentication_client_id",
+        "twc_authentication_client_ids",
+        "twc_authentication_client_secret",
         "twc_auth_callback_path",
         "twc_saml_authorize_url",
         "twc_saml_token_url",
@@ -265,6 +302,18 @@ class Settings(BaseSettings):
     def resolved_twc_auth_callback_url(self) -> str:
         return f"{self.resolved_app_origin}{self.resolved_twc_auth_callback_path}"
 
+    @property
+    def resolved_twc_auth_client_id(self) -> str | None:
+        return _first_config_value(
+            self.twc_auth_client_id,
+            self.twc_authentication_client_id,
+            self.twc_authentication_client_ids,
+        )
+
+    @property
+    def resolved_twc_auth_client_secret(self) -> str | None:
+        return _first_config_value(self.twc_auth_client_secret, self.twc_authentication_client_secret)
+
     def twc_auth_override_for_server(self, server_id: str) -> TWCAuthServerOverride | None:
         return self.twc_auth_server_overrides.get(server_id) or self.twc_auth_server_overrides.get("*")
 
@@ -328,6 +377,24 @@ class Settings(BaseSettings):
                 return [item.strip() for item in payload if isinstance(item, str) and item.strip()]
 
         return [item.strip() for item in re.split(r"[;,|]", text) if item.strip()]
+
+
+def _first_config_value(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str):
+            for item in re.split(r"[;,]", value):
+                candidate = item.strip()
+                if candidate:
+                    return candidate
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+        elif value is not None:
+            candidate = str(value).strip()
+            if candidate:
+                return candidate
+    return None
 
 
 @lru_cache(maxsize=1)

@@ -80,8 +80,10 @@ Important settings:
 - `UPSTREAM_GROUP_HEADERS`: optional JSON array of trusted reverse-proxy group headers used to mirror TWC group membership.
 - `UPSTREAM_ROLE_HEADERS`: optional JSON array of trusted reverse-proxy role headers used to mirror TWC role membership.
 - `UPSTREAM_ACCESS_TOKEN_HEADERS`: optional JSON array of trusted reverse-proxy TWC token headers.
-- `TWC_AUTH_CLIENT_ID`: Authentication Server client id listed in `authentication.client.ids`.
-- `TWC_AUTH_CLIENT_SECRET`: Authentication Server client secret used as the `X-Auth-Secret` token-exchange header.
+- `TWC_AUTH_CLIENT_ID`: one Authentication Server client id listed in `authentication.client.ids`.
+- `TWC_AUTH_CLIENT_SECRET`: Authentication Server `authentication.client.secret` used as the `X-Auth-Secret` token-exchange header.
+- `TWC_AUTHENTICATION_CLIENT_ID`, `TWC_AUTHENTICATION_CLIENT_IDS`, `TWC_AUTHENTICATION_CLIENT_SECRET`: optional aliases for the same TWC AuthServer properties.
+- `TWC_AUTH_SCOPE`: optional AuthServer token-exchange scope. Leave blank unless Dassault support tells you otherwise; the app defaults it to the Teamwork Cloud documented value.
 - `TWC_SAML_AUTHORIZE_URL`: optional complete SAML/AuthServer authorize URL. Leave blank to derive it from the selected server.
 - `TWC_SAML_LOGIN_PATH`: authorize path used when `TWC_SAML_AUTHORIZE_URL` is blank. Defaults to `/authentication/authorize`.
 - `TWC_SAML_LOGIN_PORT`: authorize port used when `TWC_SAML_AUTHORIZE_URL` is blank. Defaults to `8443`.
@@ -227,7 +229,7 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 - The post-login app session is bound to the selected server, not the other way around.
 - Redirect-based `Sign In via TWC` sends the browser to the selected preset's AuthServer authorize endpoint, preserves the selected preset server, and completes the app session on the callback route after exchanging the returned authorization code.
 - The callback URL is the Workbench app URL, normally `https://<workbench-host>/api/auth/callback`; whitelist that same callback in every TWC/AuthServer client registration that should be able to return users to this app.
-- If 2022x and 2024x environments use different AuthServer hosts, client ids, secrets, or paths, put those differences in `TWC_AUTH_SERVER_OVERRIDES` keyed by the matching `TWC_PRESET_SERVERS` id.
+- If 2022x and 2024x environments use different AuthServer hosts, `authentication.client.ids`, `authentication.client.secret`, or paths, put those differences in `TWC_AUTH_SERVER_OVERRIDES` keyed by the matching `TWC_PRESET_SERVERS` id.
 - If your deployment bypasses the AuthServer code flow, the callback must receive authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your proxy or auth gateway.
 - `Use TWC Token` remains the explicit fallback when your deployment cannot return authenticated TWC context to the callback.
 - If your proxy cannot forward Teamwork Cloud session cookies, configure `UPSTREAM_ACCESS_TOKEN_HEADERS` to pass a user-scoped TWC token instead.
