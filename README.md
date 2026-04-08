@@ -64,7 +64,7 @@ Copy `backend/.env.example` to `backend/.env` and set values appropriate for you
 `TWC_PRESET_SERVERS` is the authoritative JSON catalog for pre-login Teamwork Cloud discovery. Each preset includes `id`, `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
 The backend loads that catalog at startup and exposes enabled presets on the landing page before authentication. Users do not create their own target servers just to connect; the app persists only each user’s selected and last-used server state separately.
 To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` and restart the backend.
-`Sign In via TWC` is the primary sign-in path. It redirects to the selected Teamwork Cloud server's SAML-backed `/osmc/authen/login` browser front door, preserves the selected Teamwork Cloud server, returns through the app callback, and completes only when that callback receives authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your deployment. `Use TWC Token` remains the explicit fallback. The app does not require an app-owned OAuth or OIDC client configuration.
+`Sign In via TWC` is the primary sign-in path. It redirects to the selected Teamwork Cloud server's SAML/AuthServer authorize endpoint, derived by default as `https://<selected-twc-host>:8555/authentication/authorize`, preserves the selected Teamwork Cloud server, returns through the app callback, and completes only when that callback receives authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your deployment. `Use TWC Token` remains the explicit fallback. The app does not require an app-owned OAuth or OIDC client configuration.
 Preset-management authorization is derived from Teamwork Cloud or trusted reverse-proxy role and group context. When no upstream role or group claims are available, the app defaults to allowing authenticated users rather than maintaining a separate authorization list.
 
 Important settings:
@@ -80,8 +80,10 @@ Important settings:
 - `UPSTREAM_GROUP_HEADERS`: optional JSON array of trusted reverse-proxy group headers used to mirror TWC group membership.
 - `UPSTREAM_ROLE_HEADERS`: optional JSON array of trusted reverse-proxy role headers used to mirror TWC role membership.
 - `UPSTREAM_ACCESS_TOKEN_HEADERS`: optional JSON array of trusted reverse-proxy TWC token headers.
-- `TWC_SAML_LOGIN_PATH`: browser login path on the selected Teamwork Cloud server. Defaults to `/osmc/authen/login`. `RealSwagger.json` includes that as an empty browser route; `/osmc/login.html` remains the operation-bearing HTML form endpoint.
-- `TWC_SAML_RETURN_URL_PARAMETER`: query parameter used to pass the app callback URL to the TWC login entry point. Defaults to `redirect`.
+- `TWC_SAML_AUTHORIZE_URL`: optional complete SAML/AuthServer authorize URL. Leave blank to derive it from the selected server.
+- `TWC_SAML_LOGIN_PATH`: authorize path used when `TWC_SAML_AUTHORIZE_URL` is blank. Defaults to `/authentication/authorize`.
+- `TWC_SAML_LOGIN_PORT`: authorize port used when `TWC_SAML_AUTHORIZE_URL` is blank. Defaults to `8555`.
+- `TWC_SAML_RETURN_URL_PARAMETER`: query parameter used to pass the app callback URL to the TWC authorize endpoint. Defaults to `redirect_uri`.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
 Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through `TWC_PRESET_SERVERS`, not through `HOST`.
 

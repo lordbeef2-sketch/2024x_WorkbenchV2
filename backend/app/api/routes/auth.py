@@ -6,7 +6,7 @@ import hmac
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, urlunparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -155,12 +155,30 @@ def build_callback_url(container: ApplicationContainer, state: str) -> str:
     return f"{container.settings.resolved_twc_auth_callback_url}?{query}"
 
 
-def build_twc_saml_signin_url(container: ApplicationContainer, server, state: str) -> str:
-    callback_url = build_callback_url(container, state)
-    login_path = container.settings.twc_saml_login_path.strip() or "/osmc/authen/login"
+def build_twc_authorize_base_url(container: ApplicationContainer, server) -> str:
+    configured_url = (container.settings.twc_saml_authorize_url or "").strip()
+    if configured_url:
+        return configured_url
+
+    login_path = container.settings.twc_saml_login_path.strip() or "/authentication/authorize"
+    if login_path.startswith(("http://", "https://")):
+        return login_path
     if not login_path.startswith("/"):
         login_path = f"/{login_path}"
-    login_url = f"{server.base_url.rstrip('/')}{login_path}"
+
+    parsed = urlparse(server.base_url.rstrip("/"))
+    netloc = parsed.hostname or parsed.netloc
+    if container.settings.twc_saml_login_port is not None and parsed.hostname:
+        host = parsed.hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = f"{host}:{container.settings.twc_saml_login_port}"
+    return urlunparse((parsed.scheme or "https", netloc, login_path, "", "", ""))
+
+
+def build_twc_saml_signin_url(container: ApplicationContainer, server, state: str) -> str:
+    callback_url = build_callback_url(container, state)
+    login_url = build_twc_authorize_base_url(container, server)
     query = urlencode(
         {
             container.settings.twc_saml_return_url_parameter: callback_url,

@@ -34,8 +34,10 @@ class Settings(BaseSettings):
     twc_auth_callback_path: str | None = None
     twc_auth_scope: str = "openid"
     twc_auth_state_ttl_minutes: int = 15
-    twc_saml_login_path: str = "/osmc/authen/login"
-    twc_saml_return_url_parameter: str = "redirect"
+    twc_saml_authorize_url: str | None = None
+    twc_saml_login_path: str = "/authentication/authorize"
+    twc_saml_login_port: int | None = 8555
+    twc_saml_return_url_parameter: str = "redirect_uri"
     session_ttl_minutes: int = 480
     secure_cookies: bool = False
     csrf_header_name: str = "X-CSRF-Token"
@@ -87,6 +89,7 @@ class Settings(BaseSettings):
         "twc_auth_client_id",
         "twc_auth_client_secret",
         "twc_auth_callback_path",
+        "twc_saml_authorize_url",
         mode="before",
     )
     @classmethod
@@ -99,14 +102,21 @@ class Settings(BaseSettings):
     @classmethod
     def blank_login_path_to_default(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
-            return "/osmc/authen/login"
+            return "/authentication/authorize"
+        return value
+
+    @field_validator("twc_saml_login_port", mode="before")
+    @classmethod
+    def blank_login_port_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
 
     @field_validator("twc_saml_return_url_parameter", mode="before")
     @classmethod
     def blank_return_parameter_to_default(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
-            return "redirect"
+            return "redirect_uri"
         return value
 
     @field_validator("twc_preset_servers", mode="before")
