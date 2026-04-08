@@ -160,7 +160,7 @@ def build_twc_authorize_base_url(container: ApplicationContainer, server) -> str
     if configured_url:
         return configured_url
 
-    login_path = container.settings.twc_saml_login_path.strip() or "/authentication/authorize"
+    login_path = container.settings.twc_saml_login_path.strip() or "/authentication/saml2/sso/tssd-twc2024x"
     if login_path.startswith(("http://", "https://")):
         return login_path
     if not login_path.startswith("/"):

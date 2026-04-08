@@ -35,8 +35,8 @@ class Settings(BaseSettings):
     twc_auth_scope: str = "openid"
     twc_auth_state_ttl_minutes: int = 15
     twc_saml_authorize_url: str | None = None
-    twc_saml_login_path: str = "/authentication/authorize"
-    twc_saml_login_port: int | None = 8555
+    twc_saml_login_path: str = "/authentication/saml2/sso/tssd-twc2024x"
+    twc_saml_login_port: int | None = 8443
     twc_saml_return_url_parameter: str = "redirect_uri"
     session_ttl_minutes: int = 480
     secure_cookies: bool = False
@@ -102,9 +102,9 @@ class Settings(BaseSettings):
     @classmethod
     def blank_login_path_to_default(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
-            return "/authentication/authorize"
+            return "/authentication/saml2/sso/tssd-twc2024x"
         if isinstance(value, str) and value.strip().lower() in {"/osmc/authen/login", "/osmc/login.html"}:
-            return "/authentication/authorize"
+            return "/authentication/saml2/sso/tssd-twc2024x"
         return value
 
     @field_validator("twc_saml_login_port", mode="before")
