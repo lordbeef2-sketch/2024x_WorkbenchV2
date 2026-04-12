@@ -285,6 +285,9 @@ export default function LandingPage() {
                     TWC Authentication Server handles SAML. After login, the app exchanges the returned code using the registered client id and Authentication Server secret, then validates the user against Teamwork Cloud.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
+                    OSLC uses its own OAuth consumer authorization. After you enter the workbench, the OSLC Explorer can connect that separate lane for approved consumer keys without changing the main TWC session.
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
                     Use TWC Token remains available as a fallback. The backend validates that token against the selected Teamwork Cloud server before opening a workbench session.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
@@ -305,6 +308,7 @@ export default function LandingPage() {
                   <Chip label="Item details" color="success" />
                   <Chip label="Compare and revision diff" color="success" />
                   <Chip label="TWC SAML sign-in" color="success" />
+                  <Chip label="OSLC OAuth explorer" color="success" />
                 </Stack>
               </Paper>
             </Stack>

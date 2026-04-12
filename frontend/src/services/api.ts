@@ -4,6 +4,12 @@ import {
   CompareResult,
   DashboardPayload,
   ItemDetails,
+  OSLCAuthorizationStatus,
+  OSLCGenerateConsumerRequest,
+  OSLCGenerateConsumerResponse,
+  OSLCStoreConsumerRequest,
+  OSLCExecuteRequest,
+  OSLCExecuteResponse,
   ProjectSummary,
   ServerHealth,
   ServerProfile,
@@ -70,6 +76,9 @@ export const api = {
   signInUrl(serverId: string) {
     return `${API_BASE}/auth/signin/${serverId}`;
   },
+  oslcSignInUrl() {
+    return `${API_BASE}/auth/oslc/signin`;
+  },
   getSession() {
     return request<SessionSnapshot>("/auth/session");
   },
@@ -127,6 +136,42 @@ export const api = {
   },
   getDashboard() {
     return request<DashboardPayload>("/workspace/dashboard");
+  },
+  getOslcStatus() {
+    return request<OSLCAuthorizationStatus>("/workspace/oslc/status");
+  },
+  executeOslcRequest(payload: OSLCExecuteRequest, csrfToken: string) {
+    return request<OSLCExecuteResponse>("/workspace/oslc/request", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  disconnectOslc(csrfToken: string) {
+    return request<{ ok: boolean }>("/workspace/oslc/disconnect", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
+  generateOslcConsumer(payload: OSLCGenerateConsumerRequest, csrfToken: string) {
+    return request<OSLCGenerateConsumerResponse>("/workspace/oslc/consumer/generate", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  storeOslcConsumer(payload: OSLCStoreConsumerRequest, csrfToken: string) {
+    return request<OSLCAuthorizationStatus>("/workspace/oslc/consumer/session", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  clearOslcConsumer(csrfToken: string) {
+    return request<{ ok: boolean }>("/workspace/oslc/consumer/session", {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
+    });
   },
   getContractManifest() {
     return request<SwaggerContractManifest>("/workspace/contract");

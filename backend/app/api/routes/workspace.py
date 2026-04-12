@@ -5,7 +5,13 @@ import json
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 from app.api.deps import get_container, get_session, require_csrf
-from app.models.domain import SessionPreferences, SwaggerExecuteRequest
+from app.models.domain import (
+    OSLCExecuteRequest,
+    OSLCGenerateConsumerRequest,
+    OSLCStoreConsumerRequest,
+    SessionPreferences,
+    SwaggerExecuteRequest,
+)
 from app.services.platform import ApplicationContainer
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
@@ -22,6 +28,77 @@ async def dashboard(session=Depends(get_session), container: ApplicationContaine
 @router.get("/contract")
 def contract_manifest(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
     return container.platform.swagger_contract_manifest()
+
+
+@router.get("/oslc/status")
+async def oslc_status(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+    return await container.platform.oslc_status(session)
+
+
+@router.post("/oslc/request")
+async def execute_oslc_request(
+    payload: OSLCExecuteRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.execute_oslc_request(session, payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post("/oslc/disconnect")
+def disconnect_oslc(session=Depends(require_csrf), container: ApplicationContainer = Depends(get_container)):
+    container.platform.disconnect_oslc(session)
+    return {"ok": True}
+
+
+@router.post("/oslc/consumer/generate")
+async def generate_oslc_consumer(
+    payload: OSLCGenerateConsumerRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.generate_oslc_consumer(
+            session,
+            consumer_name=payload.name,
+            consumer_secret=payload.secret,
+            remember_for_session=payload.remember_for_session,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post("/oslc/consumer/session")
+def store_oslc_consumer(
+    payload: OSLCStoreConsumerRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.set_oslc_consumer(
+            session,
+            consumer_key=payload.consumer_key,
+            consumer_secret=payload.consumer_secret,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.delete("/oslc/consumer/session")
+def clear_oslc_consumer(
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    container.platform.clear_oslc_consumer(session)
+    return {"ok": True}
 
 
 @router.post("/contract/execute")

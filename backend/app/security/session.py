@@ -14,6 +14,8 @@ from redis import Redis
 from app.models.domain import (
     AuthorizationContext,
     Bookmark,
+    OSLCConsumerCredentials,
+    OSLCTokenBundle,
     SavedSearch,
     ServerProfile,
     SessionData,
@@ -31,12 +33,18 @@ class CredentialCipher:
         key = base64.urlsafe_b64encode(digest)
         self._fernet = Fernet(key)
 
-    def encrypt(self, credentials: TokenBundle) -> str:
-        payload = credentials.model_dump_json().encode("utf-8")
+    def encrypt_raw(self, payload: bytes) -> str:
         return self._fernet.encrypt(payload).decode("utf-8")
 
+    def decrypt_raw(self, encrypted_value: str) -> bytes:
+        return self._fernet.decrypt(encrypted_value.encode("utf-8"))
+
+    def encrypt(self, credentials: TokenBundle) -> str:
+        payload = credentials.model_dump_json().encode("utf-8")
+        return self.encrypt_raw(payload)
+
     def decrypt(self, encrypted_credentials: str) -> TokenBundle:
-        raw = self._fernet.decrypt(encrypted_credentials.encode("utf-8"))
+        raw = self.decrypt_raw(encrypted_credentials)
         return TokenBundle.model_validate_json(raw)
 
 
@@ -141,6 +149,43 @@ class SessionManager:
 
     def get_credentials(self, session: SessionData) -> TokenBundle:
         return self.cipher.decrypt(session.encrypted_credentials)
+
+    def update_credentials(self, session: SessionData, credentials: TokenBundle) -> SessionData:
+        session.encrypted_credentials = self.cipher.encrypt(credentials)
+        self.store.set(session)
+        return session
+
+    def get_oslc_credentials(self, session: SessionData) -> OSLCTokenBundle | None:
+        if not session.encrypted_oslc_credentials:
+            return None
+        raw = self.cipher.decrypt_raw(session.encrypted_oslc_credentials)
+        return OSLCTokenBundle.model_validate_json(raw)
+
+    def set_oslc_credentials(self, session: SessionData, credentials: OSLCTokenBundle) -> SessionData:
+        session.encrypted_oslc_credentials = self.cipher.encrypt_raw(credentials.model_dump_json().encode("utf-8"))
+        self.store.set(session)
+        return session
+
+    def clear_oslc_credentials(self, session: SessionData) -> SessionData:
+        session.encrypted_oslc_credentials = None
+        self.store.set(session)
+        return session
+
+    def get_oslc_consumer_credentials(self, session: SessionData) -> OSLCConsumerCredentials | None:
+        if not session.encrypted_oslc_consumer_credentials:
+            return None
+        raw = self.cipher.decrypt_raw(session.encrypted_oslc_consumer_credentials)
+        return OSLCConsumerCredentials.model_validate_json(raw)
+
+    def set_oslc_consumer_credentials(self, session: SessionData, credentials: OSLCConsumerCredentials) -> SessionData:
+        session.encrypted_oslc_consumer_credentials = self.cipher.encrypt_raw(credentials.model_dump_json().encode("utf-8"))
+        self.store.set(session)
+        return session
+
+    def clear_oslc_consumer_credentials(self, session: SessionData) -> SessionData:
+        session.encrypted_oslc_consumer_credentials = None
+        self.store.set(session)
+        return session
 
     def validate_csrf(self, session: SessionData, token: str | None) -> bool:
         return bool(token and token == session.csrf_token)

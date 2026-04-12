@@ -318,6 +318,67 @@ export interface AuthOptions {
   csrf_header_name: string;
 }
 
+export interface OSLCRootServicesSummary {
+  rootservices_url: string;
+  service_provider_catalog_url?: string | null;
+  configuration_management_service_providers_url?: string | null;
+  request_token_url?: string | null;
+  authorize_url?: string | null;
+  access_token_url?: string | null;
+  request_consumer_key_url?: string | null;
+  raw_content_type: string;
+}
+
+export interface OSLCAuthorizationStatus {
+  server_id: string;
+  configured: boolean;
+  authorized: boolean;
+  rootservices?: OSLCRootServicesSummary | null;
+  consumer_key_configured: boolean;
+  consumer_key_source: "none" | "config" | "session";
+  can_generate_consumer_key: boolean;
+  message: string;
+}
+
+export interface OSLCStoreConsumerRequest {
+  consumer_key: string;
+  consumer_secret: string;
+}
+
+export interface OSLCGenerateConsumerRequest {
+  name: string;
+  secret: string;
+  remember_for_session: boolean;
+}
+
+export interface OSLCGenerateConsumerResponse {
+  consumer_key: string;
+  request_consumer_key_url: string;
+  stored_for_session: boolean;
+  approval_required: boolean;
+  message: string;
+}
+
+export interface OSLCExecuteRequest {
+  path_or_url: string;
+  accept?: string | null;
+  timeout_seconds: number;
+}
+
+export interface OSLCExecuteResponse {
+  requested_url: string;
+  status_code: number;
+  ok: boolean;
+  content_type: string;
+  headers: Record<string, string>;
+  body: unknown;
+  text?: string | null;
+  body_base64?: string | null;
+  is_binary: boolean;
+  size_bytes: number;
+  filename?: string | null;
+}
+
 export interface TokenLoginRequest {
   server_id: string;
   token: string;

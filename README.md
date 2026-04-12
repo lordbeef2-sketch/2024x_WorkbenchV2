@@ -64,7 +64,8 @@ Copy `backend/.env.example` to `backend/.env` and set values appropriate for you
 `TWC_PRESET_SERVERS` is the authoritative JSON catalog for pre-login Teamwork Cloud discovery. Each preset includes `id`, `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
 The backend loads that catalog at startup and exposes enabled presets on the landing page before authentication. Users do not create their own target servers just to connect; the app persists only each user’s selected and last-used server state separately.
 To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` and restart the backend.
-`Sign In via TWC` is the primary sign-in path. It redirects to the Authentication Server for the selected Teamwork Cloud preset, derived by default as `https://<selected-twc-host>:8443/authentication/authorize`, requests an authorization code, exchanges that code for a token through `/authentication/api/token`, and validates the user through the RealSwagger `/osmc/admin/currentUser` REST endpoint. The single Workbench callback URL belongs to this app, while AuthServer hosts and client registrations can vary by selected preset through `TWC_AUTH_SERVER_OVERRIDES`. `Use TWC Token` remains the explicit fallback.
+`Sign In via TWC` is the primary sign-in path. It redirects to the Authentication Server for the selected Teamwork Cloud preset, derived by default as `https://<selected-twc-host>:8443/authentication/authorize`, requests an authorization code, exchanges that code for a token through `/authentication/api/token`, refreshes that token when the AuthServer returns a refresh token, and validates the user through the RealSwagger `/osmc/admin/currentUser` REST endpoint. The single Workbench callback URL belongs to this app, while AuthServer hosts and client registrations can vary by selected preset through `TWC_AUTH_SERVER_OVERRIDES`. `Use TWC Token` remains the explicit fallback.
+OSLC remains a separate API lane from `/osmc`. The workbench now includes an OSLC Explorer that discovers `/oslc/api/rootservices`, authorizes through OAuth 1.0a consumer endpoints, signs OSLC GET requests with an approved consumer key/secret, and can generate an OSLC consumer key from `jfs:oauthRequestConsumerKeyUrl` when the server publishes that root-services link.
 Preset-management authorization is derived from Teamwork Cloud or trusted reverse-proxy role and group context. When no upstream role or group claims are available, the app defaults to allowing authenticated users rather than maintaining a separate authorization list.
 
 Important settings:
@@ -90,6 +91,10 @@ Important settings:
 - `TWC_SAML_TOKEN_URL`: optional complete AuthServer token URL. Leave blank to derive it from the selected server or authorize URL.
 - `TWC_SAML_RETURN_URL_PARAMETER`: query parameter used to pass the app callback URL to the TWC authorize endpoint. Defaults to `redirect_uri`.
 - `TWC_AUTH_SERVER_OVERRIDES`: optional JSON object keyed by preset server id for per-server AuthServer hosts, client ids, secrets, ports, paths, scopes, and return parameter names.
+- `TWC_OSLC_CONSUMER_KEY`, `TWC_OSLC_CONSUMER_SECRET`: approved OAuth 1.0a consumer credentials for OSLC. These can also be generated from the OSLC Explorer and stored per app session, but generated keys still require admin approval in Teamwork Cloud Settings.
+- `TWC_OSLC_ROOTSERVICES_URL`: optional complete OSLC root services URL. Leave blank to derive `https://<selected-twc-host>:8443/oslc/api/rootservices`.
+- `TWC_OSLC_PORT`, `TWC_OSLC_BASE_PATH`: derivation controls for OSLC when the root services URL is not explicitly set.
+- `TWC_OSLC_CALLBACK_PATH`: optional browser-visible callback path for the OSLC OAuth redirect.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
 Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through `TWC_PRESET_SERVERS`, not through `HOST`.
 

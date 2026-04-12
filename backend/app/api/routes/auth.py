@@ -6,15 +6,15 @@ import hmac
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlencode, urlparse, urlunparse
+from urllib.parse import urlencode
 
-import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
-from app.api.deps import get_container, require_csrf
-from app.models.domain import TokenBundle, TokenLoginRequest
+from app.api.deps import get_container, get_session, require_csrf
+from app.auth.twc import build_twc_authorize_base_url, build_twc_saml_signin_url, exchange_twc_auth_code
+from app.models.domain import OSLCConsumerCredentials, OSLCRootServicesSummary, TokenLoginRequest
 from app.services.platform import ApplicationContainer
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -58,6 +58,10 @@ def clear_auth_state_cookie(response: Response, container: ApplicationContainer)
     response.delete_cookie(container.settings.auth_state_cookie_name, path="/")
 
 
+def clear_oslc_auth_state_cookie(response: Response, container: ApplicationContainer) -> None:
+    response.delete_cookie(container.settings.oslc_auth_state_cookie_name, path="/")
+
+
 def set_auth_state_cookie(response: Response, container: ApplicationContainer, value: str) -> None:
     response.set_cookie(
         key=container.settings.auth_state_cookie_name,
@@ -70,12 +74,35 @@ def set_auth_state_cookie(response: Response, container: ApplicationContainer, v
     )
 
 
-def build_session_redirect(container: ApplicationContainer, session_id: str) -> RedirectResponse:
-    redirect = RedirectResponse(f"{container.settings.resolved_app_origin}/workspace", status_code=status.HTTP_302_FOUND)
+def set_oslc_auth_state_cookie(response: Response, container: ApplicationContainer, value: str) -> None:
+    response.set_cookie(
+        key=container.settings.oslc_auth_state_cookie_name,
+        value=value,
+        httponly=True,
+        secure=container.settings.secure_cookies,
+        samesite="lax",
+        max_age=container.settings.twc_auth_state_ttl_minutes * 60,
+        path="/",
+    )
+
+
+def build_workspace_redirect(
+    container: ApplicationContainer,
+    session_id: str,
+    *,
+    params: dict[str, str] | None = None,
+) -> RedirectResponse:
+    suffix = f"?{urlencode(params)}" if params else ""
+    redirect = RedirectResponse(f"{container.settings.resolved_app_origin}/workspace{suffix}", status_code=status.HTTP_302_FOUND)
     set_session_cookie(redirect, container, session_id)
     clear_pending_server_cookie(redirect, container)
     clear_auth_state_cookie(redirect, container)
+    clear_oslc_auth_state_cookie(redirect, container)
     return redirect
+
+
+def build_session_redirect(container: ApplicationContainer, session_id: str) -> RedirectResponse:
+    return build_workspace_redirect(container, session_id)
 
 
 def build_error_redirect(container: ApplicationContainer, detail: str) -> RedirectResponse:
@@ -83,6 +110,7 @@ def build_error_redirect(container: ApplicationContainer, detail: str) -> Redire
     redirect = RedirectResponse(f"{container.settings.resolved_app_origin}/?{query}", status_code=status.HTTP_302_FOUND)
     clear_pending_server_cookie(redirect, container)
     clear_auth_state_cookie(redirect, container)
+    clear_oslc_auth_state_cookie(redirect, container)
     return redirect
 
 
@@ -151,159 +179,62 @@ def load_auth_state_cookie(container: ApplicationContainer, raw_value: str | Non
     return {"state": data["state"], "server_id": data["server_id"]}
 
 
-def build_callback_url(container: ApplicationContainer, state: str) -> str:
-    query = urlencode({"state": state})
-    return f"{container.settings.resolved_twc_auth_callback_url}?{query}"
-
-
-def _auth_override(container: ApplicationContainer, server):
-    return container.settings.twc_auth_override_for_server(server.id)
-
-
-def _auth_client_id(container: ApplicationContainer, server) -> str | None:
-    override = _auth_override(container, server)
-    return (override.client_id if override and override.client_id else None) or container.settings.resolved_twc_auth_client_id
-
-
-def _auth_client_secret(container: ApplicationContainer, server) -> str | None:
-    override = _auth_override(container, server)
-    return (override.client_secret if override and override.client_secret else None) or container.settings.resolved_twc_auth_client_secret
-
-
-def _auth_scope(container: ApplicationContainer, server) -> str:
-    override = _auth_override(container, server)
-    return (override.scope if override and override.scope else None) or container.settings.twc_auth_scope
-
-
-def _auth_return_url_parameter(container: ApplicationContainer, server) -> str:
-    override = _auth_override(container, server)
-    return (
-        (override.return_url_parameter if override and override.return_url_parameter else None)
-        or container.settings.twc_saml_return_url_parameter
-    )
-
-
-def _url_with_path(url: str, path_or_url: str) -> str:
-    if path_or_url.startswith(("http://", "https://")):
-        return path_or_url
-    if not path_or_url.startswith("/"):
-        path_or_url = f"/{path_or_url}"
-    parsed = urlparse(url)
-    return urlunparse((parsed.scheme, parsed.netloc, path_or_url, "", "", ""))
-
-
-def build_twc_authorize_base_url(container: ApplicationContainer, server) -> str:
-    override = _auth_override(container, server)
-    if override and override.authorize_url:
-        return override.authorize_url
-    configured_url = (container.settings.twc_saml_authorize_url or "").strip()
-    if configured_url:
-        return configured_url
-
-    login_path = (override.login_path if override and override.login_path else None) or container.settings.twc_saml_login_path
-    login_port = (override.login_port if override and override.login_port is not None else None)
-    if login_port is None:
-        login_port = container.settings.twc_saml_login_port
-    return build_twc_auth_server_url(container, server, login_path or "/authentication/authorize", port=login_port)
-
-
-def build_twc_token_url(container: ApplicationContainer, server) -> str:
-    override = _auth_override(container, server)
-    if override and override.token_url:
-        return override.token_url
-    if container.settings.twc_saml_token_url:
-        return container.settings.twc_saml_token_url
-
-    token_path = (override.token_path if override and override.token_path else None) or container.settings.twc_saml_token_path
-    authorize_url = (override.authorize_url if override and override.authorize_url else None) or container.settings.twc_saml_authorize_url
-    if authorize_url:
-        return _url_with_path(authorize_url, token_path or "/authentication/api/token")
-
-    login_port = (override.login_port if override and override.login_port is not None else None)
-    if login_port is None:
-        login_port = container.settings.twc_saml_login_port
-    return build_twc_auth_server_url(container, server, token_path or "/authentication/api/token", port=login_port)
-
-
-def build_twc_auth_server_url(container: ApplicationContainer, server, path_or_url: str, *, port: int | None = None) -> str:
-    path_or_url = path_or_url.strip()
-    if path_or_url.startswith(("http://", "https://")):
-        return path_or_url
-    if not path_or_url.startswith("/"):
-        path_or_url = f"/{path_or_url}"
-    parsed = urlparse(server.base_url.rstrip("/"))
-    netloc = parsed.hostname or parsed.netloc
-    if port is not None and parsed.hostname:
-        host = parsed.hostname
-        if ":" in host and not host.startswith("["):
-            host = f"[{host}]"
-        netloc = f"{host}:{port}"
-    return urlunparse((parsed.scheme or "https", netloc, path_or_url, "", "", ""))
-
-
-def build_twc_saml_signin_url(container: ApplicationContainer, server, state: str) -> str:
-    client_id = _auth_client_id(container, server)
-    if not client_id:
-        raise ValueError(
-            "A TWC AuthServer client id must be configured for Teamwork Cloud SSO. "
-            "Use TWC_AUTH_CLIENT_ID or a per-server TWC_AUTH_SERVER_OVERRIDES entry from authentication.client.ids."
-        )
-    callback_url = build_callback_url(container, state)
-    login_url = build_twc_authorize_base_url(container, server)
-    query = urlencode(
+def create_oslc_auth_state_cookie(
+    container: ApplicationContainer,
+    *,
+    session_id: str,
+    server_id: str,
+    state: str,
+    request_token: str,
+    request_token_secret: str,
+    rootservices_summary: dict[str, str | None],
+    consumer_key: str | None = None,
+    consumer_secret: str | None = None,
+) -> str:
+    payload = json.dumps(
         {
-            "scope": _auth_scope(container, server),
-            _auth_return_url_parameter(container, server): callback_url,
-            "client_id": client_id,
-            "response_type": "code",
+            "session_id": session_id,
+            "server_id": server_id,
             "state": state,
-        }
-    )
-    separator = "&" if "?" in login_url else "?"
-    return f"{login_url}{separator}{query}"
+            "request_token": request_token,
+            "request_token_secret": request_token_secret,
+            "rootservices_summary": rootservices_summary,
+            "consumer_key": consumer_key,
+            "consumer_secret": consumer_secret,
+            "issued_at": datetime.now(UTC).isoformat(),
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return container.sessions.cipher.encrypt_raw(payload)
 
 
-async def exchange_twc_auth_code(container: ApplicationContainer, server, code: str, state: str) -> TokenBundle:
-    client_id = _auth_client_id(container, server)
-    client_secret = _auth_client_secret(container, server)
-    if not client_id or not client_secret:
-        raise PermissionError(
-            "A TWC AuthServer client id and authentication.client.secret must be configured for SSO code exchange. "
-            "Use TWC_AUTH_CLIENT_ID/TWC_AUTH_CLIENT_SECRET or per-server TWC_AUTH_SERVER_OVERRIDES."
-        )
-
-    callback_url = build_callback_url(container, state)
-    token_url = build_twc_token_url(container, server)
-    verify = server.ca_bundle_path if server.verify_tls and server.ca_bundle_path else server.verify_tls
-    async with httpx.AsyncClient(timeout=20.0, verify=verify, follow_redirects=True) as client:
-        response = await client.post(
-            token_url,
-            headers={"X-Auth-Secret": client_secret},
-            data={
-                "scope": _auth_scope(container, server),
-                "redirect_uri": callback_url,
-                "client_id": client_id,
-                "grant_type": "authorization_code",
-                "code": code,
-            },
-        )
-    if response.status_code >= 400:
-        raise PermissionError(f"TWC AuthServer token exchange failed with HTTP {response.status_code}: {response.text[:500]}")
+def load_oslc_auth_state_cookie(container: ApplicationContainer, raw_value: str | None) -> dict[str, object] | None:
+    if not raw_value:
+        return None
     try:
-        payload = response.json()
-    except ValueError as exc:
-        raise PermissionError("TWC AuthServer token exchange did not return JSON.") from exc
-    id_token = payload.get("id_token")
-    access_token = payload.get("access_token") or id_token
-    if not isinstance(access_token, str) or not access_token.strip():
-        raise PermissionError("TWC AuthServer token exchange did not return an id_token or access_token.")
-    refresh_token = payload.get("refresh_token") if isinstance(payload.get("refresh_token"), str) else None
-    return TokenBundle(
-        access_token=access_token.strip(),
-        refresh_token=refresh_token,
-        id_token=id_token if isinstance(id_token, str) else None,
-        token_type="Token",
-    )
+        payload = container.sessions.cipher.decrypt_raw(raw_value)
+        data = json.loads(payload)
+    except Exception:
+        return None
+
+    issued_at_raw = data.get("issued_at")
+    if not isinstance(issued_at_raw, str):
+        return None
+    try:
+        issued_at = datetime.fromisoformat(issued_at_raw)
+    except ValueError:
+        return None
+
+    if issued_at < datetime.now(UTC) - timedelta(minutes=container.settings.twc_auth_state_ttl_minutes):
+        return None
+
+    required_fields = ("session_id", "server_id", "state", "request_token", "request_token_secret")
+    if any(not isinstance(data.get(field), str) or not str(data.get(field)).strip() for field in required_fields):
+        return None
+
+    if not isinstance(data.get("rootservices_summary"), dict):
+        data["rootservices_summary"] = {}
+    return data
 
 
 @router.get("/session")
@@ -312,7 +243,15 @@ async def get_session_snapshot(
     response: Response,
     container: ApplicationContainer = Depends(get_container),
 ):
-    snapshot = container.platform.get_session_snapshot(request.cookies.get(container.settings.session_cookie_name))
+    session_id = request.cookies.get(container.settings.session_cookie_name)
+    try:
+        live_session = await container.platform.get_live_session(session_id)
+    except PermissionError:
+        live_session = None
+        if session_id:
+            container.sessions.destroy_session(session_id)
+            response.delete_cookie(container.settings.session_cookie_name, path="/")
+    snapshot = container.platform.get_session_snapshot_for_session(live_session)
     if snapshot.authenticated:
         return snapshot
 
@@ -401,7 +340,7 @@ async def callback(
     session = None
     if code:
         try:
-            token_bundle = await exchange_twc_auth_code(container, server, code, auth_state["state"])
+            token_bundle = await exchange_twc_auth_code(container, server, code)
             session = await container.platform.login_with_token_bundle(
                 server.id,
                 token_bundle,
@@ -450,6 +389,127 @@ async def callback(
     return build_session_redirect(container, session.session_id)
 
 
+@router.get("/oslc/signin")
+async def oslc_signin(
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    server = container.platform.get_server(session.server.id, include_disabled=False)
+    if not server:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
+
+    session_consumer = container.sessions.get_oslc_consumer_credentials(session)
+    resolved_consumer = container.oauth.effective_consumer_credentials(server, session_consumer)
+    configuration_error = container.oauth.configuration_error(server, session_consumer)
+    if configuration_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=configuration_error)
+
+    try:
+        discovery = await container.oauth.discover(server)
+        state = secrets.token_urlsafe(24)
+        callback_url = f"{container.settings.resolved_twc_oslc_callback_url}?{urlencode({'state': state})}"
+        request_token, request_token_secret = await container.oauth.request_token(
+            server,
+            discovery.summary,
+            callback_url,
+            consumer_credentials=resolved_consumer,
+        )
+        cookie_value = create_oslc_auth_state_cookie(
+            container,
+            session_id=session.session_id,
+            server_id=server.id,
+            state=state,
+            request_token=request_token,
+            request_token_secret=request_token_secret,
+            rootservices_summary=discovery.summary.model_dump(),
+            consumer_key=resolved_consumer.consumer_key if resolved_consumer else None,
+            consumer_secret=resolved_consumer.consumer_secret if resolved_consumer else None,
+        )
+    except (PermissionError, RuntimeError) as exc:
+        logger.warning("auth-oslc-signin-failed", server_id=server.id, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    redirect = RedirectResponse(
+        container.oauth.authorize_redirect_url(discovery.summary, request_token),
+        status_code=status.HTTP_302_FOUND,
+    )
+    set_oslc_auth_state_cookie(redirect, container, cookie_value)
+    return redirect
+
+
+@router.get("/oslc/callback")
+async def oslc_callback(
+    request: Request,
+    oauth_token: str | None = None,
+    oauth_verifier: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    container: ApplicationContainer = Depends(get_container),
+):
+    oslc_state = load_oslc_auth_state_cookie(container, request.cookies.get(container.settings.oslc_auth_state_cookie_name))
+    session_id = request.cookies.get(container.settings.session_cookie_name) or (
+        str(oslc_state["session_id"]) if oslc_state else None
+    )
+    session = container.sessions.get_session(session_id)
+    if not session:
+        return build_error_redirect(container, "The app session expired before OSLC authorization completed. Sign in again.")
+
+    if error:
+        return build_workspace_redirect(container, session.session_id, params={"oslcAuthError": error_description or error})
+
+    if not oslc_state:
+        return build_workspace_redirect(
+            container,
+            session.session_id,
+            params={"oslcAuthError": "OSLC authorization state is missing or expired. Start OSLC sign-in again."},
+        )
+
+    if state != oslc_state["state"]:
+        return build_workspace_redirect(
+            container,
+            session.session_id,
+            params={"oslcAuthError": "OSLC authorization state mismatch. Start OSLC sign-in again."},
+        )
+
+    if oauth_token != oslc_state["request_token"] or not oauth_verifier:
+        return build_workspace_redirect(
+            container,
+            session.session_id,
+            params={"oslcAuthError": "OSLC callback did not return the expected OAuth verifier."},
+        )
+
+    server = container.platform.get_server(str(oslc_state["server_id"]), include_disabled=False)
+    if not server:
+        return build_workspace_redirect(container, session.session_id, params={"oslcAuthError": "Preset server not found."})
+
+    try:
+        summary = OSLCRootServicesSummary.model_validate(oslc_state.get("rootservices_summary") or {})
+        consumer_credentials = None
+        consumer_key = oslc_state.get("consumer_key")
+        consumer_secret = oslc_state.get("consumer_secret")
+        if isinstance(consumer_key, str) and consumer_key.strip() and isinstance(consumer_secret, str) and consumer_secret.strip():
+            consumer_credentials = OSLCConsumerCredentials(
+                consumer_key=consumer_key.strip(),
+                consumer_secret=consumer_secret.strip(),
+                source="session",
+            )
+        credentials = await container.oauth.access_token(
+            server,
+            summary,
+            request_token=str(oslc_state["request_token"]),
+            request_token_secret=str(oslc_state["request_token_secret"]),
+            verifier=oauth_verifier,
+            consumer_credentials=consumer_credentials,
+        )
+        container.sessions.set_oslc_credentials(session, credentials)
+    except (PermissionError, RuntimeError) as exc:
+        logger.warning("auth-oslc-callback-failed", server_id=server.id, detail=str(exc))
+        return build_workspace_redirect(container, session.session_id, params={"oslcAuthError": str(exc)})
+
+    return build_workspace_redirect(container, session.session_id, params={"oslcAuth": "connected"})
+
+
 @router.post("/token")
 async def token_login(
     payload: TokenLoginRequest,
@@ -489,4 +549,5 @@ def logout(
     response.delete_cookie(container.settings.session_cookie_name, path="/")
     clear_pending_server_cookie(response, container)
     clear_auth_state_cookie(response, container)
+    clear_oslc_auth_state_cookie(response, container)
     return {"ok": True}

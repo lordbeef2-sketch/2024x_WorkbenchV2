@@ -29,6 +29,11 @@ class TWCAuthServerOverride(BaseModel):
     client_secret: str | None = None
     scope: str | None = None
     return_url_parameter: str | None = None
+    oslc_rootservices_url: str | None = None
+    oslc_port: int | None = None
+    oslc_base_path: str | None = None
+    oslc_consumer_key: str | None = None
+    oslc_consumer_secret: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -50,6 +55,16 @@ class TWCAuthServerOverride(BaseModel):
                 "authentication.client.secret",
                 "authentication_client_secret",
             ),
+            "oslc_consumer_key": (
+                "oauth_consumer_key",
+                "oauth.consumer.key",
+                "consumer_key",
+            ),
+            "oslc_consumer_secret": (
+                "oauth_consumer_secret",
+                "oauth.consumer.secret",
+                "consumer_secret",
+            ),
         }
         for target, aliases in alias_groups.items():
             if payload.get(target):
@@ -70,6 +85,10 @@ class TWCAuthServerOverride(BaseModel):
         "client_secret",
         "scope",
         "return_url_parameter",
+        "oslc_rootservices_url",
+        "oslc_base_path",
+        "oslc_consumer_key",
+        "oslc_consumer_secret",
         mode="before",
     )
     @classmethod
@@ -86,6 +105,13 @@ class TWCAuthServerOverride(BaseModel):
     @field_validator("login_port", mode="before")
     @classmethod
     def blank_login_port_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("oslc_port", mode="before")
+    @classmethod
+    def blank_oslc_port_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -123,6 +149,13 @@ class Settings(BaseSettings):
     twc_saml_token_url: str | None = None
     twc_saml_token_path: str = "/authentication/api/token"
     twc_saml_return_url_parameter: str = "redirect_uri"
+    oslc_auth_state_cookie_name: str = "twc_oslc_auth_state"
+    twc_oslc_rootservices_url: str | None = None
+    twc_oslc_port: int | None = 8443
+    twc_oslc_base_path: str = "/oslc/api"
+    twc_oslc_consumer_key: str | None = None
+    twc_oslc_consumer_secret: str | None = None
+    twc_oslc_callback_path: str | None = None
     session_ttl_minutes: int = 480
     secure_cookies: bool = False
     csrf_header_name: str = "X-CSRF-Token"
@@ -179,6 +212,10 @@ class Settings(BaseSettings):
         "twc_auth_callback_path",
         "twc_saml_authorize_url",
         "twc_saml_token_url",
+        "twc_oslc_rootservices_url",
+        "twc_oslc_consumer_key",
+        "twc_oslc_consumer_secret",
+        "twc_oslc_callback_path",
         mode="before",
     )
     @classmethod
@@ -213,6 +250,13 @@ class Settings(BaseSettings):
     @field_validator("twc_saml_login_port", mode="before")
     @classmethod
     def blank_login_port_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("twc_oslc_port", mode="before")
+    @classmethod
+    def blank_oslc_port_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -303,6 +347,18 @@ class Settings(BaseSettings):
         return f"{self.resolved_app_origin}{self.resolved_twc_auth_callback_path}"
 
     @property
+    def resolved_twc_oslc_callback_path(self) -> str:
+        path = self.twc_oslc_callback_path or f"{self.api_prefix.rstrip('/')}/auth/oslc/callback"
+        normalized = path.strip()
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+        return normalized
+
+    @property
+    def resolved_twc_oslc_callback_url(self) -> str:
+        return f"{self.resolved_app_origin}{self.resolved_twc_oslc_callback_path}"
+
+    @property
     def resolved_twc_auth_client_id(self) -> str | None:
         return _first_config_value(
             self.twc_auth_client_id,
@@ -313,6 +369,14 @@ class Settings(BaseSettings):
     @property
     def resolved_twc_auth_client_secret(self) -> str | None:
         return _first_config_value(self.twc_auth_client_secret, self.twc_authentication_client_secret)
+
+    @property
+    def resolved_twc_oslc_consumer_key(self) -> str | None:
+        return _first_config_value(self.twc_oslc_consumer_key)
+
+    @property
+    def resolved_twc_oslc_consumer_secret(self) -> str | None:
+        return _first_config_value(self.twc_oslc_consumer_secret)
 
     def twc_auth_override_for_server(self, server_id: str) -> TWCAuthServerOverride | None:
         return self.twc_auth_server_overrides.get(server_id) or self.twc_auth_server_overrides.get("*")

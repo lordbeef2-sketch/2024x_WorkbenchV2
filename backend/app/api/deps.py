@@ -10,8 +10,8 @@ def get_container(request: Request) -> ApplicationContainer:
     return request.app.state.container
 
 
-def get_session(request: Request, container: ApplicationContainer = Depends(get_container)):
-    session = container.sessions.get_session(request.cookies.get(container.settings.session_cookie_name))
+async def get_session(request: Request, container: ApplicationContainer = Depends(get_container)):
+    session = await container.platform.get_live_session(request.cookies.get(container.settings.session_cookie_name))
     if not session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     return session

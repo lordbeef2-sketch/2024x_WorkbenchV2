@@ -4,6 +4,7 @@ import base64
 import csv
 import json
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 import httpx
 import structlog
 
+from app.auth.twc import infer_token_expiry, refresh_twc_auth_token
 from app.adapters.teamwork import TeamworkAdapter, create_adapter
 from app.core.pdf import render_pdf_document
 from app.core.storage import SqliteRepository
@@ -28,6 +30,11 @@ from app.models.domain import (
     ItemDetails,
     JobRecord,
     JobType,
+    OSLCAuthorizationStatus,
+    OSLCConsumerCredentials,
+    OSLCExecuteRequest,
+    OSLCExecuteResponse,
+    OSLCGenerateConsumerResponse,
     PublishRequest,
     SavedSearch,
     SearchResponse,
@@ -66,12 +73,14 @@ class PlatformService:
         self,
         *,
         settings: Settings,
+        oauth,
         repo: SqliteRepository,
         sessions: SessionManager,
         jobs: JobCoordinator,
         publisher: PublisherAdapter,
     ) -> None:
         self.settings = settings
+        self.oauth = oauth
         self.repo = repo
         self.sessions = sessions
         self.jobs = jobs
@@ -236,12 +245,28 @@ class PlatformService:
             log_event="redirect-login-complete",
         )
 
+    async def get_live_session(self, session_id: str | None) -> SessionData | None:
+        session = self.sessions.get_session(session_id)
+        if not session:
+            return None
+        return await self._refresh_session_credentials_if_needed(session)
+
     def get_session_snapshot(self, session_id: str | None) -> SessionSnapshot:
         session = self.sessions.get_session(session_id)
         snapshot = self.sessions.snapshot(session)
         if not session:
             return snapshot
 
+        return snapshot.model_copy(
+            update={
+                "server_state": self.repo.get_user_server_state(self._user_key(session.user.preferred_username)),
+            }
+        )
+
+    def get_session_snapshot_for_session(self, session: SessionData | None) -> SessionSnapshot:
+        snapshot = self.sessions.snapshot(session)
+        if not session:
+            return snapshot
         return snapshot.model_copy(
             update={
                 "server_state": self.repo.get_user_server_state(self._user_key(session.user.preferred_username)),
@@ -421,6 +446,123 @@ class PlatformService:
             timeout=60.0,
         )
         return self._swagger_response(operation_key, operation.method, operation.path, requested_path, response)
+
+    async def oslc_status(self, session: SessionData) -> OSLCAuthorizationStatus:
+        server = self._require_server(session.server.id, include_disabled=False)
+        session_consumer = self.sessions.get_oslc_consumer_credentials(session)
+        resolved_consumer = self.oauth.effective_consumer_credentials(server, session_consumer)
+        configured = resolved_consumer is not None
+        authorized = self.sessions.get_oslc_credentials(session) is not None
+        consumer_source = resolved_consumer.source if resolved_consumer else "none"
+        try:
+            discovery = await self.oauth.discover(server)
+            return OSLCAuthorizationStatus(
+                server_id=server.id,
+                configured=configured,
+                authorized=authorized,
+                rootservices=discovery.summary,
+                consumer_key_configured=bool(resolved_consumer),
+                consumer_key_source=consumer_source,
+                can_generate_consumer_key=bool(discovery.summary.request_consumer_key_url),
+            )
+        except RuntimeError as exc:
+            return OSLCAuthorizationStatus(
+                server_id=server.id,
+                configured=configured,
+                authorized=authorized,
+                consumer_key_configured=bool(resolved_consumer),
+                consumer_key_source=consumer_source,
+                message=str(exc),
+            )
+
+    async def generate_oslc_consumer(
+        self,
+        session: SessionData,
+        *,
+        consumer_name: str,
+        consumer_secret: str,
+        remember_for_session: bool = True,
+    ) -> OSLCGenerateConsumerResponse:
+        consumer_name = consumer_name.strip()
+        consumer_secret = consumer_secret.strip()
+        if not consumer_name or not consumer_secret:
+            raise ValueError("OSLC consumer name and secret are required.")
+        server = self._require_server(session.server.id, include_disabled=False)
+        discovery = await self.oauth.discover(server)
+        if not discovery.summary.request_consumer_key_url:
+            raise RuntimeError("OSLC root services did not publish a consumer key registration URL.")
+        consumer_key = await self.oauth.request_consumer_key(
+            server,
+            discovery.summary,
+            consumer_name=consumer_name,
+            consumer_secret=consumer_secret,
+        )
+        stored_for_session = False
+        if remember_for_session:
+            self.sessions.set_oslc_consumer_credentials(
+                session,
+                OSLCConsumerCredentials(
+                    consumer_key=consumer_key,
+                    consumer_secret=consumer_secret,
+                    source="session",
+                ),
+            )
+            self.sessions.clear_oslc_credentials(session)
+            stored_for_session = True
+        return OSLCGenerateConsumerResponse(
+            consumer_key=consumer_key,
+            request_consumer_key_url=discovery.summary.request_consumer_key_url,
+            stored_for_session=stored_for_session,
+            approval_required=True,
+            message=(
+                "The consumer key was generated successfully. It still must be approved in Magic Collaboration Studio Settings before OSLC authorization will succeed."
+            ),
+        )
+
+    def set_oslc_consumer(self, session: SessionData, *, consumer_key: str, consumer_secret: str) -> OSLCAuthorizationStatus:
+        consumer_key = consumer_key.strip()
+        consumer_secret = consumer_secret.strip()
+        if not consumer_key or not consumer_secret:
+            raise ValueError("OSLC consumer key and secret are required.")
+        self.sessions.set_oslc_consumer_credentials(
+            session,
+            OSLCConsumerCredentials(
+                consumer_key=consumer_key,
+                consumer_secret=consumer_secret,
+                source="session",
+            ),
+        )
+        self.sessions.clear_oslc_credentials(session)
+        return OSLCAuthorizationStatus(
+            server_id=session.server.id,
+            configured=True,
+            authorized=False,
+            consumer_key_configured=True,
+            consumer_key_source="session",
+            message="Session-scoped OSLC consumer credentials were stored. If the key is already approved, you can connect OSLC now.",
+        )
+
+    def clear_oslc_consumer(self, session: SessionData) -> None:
+        self.sessions.clear_oslc_consumer_credentials(session)
+        self.sessions.clear_oslc_credentials(session)
+
+    async def execute_oslc_request(self, session: SessionData, payload: OSLCExecuteRequest) -> OSLCExecuteResponse:
+        server = self._require_server(session.server.id, include_disabled=False)
+        credentials = self.sessions.get_oslc_credentials(session)
+        if credentials is None:
+            raise PermissionError("Connect OSLC for this server before running OSLC requests.")
+        response = await self.oauth.signed_request(
+            server,
+            credentials,
+            method="GET",
+            path_or_url=payload.path_or_url,
+            accept=payload.accept,
+            timeout=payload.timeout_seconds,
+        )
+        return self._oslc_response(response, self.oauth.request_url(credentials.rootservices_url, payload.path_or_url))
+
+    def disconnect_oslc(self, session: SessionData) -> None:
+        self.sessions.clear_oslc_credentials(session)
 
     async def simulation_configs(self, session: SessionData, project_id: str | None) -> list[SimulationConfig]:
         return await self._adapter_for_session(session).list_simulation_configs(project_id)
@@ -652,13 +794,56 @@ class PlatformService:
         requested_path: str,
         response: httpx.Response,
     ) -> SwaggerExecuteResponse:
+        force_download = "download=true" in requested_path.lower()
+        content_type, content, body, text, body_base64, is_binary, visible_headers = self._response_payload(
+            response,
+            force_download=force_download,
+        )
+        return SwaggerExecuteResponse(
+            operation_key=operation_key,
+            method=method,
+            path=path,
+            requested_path=requested_path,
+            status_code=response.status_code,
+            ok=200 <= response.status_code < 300,
+            content_type=content_type,
+            headers=visible_headers,
+            body=body,
+            text=text,
+            body_base64=body_base64,
+            is_binary=is_binary,
+            size_bytes=len(content),
+            filename=self._filename_from_content_disposition(response.headers.get("content-disposition", "")),
+        )
+
+    def _oslc_response(self, response: httpx.Response, requested_url: str) -> OSLCExecuteResponse:
+        content_type, content, body, text, body_base64, is_binary, visible_headers = self._response_payload(response)
+        return OSLCExecuteResponse(
+            requested_url=requested_url,
+            status_code=response.status_code,
+            ok=200 <= response.status_code < 300,
+            content_type=content_type,
+            headers=visible_headers,
+            body=body,
+            text=text,
+            body_base64=body_base64,
+            is_binary=is_binary,
+            size_bytes=len(content),
+            filename=self._filename_from_content_disposition(response.headers.get("content-disposition", "")),
+        )
+
+    def _response_payload(
+        self,
+        response: httpx.Response,
+        *,
+        force_download: bool = False,
+    ) -> tuple[str, bytes, Any, str | None, str | None, bool, dict[str, str]]:
         content_type = response.headers.get("content-type", "")
         content = response.content or b""
         body: Any = None
         text: str | None = None
         body_base64: str | None = None
         is_binary = False
-        force_download = "download=true" in requested_path.lower()
 
         if content:
             if "application/json" in content_type or "application/ld+json" in content_type or "application/problem+json" in content_type:
@@ -677,22 +862,7 @@ class PlatformService:
             for key, value in response.headers.items()
             if key.lower() not in {"set-cookie", "authorization", "proxy-authorization"}
         }
-        return SwaggerExecuteResponse(
-            operation_key=operation_key,
-            method=method,
-            path=path,
-            requested_path=requested_path,
-            status_code=response.status_code,
-            ok=200 <= response.status_code < 300,
-            content_type=content_type,
-            headers=visible_headers,
-            body=body,
-            text=text,
-            body_base64=body_base64,
-            is_binary=is_binary,
-            size_bytes=len(content),
-            filename=self._filename_from_content_disposition(response.headers.get("content-disposition", "")),
-        )
+        return content_type, content, body, text, body_base64, is_binary, visible_headers
 
     def _is_textual_content_type(self, content_type: str) -> bool:
         normalized = content_type.lower()
@@ -716,11 +886,58 @@ class PlatformService:
         for scheme in ("Basic", "Bearer", "Token"):
             prefix = f"{scheme} "
             if token.lower().startswith(prefix.lower()):
-                return TokenBundle(access_token=token[len(prefix):].strip(), token_type=scheme)
+                access_token = token[len(prefix):].strip()
+                return TokenBundle(
+                    access_token=access_token,
+                    token_type=scheme,
+                    expires_at=infer_token_expiry(access_token) if scheme != "Basic" else None,
+                )
         if ":" in token:
             encoded = base64.b64encode(token.encode("utf-8")).decode("ascii")
             return TokenBundle(access_token=encoded, token_type="Basic")
-        return TokenBundle(access_token=token, token_type="Token")
+        return TokenBundle(access_token=token, token_type="Token", expires_at=infer_token_expiry(token))
+
+    async def _refresh_session_credentials_if_needed(self, session: SessionData) -> SessionData:
+        credentials = self.sessions.get_credentials(session)
+        refreshed_credentials = await self._refresh_twc_credentials_if_needed(session.server, credentials)
+        if refreshed_credentials is not credentials:
+            self.sessions.update_credentials(session, refreshed_credentials)
+        return session
+
+    async def _refresh_twc_credentials_if_needed(self, server: ServerProfile, credentials: TokenBundle) -> TokenBundle:
+        if credentials.token_type != "Token":
+            return credentials
+        if not credentials.access_token:
+            return credentials
+
+        expires_at = credentials.expires_at or infer_token_expiry(credentials.id_token) or infer_token_expiry(credentials.access_token)
+        if expires_at and credentials.expires_at != expires_at:
+            credentials = credentials.model_copy(update={"expires_at": expires_at})
+
+        refresh_skew = timedelta(seconds=90)
+        now = datetime.now(UTC)
+        if expires_at and expires_at > now + refresh_skew:
+            return credentials
+        if not credentials.refresh_token:
+            if expires_at and expires_at <= now:
+                raise PermissionError("Your Teamwork Cloud session expired. Sign in again.")
+            return credentials
+
+        try:
+            refreshed = await refresh_twc_auth_token(self.settings, server, credentials.refresh_token)
+        except PermissionError as exc:
+            if expires_at and expires_at > now:
+                logger.warning("twc-token-refresh-failed", server_id=server.id, detail=str(exc))
+                return credentials
+            raise PermissionError("Your Teamwork Cloud login expired and could not be refreshed. Sign in again.") from exc
+
+        return refreshed.model_copy(
+            update={
+                "refresh_token": refreshed.refresh_token or credentials.refresh_token,
+                "session_cookies": credentials.session_cookies,
+                "upstream_user": credentials.upstream_user,
+            }
+        )
 
     async def _create_authenticated_session(
         self,
@@ -838,6 +1055,7 @@ class ApplicationContainer:
         self.publisher = build_publisher(settings)
         self.platform = PlatformService(
             settings=settings,
+            oauth=self.oauth,
             repo=self.repo,
             sessions=self.sessions,
             jobs=self.jobs,

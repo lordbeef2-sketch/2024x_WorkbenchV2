@@ -1,5 +1,5 @@
 import { type SyntheticEvent, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -37,6 +37,7 @@ import ProjectTree from "../components/ProjectTree";
 import SettingsDialog from "../components/SettingsDialog";
 import {
   ItemDetails,
+  OSLCExecuteResponse,
   ProjectSummary,
   SessionPreferences,
   SwaggerContractManifest,
@@ -48,7 +49,7 @@ import {
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
-type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "api";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "oslc" | "api";
 
 function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : "The request failed.";
@@ -190,8 +191,42 @@ function downloadSwaggerResponse(response: SwaggerExecuteResponse) {
   URL.revokeObjectURL(url);
 }
 
+function downloadBinaryResponse(response: { body_base64?: string | null; content_type: string; filename?: string | null }) {
+  if (!response.body_base64) {
+    return;
+  }
+  const binary = atob(response.body_base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  const blob = new Blob([bytes], { type: response.content_type || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = response.filename ?? "oslc-response.bin";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function oslcResponseContent(response: OSLCExecuteResponse): string {
+  if (response.body !== null && response.body !== undefined) {
+    return JSON.stringify(response.body, null, 2);
+  }
+  if (response.text) {
+    return response.text;
+  }
+  if (response.body_base64) {
+    return `Binary response: ${response.size_bytes} bytes, ${response.content_type || "unknown content type"}.`;
+  }
+  return "No response body.";
+}
+
 export default function WorkspacePage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { session, refreshSession } = useSession();
   const csrfToken = session?.csrf_token ?? "";
@@ -215,6 +250,12 @@ export default function WorkspacePage() {
   const [apiBodyText, setApiBodyText] = useState("");
   const [apiContentType, setApiContentType] = useState("");
   const [apiUploadFile, setApiUploadFile] = useState<File | null>(null);
+  const [oslcPath, setOslcPath] = useState("/oslc/api/rootservices");
+  const [oslcAccept, setOslcAccept] = useState("application/rdf+xml");
+  const [oslcConsumerName, setOslcConsumerName] = useState("");
+  const [oslcConsumerSecret, setOslcConsumerSecret] = useState("");
+  const [oslcManualKey, setOslcManualKey] = useState("");
+  const [oslcManualSecret, setOslcManualSecret] = useState("");
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
 
   const dashboardQuery = useQuery({
@@ -230,6 +271,12 @@ export default function WorkspacePage() {
   const contractQuery = useQuery({
     queryKey: ["workspace-contract"],
     queryFn: api.getContractManifest,
+  });
+
+  const oslcStatusQuery = useQuery({
+    queryKey: ["workspace-oslc-status", session?.server?.id],
+    queryFn: api.getOslcStatus,
+    enabled: Boolean(session?.server?.id),
   });
 
   const projects = projectsQuery.data ?? dashboardQuery.data?.projects ?? [];
@@ -293,6 +340,16 @@ export default function WorkspacePage() {
         .join(" / "),
     [contractManifest],
   );
+
+  const oslcStatus = oslcStatusQuery.data ?? null;
+
+  useEffect(() => {
+    if (oslcConsumerName) {
+      return;
+    }
+    const serverId = session?.server?.id ?? "server";
+    setOslcConsumerName(`twcworkbench-${serverId}`);
+  }, [oslcConsumerName, session?.server?.id]);
 
   const contextParameterValue = (parameter: SwaggerParameterSpec): string => {
     const normalized = parameter.name.toLowerCase();
@@ -363,6 +420,26 @@ export default function WorkspacePage() {
     compareLeft,
     compareRight,
   ]);
+
+  useEffect(() => {
+    const connected = searchParams.get("oslcAuth");
+    const authError = searchParams.get("oslcAuthError");
+    if (!connected && !authError) {
+      return;
+    }
+
+    if (connected === "connected") {
+      setNotice({ severity: "success", message: "OSLC connection is ready for this Teamwork Cloud server." });
+      void queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
+    } else if (authError) {
+      setNotice({ severity: "error", message: authError });
+    }
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("oslcAuth");
+    nextParams.delete("oslcAuthError");
+    setSearchParams(nextParams, { replace: true });
+  }, [queryClient, searchParams, setSearchParams]);
 
   const itemQuery = useQuery({
     queryKey: ["workspace-item", selectedItemId, selectedProjectId, selectedBranchId],
@@ -468,6 +545,75 @@ export default function WorkspacePage() {
         },
         csrfToken,
       );
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const oslcRequestMutation = useMutation({
+    mutationFn: () =>
+      api.executeOslcRequest(
+        {
+          path_or_url: oslcPath.trim(),
+          accept: oslcAccept || null,
+          timeout_seconds: 30,
+        },
+        csrfToken,
+      ),
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const disconnectOslcMutation = useMutation({
+    mutationFn: () => api.disconnectOslc(csrfToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
+      setNotice({ severity: "success", message: "OSLC connection was cleared for this app session." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const generateOslcConsumerMutation = useMutation({
+    mutationFn: () =>
+      api.generateOslcConsumer(
+        {
+          name: oslcConsumerName.trim(),
+          secret: oslcConsumerSecret,
+          remember_for_session: true,
+        },
+        csrfToken,
+      ),
+    onSuccess: async (result) => {
+      setOslcManualKey(result.consumer_key);
+      setOslcConsumerSecret("");
+      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
+      setNotice({ severity: "success", message: result.message });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const storeOslcConsumerMutation = useMutation({
+    mutationFn: () =>
+      api.storeOslcConsumer(
+        {
+          consumer_key: oslcManualKey.trim(),
+          consumer_secret: oslcManualSecret,
+        },
+        csrfToken,
+      ),
+    onSuccess: async (result) => {
+      setOslcManualSecret("");
+      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
+      setNotice({ severity: "success", message: result.message || "OSLC consumer credentials were stored for this app session." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const clearOslcConsumerMutation = useMutation({
+    mutationFn: () => api.clearOslcConsumer(csrfToken),
+    onSuccess: async () => {
+      setOslcManualKey("");
+      setOslcManualSecret("");
+      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
+      setNotice({ severity: "success", message: "Session-scoped OSLC consumer credentials were cleared." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -888,6 +1034,298 @@ export default function WorkspacePage() {
     </Stack>
   );
 
+  const renderOslc = () => {
+    const response = oslcRequestMutation.data ?? null;
+    const rootservices = oslcStatus?.rootservices ?? null;
+    const suggestedProjectServicePath = selectedProject
+      ? `/oslc/api/oslc/am/${selectedProject.resource_id ?? selectedProject.id}/services`
+      : "";
+    const suggestedItemPath =
+      selectedProject && selectedItemId
+        ? `/oslc/api/oslc/am/${selectedProject.resource_id ?? selectedProject.id}/${selectedItemId}`
+        : "";
+    const consumerSourceLabel =
+      oslcStatus?.consumer_key_source === "config"
+        ? "Config consumer"
+        : oslcStatus?.consumer_key_source === "session"
+          ? "Session consumer"
+          : "No consumer";
+
+    return (
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">OSLC Explorer</Typography>
+            <Typography variant="body2" color="text.secondary">
+              OSLC is a separate connector from the RealSwagger `/osmc` API. This tab uses OSLC root services discovery and OAuth 1.0a consumer authorization.
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1}>
+            <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] })}>
+              Refresh OSLC
+            </Button>
+            {oslcStatus?.authorized ? (
+              <Button variant="outlined" color="warning" disabled={!csrfToken || disconnectOslcMutation.isPending} onClick={() => disconnectOslcMutation.mutate()}>
+                Disconnect
+              </Button>
+            ) : (
+              <Button variant="contained" onClick={() => window.location.assign(api.oslcSignInUrl())} disabled={!oslcStatus?.configured}>
+                Connect OSLC
+              </Button>
+            )}
+          </Stack>
+        </Stack>
+        {oslcStatusQuery.isLoading ? <CircularProgress size={28} /> : null}
+        {oslcStatusQuery.error ? <Alert severity="error">{errorMessage(oslcStatusQuery.error)}</Alert> : null}
+        {oslcStatus ? (
+          <Paper sx={{ p: 3, borderRadius: 2 }}>
+            <Stack spacing={2}>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <Chip label={oslcStatus.configured ? "Consumer configured" : "Consumer not configured"} color={oslcStatus.configured ? "success" : "warning"} />
+                <Chip label={oslcStatus.authorized ? "Authorized" : "Not authorized"} color={oslcStatus.authorized ? "success" : "default"} variant={oslcStatus.authorized ? "filled" : "outlined"} />
+                <Chip label={consumerSourceLabel} variant="outlined" />
+                <Chip label="Read-only OSLC" variant="outlined" />
+                {rootservices?.raw_content_type ? <Chip label={rootservices.raw_content_type} variant="outlined" /> : null}
+              </Stack>
+              <Alert severity="info">
+                The No Magic OSLC docs describe this API as read-only. Query services and editing are not supported; use it for resource discovery, linked-data reads, service provider browsing, and delegated-linking entry points.
+              </Alert>
+              {oslcStatus.message ? <Alert severity="warning">{oslcStatus.message}</Alert> : null}
+              {!oslcStatus.configured && rootservices?.request_consumer_key_url ? (
+                <Alert severity="info">
+                  This server publishes an OSLC consumer registration endpoint. Generate a consumer below or paste an approved consumer key and secret for this app session.
+                </Alert>
+              ) : null}
+              {rootservices ? (
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2">Discovered Endpoints</Typography>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip label="Root Services" variant="outlined" />
+                    {rootservices.request_token_url ? <Chip label="Request Token URL" variant="outlined" /> : null}
+                    {rootservices.authorize_url ? <Chip label="Authorize URL" variant="outlined" /> : null}
+                    {rootservices.access_token_url ? <Chip label="Access Token URL" variant="outlined" /> : null}
+                    {rootservices.service_provider_catalog_url ? <Chip label="Service Provider Catalog" variant="outlined" /> : null}
+                    {rootservices.configuration_management_service_providers_url ? <Chip label="CM Service Providers" variant="outlined" /> : null}
+                    {rootservices.request_consumer_key_url ? <Chip label="Consumer Key Registration" variant="outlined" /> : null}
+                  </Stack>
+                  <TextField label="Root Services URL" value={rootservices.rootservices_url} fullWidth InputProps={{ readOnly: true }} />
+                  {rootservices.request_consumer_key_url ? (
+                    <TextField label="Consumer Key Registration URL" value={rootservices.request_consumer_key_url} fullWidth InputProps={{ readOnly: true }} />
+                  ) : null}
+                  {rootservices.service_provider_catalog_url ? (
+                    <TextField label="Service Provider Catalog URL" value={rootservices.service_provider_catalog_url} fullWidth InputProps={{ readOnly: true }} />
+                  ) : null}
+                  {rootservices.configuration_management_service_providers_url ? (
+                    <TextField
+                      label="Configuration Management Service Providers URL"
+                      value={rootservices.configuration_management_service_providers_url}
+                      fullWidth
+                      InputProps={{ readOnly: true }}
+                    />
+                  ) : null}
+                </Stack>
+              ) : null}
+            </Stack>
+          </Paper>
+        ) : null}
+        <Paper sx={{ p: 3, borderRadius: 2 }}>
+          <Stack spacing={2}>
+            <Typography variant="subtitle2">OSLC Consumer Setup</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Teamwork Cloud OSLC uses OAuth 1.0a. You can either generate a consumer key through root services or paste an approved consumer key and secret for this app session.
+            </Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={6}>
+                <Stack spacing={1.5}>
+                  <Typography variant="body2" fontWeight={600}>
+                    Generate Consumer Key
+                  </Typography>
+                  <TextField
+                    label="Consumer Name"
+                    value={oslcConsumerName}
+                    onChange={(event) => setOslcConsumerName(event.target.value)}
+                    fullWidth
+                  />
+                  <TextField
+                    label="Consumer Secret"
+                    type="password"
+                    value={oslcConsumerSecret}
+                    onChange={(event) => setOslcConsumerSecret(event.target.value)}
+                    helperText={
+                      rootservices?.request_consumer_key_url
+                        ? "The returned key is stored for this app session, but it still needs admin approval in Magic Collaboration Studio Settings before OSLC sign-in will succeed."
+                        : "This server did not publish a consumer-key registration endpoint in root services."
+                    }
+                    fullWidth
+                  />
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+                    <Button
+                      variant="outlined"
+                      disabled={
+                        !csrfToken ||
+                        !rootservices?.request_consumer_key_url ||
+                        !oslcConsumerName.trim() ||
+                        !oslcConsumerSecret ||
+                        generateOslcConsumerMutation.isPending
+                      }
+                      onClick={() => generateOslcConsumerMutation.mutate()}
+                    >
+                      Generate and Store for Session
+                    </Button>
+                    {generateOslcConsumerMutation.isPending ? <CircularProgress size={24} /> : null}
+                  </Stack>
+                </Stack>
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <Stack spacing={1.5}>
+                  <Typography variant="body2" fontWeight={600}>
+                    Use Approved Consumer for This Session
+                  </Typography>
+                  <TextField
+                    label="Consumer Key"
+                    value={oslcManualKey}
+                    onChange={(event) => setOslcManualKey(event.target.value)}
+                    fullWidth
+                  />
+                  <TextField
+                    label="Consumer Secret"
+                    type="password"
+                    value={oslcManualSecret}
+                    onChange={(event) => setOslcManualSecret(event.target.value)}
+                    helperText="Use the key and secret created or approved in Teamwork Cloud Settings when you do not want to edit backend env config."
+                    fullWidth
+                  />
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+                    <Button
+                      variant="outlined"
+                      disabled={!csrfToken || !oslcManualKey.trim() || !oslcManualSecret || storeOslcConsumerMutation.isPending}
+                      onClick={() => storeOslcConsumerMutation.mutate()}
+                    >
+                      Store for Session
+                    </Button>
+                    <Button
+                      variant="text"
+                      color="warning"
+                      disabled={!csrfToken || oslcStatus?.consumer_key_source !== "session" || clearOslcConsumerMutation.isPending}
+                      onClick={() => clearOslcConsumerMutation.mutate()}
+                    >
+                      Forget Session Consumer
+                    </Button>
+                    {storeOslcConsumerMutation.isPending || clearOslcConsumerMutation.isPending ? <CircularProgress size={24} /> : null}
+                  </Stack>
+                </Stack>
+              </Grid>
+            </Grid>
+          </Stack>
+        </Paper>
+        <Paper sx={{ p: 3, borderRadius: 2 }}>
+          <Stack spacing={2}>
+            <Typography variant="subtitle2">OSLC Request</Typography>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Button size="small" variant="outlined" onClick={() => setOslcPath("/oslc/api/rootservices")}>
+                Root Services
+              </Button>
+              {rootservices?.service_provider_catalog_url ? (
+                <Button size="small" variant="outlined" onClick={() => setOslcPath(rootservices.service_provider_catalog_url ?? "")}>
+                  Service Providers
+                </Button>
+              ) : null}
+              {rootservices?.configuration_management_service_providers_url ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => setOslcPath(rootservices.configuration_management_service_providers_url ?? "")}
+                >
+                  CM Providers
+                </Button>
+              ) : null}
+              {suggestedProjectServicePath ? (
+                <Button size="small" variant="outlined" onClick={() => setOslcPath(suggestedProjectServicePath)}>
+                  Current Project Services
+                </Button>
+              ) : null}
+              {suggestedItemPath ? (
+                <Button size="small" variant="outlined" onClick={() => setOslcPath(suggestedItemPath)}>
+                  Current Item Resource
+                </Button>
+              ) : null}
+            </Stack>
+            <TextField
+              label="Path or URL"
+              value={oslcPath}
+              onChange={(event) => setOslcPath(event.target.value)}
+              helperText="Use a full URL or a relative OSLC path such as /oslc/api/rootservices."
+              fullWidth
+            />
+            <TextField select label="Accept" value={oslcAccept} onChange={(event) => setOslcAccept(event.target.value)} fullWidth>
+              {["application/rdf+xml", "application/ld+json", "application/xml", "text/turtle", "application/json", "text/plain"].map((contentType) => (
+                <MenuItem key={contentType} value={contentType}>
+                  {contentType}
+                </MenuItem>
+              ))}
+            </TextField>
+            {!oslcStatus?.authorized && oslcStatus?.configured ? (
+              <Alert severity="info">
+                Connect OSLC first. REST and CLI-style `/osmc` commands already use the Teamwork Cloud token session; OSLC remains its own OAuth 1.0a lane.
+              </Alert>
+            ) : null}
+            {!oslcStatus?.configured ? (
+              <Alert severity="warning">
+                OSLC needs an approved consumer key and secret before authorization can start. Generate one from root services or store an approved pair for this app session.
+              </Alert>
+            ) : null}
+            <Stack direction="row" spacing={1.5} alignItems="center">
+              <Button
+                variant="contained"
+                disabled={!csrfToken || !oslcStatus?.authorized || !oslcPath.trim() || oslcRequestMutation.isPending}
+                onClick={() => oslcRequestMutation.mutate()}
+              >
+                Execute GET
+              </Button>
+              {oslcRequestMutation.isPending ? <CircularProgress size={24} /> : null}
+            </Stack>
+          </Stack>
+        </Paper>
+        {response ? (
+          <Paper sx={{ p: 3, borderRadius: 2 }}>
+            <Stack spacing={2}>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+                <Typography variant="h6">OSLC Response</Typography>
+                <Chip label={`${response.status_code}`} color={response.ok ? "success" : "error"} />
+                <Chip label={response.content_type || "no content type"} variant="outlined" />
+                <Chip label={`${response.size_bytes} bytes`} variant="outlined" />
+              </Stack>
+              <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-all" }}>
+                {response.requested_url}
+              </Typography>
+              {response.body_base64 ? (
+                <Button variant="outlined" onClick={() => downloadBinaryResponse(response)}>
+                  Download Response Body
+                </Button>
+              ) : null}
+              <TextField
+                label="Response body"
+                value={oslcResponseContent(response)}
+                fullWidth
+                multiline
+                minRows={10}
+                InputProps={{ readOnly: true }}
+              />
+              <TextField
+                label="Response headers"
+                value={JSON.stringify(response.headers, null, 2)}
+                fullWidth
+                multiline
+                minRows={4}
+                InputProps={{ readOnly: true }}
+              />
+            </Stack>
+          </Paper>
+        ) : null}
+      </Stack>
+    );
+  };
+
   const renderApiExplorer = () => {
     const response = apiOperationMutation.data ?? null;
     return (
@@ -1191,6 +1629,7 @@ export default function WorkspacePage() {
               <Tab label="Model Browser" value="models" />
               <Tab label="Item Details" value="details" />
               <Tab label="Compare" value="compare" />
+              <Tab label="OSLC Explorer" value="oslc" />
               <Tab label="API Explorer" value="api" />
             </Tabs>
           </Paper>
@@ -1200,6 +1639,7 @@ export default function WorkspacePage() {
             {tab === "models" ? renderModels() : null}
             {tab === "details" ? renderDetails() : null}
             {tab === "compare" ? renderCompare() : null}
+            {tab === "oslc" ? renderOslc() : null}
             {tab === "api" ? renderApiExplorer() : null}
           </Box>
         </Stack>

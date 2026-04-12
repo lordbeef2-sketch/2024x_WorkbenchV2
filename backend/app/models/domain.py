@@ -204,6 +204,28 @@ class TokenBundle(BaseModel):
     upstream_user: str | None = None
 
 
+class OSLCTokenBundle(BaseModel):
+    access_token: str
+    access_token_secret: str
+    consumer_key: str
+    consumer_secret: str | None = None
+    rootservices_url: str
+    request_token_url: str
+    authorize_url: str
+    access_token_url: str
+    service_provider_catalog_url: str | None = None
+    request_consumer_key_url: str | None = None
+    configuration_management_service_providers_url: str | None = None
+    acquired_at: datetime = Field(default_factory=utcnow)
+
+
+class OSLCConsumerCredentials(BaseModel):
+    consumer_key: str
+    consumer_secret: str
+    source: Literal["config", "session"] = "session"
+    acquired_at: datetime = Field(default_factory=utcnow)
+
+
 class TokenLoginRequest(BaseModel):
     server_id: str
     token: str
@@ -215,6 +237,8 @@ class SessionData(BaseModel):
     user: UserContext
     authorization_context: AuthorizationContext = Field(default_factory=AuthorizationContext)
     encrypted_credentials: str
+    encrypted_oslc_credentials: str | None = None
+    encrypted_oslc_consumer_credentials: str | None = None
     csrf_token: str = Field(default_factory=lambda: uuid4().hex)
     capabilities: CapabilitySummary
     preferences: SessionPreferences = Field(default_factory=SessionPreferences)
@@ -537,6 +561,67 @@ class SwaggerExecuteResponse(BaseModel):
     method: str
     path: str
     requested_path: str
+    status_code: int
+    ok: bool
+    content_type: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+    body: Any = None
+    text: str | None = None
+    body_base64: str | None = None
+    is_binary: bool = False
+    size_bytes: int = 0
+    filename: str | None = None
+
+
+class OSLCRootServicesSummary(BaseModel):
+    rootservices_url: str
+    service_provider_catalog_url: str | None = None
+    configuration_management_service_providers_url: str | None = None
+    request_token_url: str | None = None
+    authorize_url: str | None = None
+    access_token_url: str | None = None
+    request_consumer_key_url: str | None = None
+    raw_content_type: str = ""
+
+
+class OSLCAuthorizationStatus(BaseModel):
+    server_id: str
+    configured: bool
+    authorized: bool
+    rootservices: OSLCRootServicesSummary | None = None
+    consumer_key_configured: bool = False
+    consumer_key_source: Literal["none", "config", "session"] = "none"
+    can_generate_consumer_key: bool = False
+    message: str = ""
+
+
+class OSLCStoreConsumerRequest(BaseModel):
+    consumer_key: str
+    consumer_secret: str
+
+
+class OSLCGenerateConsumerRequest(BaseModel):
+    name: str
+    secret: str
+    remember_for_session: bool = True
+
+
+class OSLCGenerateConsumerResponse(BaseModel):
+    consumer_key: str
+    request_consumer_key_url: str
+    stored_for_session: bool = False
+    approval_required: bool = True
+    message: str = ""
+
+
+class OSLCExecuteRequest(BaseModel):
+    path_or_url: str
+    accept: str | None = None
+    timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
+
+
+class OSLCExecuteResponse(BaseModel):
+    requested_url: str
     status_code: int
     ok: bool
     content_type: str = ""
