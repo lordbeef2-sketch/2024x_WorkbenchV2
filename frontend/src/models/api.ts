@@ -153,6 +153,7 @@ export interface ItemDetails {
   editable: boolean;
   attachment_supported: boolean;
   collaborators: string[];
+  source_payload: Record<string, unknown>;
 }
 
 export interface SearchResult {
@@ -335,9 +336,22 @@ export interface OSLCAuthorizationStatus {
   authorized: boolean;
   rootservices?: OSLCRootServicesSummary | null;
   consumer_key_configured: boolean;
-  consumer_key_source: "none" | "config" | "session";
+  consumer_key_source: "none" | "config" | "shared" | "session";
   can_generate_consumer_key: boolean;
   message: string;
+}
+
+export interface OSLCSharedConsumerRequest {
+  consumer_key: string;
+  consumer_secret: string;
+}
+
+export interface OSLCSharedConsumerStatus {
+  server_id: string;
+  configured: boolean;
+  consumer_key?: string | null;
+  updated_at?: string | null;
+  source: "none" | "shared" | "config";
 }
 
 export interface OSLCStoreConsumerRequest {

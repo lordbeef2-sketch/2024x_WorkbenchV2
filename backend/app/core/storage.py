@@ -52,6 +52,27 @@ class SqliteRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_data_cache (
+                    user_id TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    cache_key TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, server_id, cache_key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_secrets (
+                    scope TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             connection.commit()
 
     def list_servers(self, *, include_disabled: bool = False) -> list[ServerProfile]:
@@ -126,6 +147,8 @@ class SqliteRepository:
                     [(server.id, server.model_dump_json()) for server in synced_servers],
                 )
             self._prune_invalid_user_server_state(connection, valid_server_ids)
+            self._prune_invalid_user_cache(connection, valid_server_ids)
+            self._prune_invalid_app_secrets(connection, valid_server_ids)
             connection.commit()
 
         return self.list_servers(include_disabled=True)
@@ -141,6 +164,8 @@ class SqliteRepository:
             cursor = connection.execute("DELETE FROM servers WHERE id = ?", (server_id,))
             if cursor.rowcount > 0:
                 self._remove_server_from_user_state(connection, server_id)
+                connection.execute("DELETE FROM user_data_cache WHERE server_id = ?", (server_id,))
+                connection.execute("DELETE FROM app_secrets WHERE scope = ?", (self._oslc_shared_scope(server_id),))
             connection.commit()
         return cursor.rowcount > 0
 
@@ -186,6 +211,65 @@ class SqliteRepository:
                 updates,
             )
 
+    def get_user_cache(self, user_id: str, server_id: str, cache_key: str):
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM user_data_cache WHERE user_id = ? AND server_id = ? AND cache_key = ?",
+                (user_id, server_id, cache_key),
+            ).fetchone()
+        if not row:
+            return None
+        return json.loads(row["payload"])
+
+    def upsert_user_cache(self, user_id: str, server_id: str, cache_key: str, payload: object) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO user_data_cache (user_id, server_id, cache_key, payload, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, server_id, cache_key, json.dumps(payload), utcnow().isoformat()),
+            )
+            connection.commit()
+
+    def delete_user_cache(self, user_id: str, server_id: str, cache_key: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM user_data_cache WHERE user_id = ? AND server_id = ? AND cache_key = ?",
+                (user_id, server_id, cache_key),
+            )
+            connection.commit()
+
+    def delete_user_cache_prefix(self, user_id: str, server_id: str, cache_key_prefix: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM user_data_cache WHERE user_id = ? AND server_id = ? AND cache_key LIKE ?",
+                (user_id, server_id, f"{cache_key_prefix}%"),
+            )
+            connection.commit()
+
+    def get_app_secret(self, scope: str) -> tuple[str, str] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute("SELECT payload, updated_at FROM app_secrets WHERE scope = ?", (scope,)).fetchone()
+        if not row:
+            return None
+        return str(row["payload"]), str(row["updated_at"])
+
+    def upsert_app_secret(self, scope: str, payload: str) -> str:
+        updated_at = utcnow().isoformat()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO app_secrets (scope, payload, updated_at) VALUES (?, ?, ?)",
+                (scope, payload, updated_at),
+            )
+            connection.commit()
+        return updated_at
+
+    def delete_app_secret(self, scope: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM app_secrets WHERE scope = ?", (scope,))
+            connection.commit()
+
     def _prune_invalid_user_server_state(self, connection: sqlite3.Connection, valid_server_ids: set[str]) -> None:
         rows = connection.execute("SELECT user_id, payload FROM user_server_state").fetchall()
         updates: list[tuple[str, str]] = []
@@ -211,6 +295,26 @@ class SqliteRepository:
                 "INSERT OR REPLACE INTO user_server_state (user_id, payload) VALUES (?, ?)",
                 updates,
             )
+
+    def _prune_invalid_user_cache(self, connection: sqlite3.Connection, valid_server_ids: set[str]) -> None:
+        if not valid_server_ids:
+            connection.execute("DELETE FROM user_data_cache")
+            return
+        placeholders = ", ".join("?" for _ in valid_server_ids)
+        connection.execute(
+            f"DELETE FROM user_data_cache WHERE server_id NOT IN ({placeholders})",
+            tuple(valid_server_ids),
+        )
+
+    def _prune_invalid_app_secrets(self, connection: sqlite3.Connection, valid_server_ids: set[str]) -> None:
+        valid_scopes = {self._oslc_shared_scope(server_id) for server_id in valid_server_ids}
+        rows = connection.execute("SELECT scope FROM app_secrets").fetchall()
+        invalid_scopes = [str(row["scope"]) for row in rows if str(row["scope"]) not in valid_scopes]
+        if invalid_scopes:
+            connection.executemany("DELETE FROM app_secrets WHERE scope = ?", [(scope,) for scope in invalid_scopes])
+
+    def _oslc_shared_scope(self, server_id: str) -> str:
+        return f"oslc-shared:{server_id}"
 
     def list_jobs(self, owner: str | None = None) -> list[JobRecord]:
         query = "SELECT payload FROM jobs"
@@ -280,8 +384,18 @@ class SqliteRepository:
     def dump_state(self) -> dict[str, list[dict[str, object]]]:
         with self._connect() as connection:
             user_server_state = [json.loads(item["payload"]) for item in connection.execute("SELECT payload FROM user_server_state").fetchall()]
+            user_data_cache = [
+                {
+                    "user_id": item["user_id"],
+                    "server_id": item["server_id"],
+                    "cache_key": item["cache_key"],
+                    "updated_at": item["updated_at"],
+                }
+                for item in connection.execute("SELECT user_id, server_id, cache_key, updated_at FROM user_data_cache").fetchall()
+            ]
         return {
             "servers": [json.loads(item.model_dump_json()) for item in self.list_servers(include_disabled=True)],
             "user_server_state": user_server_state,
+            "user_data_cache": user_data_cache,
             "jobs": [json.loads(item.model_dump_json()) for item in self.list_jobs()],
         }

@@ -4,10 +4,11 @@ import json
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
-from app.api.deps import get_container, get_session, require_csrf
+from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
 from app.models.domain import (
     OSLCExecuteRequest,
     OSLCGenerateConsumerRequest,
+    OSLCSharedConsumerRequest,
     OSLCStoreConsumerRequest,
     SessionPreferences,
     SwaggerExecuteRequest,
@@ -26,19 +27,52 @@ async def dashboard(session=Depends(get_session), container: ApplicationContaine
 
 
 @router.get("/contract")
-def contract_manifest(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+def contract_manifest(session=Depends(require_admin), container: ApplicationContainer = Depends(get_container)):
     return container.platform.swagger_contract_manifest()
 
 
 @router.get("/oslc/status")
-async def oslc_status(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+async def oslc_status(session=Depends(require_admin), container: ApplicationContainer = Depends(get_container)):
     return await container.platform.oslc_status(session)
+
+
+@router.get("/oslc/shared-consumer")
+def oslc_shared_consumer_status(
+    session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.oslc_shared_consumer_status(session)
+
+
+@router.put("/oslc/shared-consumer")
+def store_shared_oslc_consumer(
+    payload: OSLCSharedConsumerRequest,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.set_shared_oslc_consumer(
+            session,
+            consumer_key=payload.consumer_key,
+            consumer_secret=payload.consumer_secret,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.delete("/oslc/shared-consumer")
+def clear_shared_oslc_consumer(
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    container.platform.clear_shared_oslc_consumer(session)
+    return {"ok": True}
 
 
 @router.post("/oslc/request")
 async def execute_oslc_request(
     payload: OSLCExecuteRequest,
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
@@ -50,7 +84,7 @@ async def execute_oslc_request(
 
 
 @router.post("/oslc/disconnect")
-def disconnect_oslc(session=Depends(require_csrf), container: ApplicationContainer = Depends(get_container)):
+def disconnect_oslc(session=Depends(require_admin_csrf), container: ApplicationContainer = Depends(get_container)):
     container.platform.disconnect_oslc(session)
     return {"ok": True}
 
@@ -58,7 +92,7 @@ def disconnect_oslc(session=Depends(require_csrf), container: ApplicationContain
 @router.post("/oslc/consumer/generate")
 async def generate_oslc_consumer(
     payload: OSLCGenerateConsumerRequest,
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
@@ -79,7 +113,7 @@ async def generate_oslc_consumer(
 @router.post("/oslc/consumer/session")
 def store_oslc_consumer(
     payload: OSLCStoreConsumerRequest,
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
@@ -94,7 +128,7 @@ def store_oslc_consumer(
 
 @router.delete("/oslc/consumer/session")
 def clear_oslc_consumer(
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     container.platform.clear_oslc_consumer(session)
@@ -104,7 +138,7 @@ def clear_oslc_consumer(
 @router.post("/contract/execute")
 async def execute_contract_operation(
     payload: SwaggerExecuteRequest,
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
@@ -123,7 +157,7 @@ async def execute_contract_upload(
     pathParams: str = Form("{}"),
     queryParams: str = Form("{}"),
     file: UploadFile = File(...),
-    session=Depends(require_csrf),
+    session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
@@ -158,9 +192,27 @@ def _decode_form_json(raw_value: str, field_name: str) -> dict:
 
 
 @router.get("/projects")
-async def projects(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+async def projects(
+    refresh: bool = Query(default=False),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
     try:
-        return await container.platform.list_projects(session)
+        return await container.platform.list_projects(session, refresh=refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/branches")
+async def project_branches(
+    project_id: str,
+    workspaceId: str | None = Query(default=None),
+    refresh: bool = Query(default=False),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.list_project_branches(session, project_id, workspaceId, refresh=refresh)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
@@ -169,10 +221,11 @@ async def projects(session=Depends(get_session), container: ApplicationContainer
 async def tree(
     projectId: str | None = Query(default=None),
     branchId: str | None = Query(default=None),
+    refresh: bool = Query(default=False),
     session=Depends(get_session),
     container: ApplicationContainer = Depends(get_container),
 ):
-    return await container.platform.get_model_tree(session, projectId, branchId)
+    return await container.platform.get_model_tree(session, projectId, branchId, refresh=refresh)
 
 
 @router.get("/items/{item_id}")
@@ -180,11 +233,12 @@ async def item(
     item_id: str,
     projectId: str | None = Query(default=None),
     branchId: str | None = Query(default=None),
+    refresh: bool = Query(default=False),
     session=Depends(get_session),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
-        return await container.platform.get_item(session, item_id, projectId, branchId)
+        return await container.platform.get_item(session, item_id, projectId, branchId, refresh=refresh)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found") from exc
 

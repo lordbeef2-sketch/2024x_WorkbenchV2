@@ -48,7 +48,7 @@ class ThemeMode(str, Enum):
 class ServerProfileBase(BaseModel):
     name: str
     base_url: str
-    version: TWCVersion = TWCVersion.AUTO
+    version: TWCVersion = TWCVersion.V2022X
     verify_tls: bool = True
     ca_bundle_path: str | None = None
     enabled: bool = True
@@ -135,7 +135,7 @@ class AuthorizationContext(BaseModel):
     roles: list[str] = Field(default_factory=list)
     groups: list[str] = Field(default_factory=list)
     source: str = "authenticated-user-default"
-    can_manage_server_presets: bool = True
+    can_manage_server_presets: bool = False
 
 
 class ServerHealth(BaseModel):
@@ -311,6 +311,7 @@ class ItemDetails(BaseModel):
     editable: bool = False
     attachment_supported: bool = False
     collaborators: list[str] = Field(default_factory=list)
+    source_payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class SearchResult(BaseModel):
@@ -590,7 +591,7 @@ class OSLCAuthorizationStatus(BaseModel):
     authorized: bool
     rootservices: OSLCRootServicesSummary | None = None
     consumer_key_configured: bool = False
-    consumer_key_source: Literal["none", "config", "session"] = "none"
+    consumer_key_source: Literal["none", "config", "shared", "session"] = "none"
     can_generate_consumer_key: bool = False
     message: str = ""
 
@@ -612,6 +613,19 @@ class OSLCGenerateConsumerResponse(BaseModel):
     stored_for_session: bool = False
     approval_required: bool = True
     message: str = ""
+
+
+class OSLCSharedConsumerRequest(BaseModel):
+    consumer_key: str
+    consumer_secret: str
+
+
+class OSLCSharedConsumerStatus(BaseModel):
+    server_id: str
+    configured: bool
+    consumer_key: str | None = None
+    updated_at: datetime | None = None
+    source: Literal["none", "shared", "config"] = "none"
 
 
 class OSLCExecuteRequest(BaseModel):

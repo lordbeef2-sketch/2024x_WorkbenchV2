@@ -21,6 +21,7 @@ from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
     AuthorizationContext,
     Bookmark,
+    BranchSummary,
     BranchUpdateRequest,
     CapabilityState,
     CommentEntry,
@@ -35,6 +36,8 @@ from app.models.domain import (
     OSLCExecuteRequest,
     OSLCExecuteResponse,
     OSLCGenerateConsumerResponse,
+    OSLCSharedConsumerStatus,
+    ProjectSummary,
     PublishRequest,
     SavedSearch,
     SearchResponse,
@@ -53,6 +56,7 @@ from app.models.domain import (
     SwaggerExecuteResponse,
     TokenBundle,
     TokenLoginRequest,
+    TreeNode,
     TWCVersion,
     UserServerState,
     UserContext,
@@ -66,6 +70,7 @@ logger = structlog.get_logger(__name__)
 
 
 ADMIN_CLAIM_MARKERS = ("admin", "administrator")
+PROJECT_LIST_CACHE_KEY = "projects"
 
 
 class PlatformService:
@@ -300,8 +305,7 @@ class PlatformService:
         return self.sessions.add_recent_item(session, bookmark).recent_items
 
     async def dashboard(self, session: SessionData) -> DashboardPayload:
-        adapter = self._adapter_for_session(session)
-        projects = await adapter.list_projects()
+        projects = await self.list_projects(session, refresh=False)
         logger.info("twc-project-list-dashboard", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
         return DashboardPayload(
             projects=projects,
@@ -312,13 +316,62 @@ class PlatformService:
             publish_presets=[],
         )
 
-    async def list_projects(self, session: SessionData):
-        projects = await self._adapter_for_session(session).list_projects()
+    async def list_projects(self, session: SessionData, refresh: bool = False):
+        if not refresh:
+            cached_projects = self._cached_model_list(session, PROJECT_LIST_CACHE_KEY, ProjectSummary)
+            if cached_projects is not None:
+                return cached_projects
+
+        projects = await self._adapter_for_session(session).list_projects(include_branches=False)
+        self.repo.upsert_user_cache(
+            self._user_key(session.user.preferred_username),
+            session.server.id,
+            PROJECT_LIST_CACHE_KEY,
+            [json.loads(project.model_dump_json()) for project in projects],
+        )
         logger.info("twc-project-list-ui", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
         return projects
 
-    async def get_model_tree(self, session: SessionData, project_id: str | None, branch_id: str | None):
-        return await self._adapter_for_session(session).get_model_tree(project_id, branch_id)
+    async def list_project_branches(self, session: SessionData, project_id: str, workspace_id: str | None = None, refresh: bool = False):
+        cache_key = self._branch_cache_key(project_id)
+        if not refresh:
+            cached_branches = self._cached_model_list(session, cache_key, BranchSummary)
+            if cached_branches is not None:
+                return cached_branches
+
+        branches = await self._adapter_for_session(session).list_project_branches(project_id, workspace_id)
+        self.repo.upsert_user_cache(
+            self._user_key(session.user.preferred_username),
+            session.server.id,
+            cache_key,
+            [json.loads(branch.model_dump_json()) for branch in branches],
+        )
+        logger.info(
+            "twc-branch-list-ui",
+            user=session.user.preferred_username,
+            server_id=session.server.id,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            delivered_count=len(branches),
+        )
+        return branches
+
+    async def get_model_tree(self, session: SessionData, project_id: str | None, branch_id: str | None, refresh: bool = False):
+        cache_key = self._tree_cache_key(project_id, branch_id)
+        if cache_key and not refresh:
+            cached_tree = self._cached_model_list(session, cache_key, TreeNode)
+            if cached_tree is not None:
+                return cached_tree
+
+        tree = await self._adapter_for_session(session).get_model_tree(project_id, branch_id)
+        if cache_key:
+            self.repo.upsert_user_cache(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                cache_key,
+                [json.loads(node.model_dump_json()) for node in tree],
+            )
+        return tree
 
     async def update_branch(
         self,
@@ -335,8 +388,22 @@ class PlatformService:
         item_id: str,
         project_id: str | None = None,
         branch_id: str | None = None,
+        refresh: bool = False,
     ) -> ItemDetails:
+        cache_key = self._item_cache_key(project_id, branch_id, item_id)
+        if cache_key and not refresh:
+            cached_item = self._cached_model(session, cache_key, ItemDetails)
+            if cached_item is not None:
+                return cached_item
+
         item = await self._adapter_for_session(session).get_item(item_id, project_id, branch_id)
+        if cache_key:
+            self.repo.upsert_user_cache(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                cache_key,
+                json.loads(item.model_dump_json()),
+            )
         self.sessions.add_recent_item(
             session,
             Bookmark(
@@ -359,6 +426,21 @@ class PlatformService:
         branch_id: str | None = None,
     ) -> ItemDetails:
         item = await self._adapter_for_session(session).update_item(item_id, payload, project_id, branch_id)
+        cache_key = self._item_cache_key(project_id, branch_id, item_id)
+        if cache_key:
+            self.repo.upsert_user_cache(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                cache_key,
+                json.loads(item.model_dump_json()),
+            )
+        tree_cache_key = self._tree_cache_key(project_id, branch_id)
+        if tree_cache_key:
+            self.repo.delete_user_cache(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                tree_cache_key,
+            )
         self.sessions.add_recent_item(
             session,
             Bookmark(
@@ -450,7 +532,8 @@ class PlatformService:
     async def oslc_status(self, session: SessionData) -> OSLCAuthorizationStatus:
         server = self._require_server(session.server.id, include_disabled=False)
         session_consumer = self.sessions.get_oslc_consumer_credentials(session)
-        resolved_consumer = self.oauth.effective_consumer_credentials(server, session_consumer)
+        shared_consumer, _ = self._shared_oslc_consumer_credentials(server.id)
+        resolved_consumer = self.oauth.effective_consumer_credentials(server, shared_consumer, session_consumer)
         configured = resolved_consumer is not None
         authorized = self.sessions.get_oslc_credentials(session) is not None
         consumer_source = resolved_consumer.source if resolved_consumer else "none"
@@ -964,6 +1047,7 @@ class PlatformService:
             server_name=server.name,
         )
         authorization_context = self._build_authorization_context(
+            preferred_username,
             current_user_context,
             upstream_roles=upstream_roles,
             upstream_groups=upstream_groups,
@@ -983,8 +1067,107 @@ class PlatformService:
             "Unable to resolve the authenticated Teamwork Cloud user from /osmc/admin/currentUser. Ensure the supplied session cookie or token is valid for TWC."
         )
 
+    def _cached_model_list(self, session: SessionData, cache_key: str, model_class):
+        cached_payload = self.repo.get_user_cache(self._user_key(session.user.preferred_username), session.server.id, cache_key)
+        if not isinstance(cached_payload, list):
+            return None
+        try:
+            return [model_class.model_validate(item) for item in cached_payload]
+        except Exception:
+            self.repo.delete_user_cache(self._user_key(session.user.preferred_username), session.server.id, cache_key)
+            return None
+
+    def _cached_model(self, session: SessionData, cache_key: str, model_class):
+        cached_payload = self.repo.get_user_cache(self._user_key(session.user.preferred_username), session.server.id, cache_key)
+        if not isinstance(cached_payload, dict):
+            return None
+        try:
+            return model_class.model_validate(cached_payload)
+        except Exception:
+            self.repo.delete_user_cache(self._user_key(session.user.preferred_username), session.server.id, cache_key)
+            return None
+
+    def _branch_cache_key(self, project_id: str) -> str:
+        return f"project:{project_id}:branches"
+
+    def _tree_cache_key(self, project_id: str | None, branch_id: str | None) -> str | None:
+        if not project_id:
+            return None
+        normalized_branch = branch_id or "_default"
+        return f"project:{project_id}:branch:{normalized_branch}:tree"
+
+    def _item_cache_key(self, project_id: str | None, branch_id: str | None, item_id: str) -> str | None:
+        if not project_id:
+            return None
+        normalized_branch = branch_id or "_default"
+        return f"project:{project_id}:branch:{normalized_branch}:item:{item_id}"
+
+    def _shared_oslc_secret_scope(self, server_id: str) -> str:
+        return f"oslc-shared:{server_id}"
+
+    def _shared_oslc_consumer_credentials(self, server_id: str) -> tuple[OSLCConsumerCredentials | None, datetime | None]:
+        stored = self.repo.get_app_secret(self._shared_oslc_secret_scope(server_id))
+        if not stored:
+            return None, None
+        encrypted_payload, updated_at_raw = stored
+        try:
+            raw = self.sessions.cipher.decrypt_raw(encrypted_payload)
+            credentials = OSLCConsumerCredentials.model_validate_json(raw)
+            updated_at = datetime.fromisoformat(updated_at_raw)
+        except Exception:
+            self.repo.delete_app_secret(self._shared_oslc_secret_scope(server_id))
+            return None, None
+        return credentials, updated_at
+
+    def oslc_shared_consumer_status(self, session: SessionData) -> OSLCSharedConsumerStatus:
+        server = self._require_server(session.server.id, include_disabled=False)
+        shared_credentials, updated_at = self._shared_oslc_consumer_credentials(server.id)
+        if shared_credentials:
+            return OSLCSharedConsumerStatus(
+                server_id=server.id,
+                configured=True,
+                consumer_key=shared_credentials.consumer_key,
+                updated_at=updated_at,
+                source="shared",
+            )
+        configured_credentials = self.oauth.configured_consumer_credentials(server)
+        if configured_credentials:
+            return OSLCSharedConsumerStatus(
+                server_id=server.id,
+                configured=True,
+                consumer_key=configured_credentials.consumer_key,
+                source="config",
+            )
+        return OSLCSharedConsumerStatus(server_id=server.id, configured=False, source="none")
+
+    def set_shared_oslc_consumer(self, session: SessionData, *, consumer_key: str, consumer_secret: str) -> OSLCSharedConsumerStatus:
+        consumer_key = consumer_key.strip()
+        consumer_secret = consumer_secret.strip()
+        if not consumer_key or not consumer_secret:
+            raise ValueError("OSLC consumer key and secret are required.")
+        encrypted_payload = self.sessions.cipher.encrypt_raw(
+            OSLCConsumerCredentials(
+                consumer_key=consumer_key,
+                consumer_secret=consumer_secret,
+                source="shared",
+            ).model_dump_json().encode("utf-8")
+        )
+        updated_at = self.repo.upsert_app_secret(self._shared_oslc_secret_scope(session.server.id), encrypted_payload)
+        return OSLCSharedConsumerStatus(
+            server_id=session.server.id,
+            configured=True,
+            consumer_key=consumer_key,
+            updated_at=datetime.fromisoformat(updated_at),
+            source="shared",
+        )
+
+    def clear_shared_oslc_consumer(self, session: SessionData) -> None:
+        self.repo.delete_app_secret(self._shared_oslc_secret_scope(session.server.id))
+        self.sessions.clear_oslc_credentials(session)
+
     def _build_authorization_context(
         self,
+        preferred_username: str,
         current_user_context,
         *,
         upstream_roles: list[str] | None,
@@ -992,23 +1175,26 @@ class PlatformService:
     ) -> AuthorizationContext:
         roles = self._merge_claims(*(upstream_roles or []), *((current_user_context.roles) if current_user_context else []))
         groups = self._merge_claims(*(upstream_groups or []), *((current_user_context.groups) if current_user_context else []))
+        can_manage = self._claims_grant_admin(preferred_username, roles, groups)
 
         if roles or groups:
             return AuthorizationContext(
                 roles=roles,
                 groups=groups,
                 source="upstream-authorization-claims",
-                can_manage_server_presets=self._claims_grant_admin(roles, groups),
+                can_manage_server_presets=can_manage,
             )
 
         return AuthorizationContext(
             roles=[],
             groups=[],
             source="authenticated-user-default",
-            can_manage_server_presets=True,
+            can_manage_server_presets=can_manage,
         )
 
-    def _claims_grant_admin(self, roles: list[str], groups: list[str]) -> bool:
+    def _claims_grant_admin(self, preferred_username: str, roles: list[str], groups: list[str]) -> bool:
+        if self._user_key(preferred_username) in {self._user_key(value) for value in self.settings.admin_users if value.strip()}:
+            return True
         claims = [*(role.lower() for role in roles), *(group.lower() for group in groups)]
         return any(marker in claim for claim in claims for marker in ADMIN_CLAIM_MARKERS)
 

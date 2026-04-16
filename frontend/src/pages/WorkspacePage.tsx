@@ -49,7 +49,7 @@ import {
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
-type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "oslc" | "api";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "api";
 
 function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : "The request failed.";
@@ -75,8 +75,11 @@ function valueText(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function branchLabel(project: ProjectSummary | null, branchId: string): string {
-  return project?.branches.find((branch) => branch.id === branchId)?.name ?? branchId;
+function branchLabel(branches: ProjectSummary["branches"], branchId: string): string {
+  if (!branchId) {
+    return "Default branch context";
+  }
+  return branches.find((branch) => branch.id === branchId)?.name ?? branchId;
 }
 
 function defaultParameterValue(parameter: SwaggerParameterSpec): string {
@@ -232,6 +235,9 @@ export default function WorkspacePage() {
   const csrfToken = session?.csrf_token ?? "";
   const capabilities = session?.capabilities?.capabilities ?? {};
   const canEdit = capabilities.edit?.state === "ready";
+  const isAdmin = Boolean(session?.can_manage_server_presets);
+  const cacheTimeMs = 1000 * 60 * 60 * 12;
+  const sessionCacheKey = [session?.user?.preferred_username ?? "anonymous", session?.server?.id ?? "no-server"];
 
   const [tab, setTab] = useState<WorkspaceTab>("dashboard");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -258,32 +264,55 @@ export default function WorkspacePage() {
   const [oslcManualSecret, setOslcManualSecret] = useState("");
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
 
-  const dashboardQuery = useQuery({
-    queryKey: ["workspace-dashboard"],
-    queryFn: api.getDashboard,
-  });
-
   const projectsQuery = useQuery({
-    queryKey: ["workspace-projects"],
-    queryFn: api.getProjects,
+    queryKey: ["workspace-projects", ...sessionCacheKey],
+    queryFn: () => api.getProjects(),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
   });
 
   const contractQuery = useQuery({
-    queryKey: ["workspace-contract"],
+    queryKey: ["workspace-contract", ...sessionCacheKey],
     queryFn: api.getContractManifest,
+    enabled: isAdmin,
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
   });
 
   const oslcStatusQuery = useQuery({
-    queryKey: ["workspace-oslc-status", session?.server?.id],
+    queryKey: ["workspace-oslc-status", ...sessionCacheKey],
     queryFn: api.getOslcStatus,
-    enabled: Boolean(session?.server?.id),
+    enabled: Boolean(session?.server?.id) && isAdmin,
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
   });
 
-  const projects = projectsQuery.data ?? dashboardQuery.data?.projects ?? [];
+  const sharedOslcConsumerQuery = useQuery({
+    queryKey: ["workspace-oslc-shared-consumer", ...sessionCacheKey],
+    queryFn: api.getSharedOslcConsumer,
+    enabled: Boolean(session?.server?.id) && isAdmin,
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+
+  const projects = projectsQuery.data ?? [];
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
+  const branchesQuery = useQuery({
+    queryKey: ["workspace-branches", ...sessionCacheKey, selectedProjectId, selectedProject?.workspace_id],
+    queryFn: () => api.getProjectBranches(selectedProjectId, selectedProject?.workspace_id || undefined),
+    enabled: Boolean(selectedProjectId),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const selectedProjectBranches = branchesQuery.data ?? [];
 
   useEffect(() => {
     if (!selectedProjectId && projects.length) {
@@ -292,22 +321,25 @@ export default function WorkspacePage() {
   }, [projects, selectedProjectId]);
 
   useEffect(() => {
-    if (!selectedProject) {
+    if (!selectedProjectId || branchesQuery.isLoading) {
       return;
     }
-    if (!selectedProject.branches.length) {
+    if (!selectedProjectBranches.length) {
       setSelectedBranchId("");
       return;
     }
-    if (!selectedProject.branches.some((branch) => branch.id === selectedBranchId)) {
-      setSelectedBranchId(selectedProject.branches[0].id);
+    if (!selectedProjectBranches.some((branch) => branch.id === selectedBranchId)) {
+      setSelectedBranchId(selectedProjectBranches[0].id);
     }
-  }, [selectedBranchId, selectedProject]);
+  }, [branchesQuery.isLoading, selectedBranchId, selectedProjectBranches, selectedProjectId]);
 
   const treeQuery = useQuery({
-    queryKey: ["workspace-tree", selectedProjectId, selectedBranchId],
+    queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
     queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined),
-    enabled: Boolean(selectedProjectId),
+    enabled: Boolean(selectedProjectId) && !branchesQuery.isLoading && (!selectedProjectBranches.length || Boolean(selectedBranchId)),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
   });
 
   const treeNodes = treeQuery.data ?? [];
@@ -342,6 +374,7 @@ export default function WorkspacePage() {
   );
 
   const oslcStatus = oslcStatusQuery.data ?? null;
+  const sharedOslcConsumer = sharedOslcConsumerQuery.data ?? null;
 
   useEffect(() => {
     if (oslcConsumerName) {
@@ -350,6 +383,12 @@ export default function WorkspacePage() {
     const serverId = session?.server?.id ?? "server";
     setOslcConsumerName(`twcworkbench-${serverId}`);
   }, [oslcConsumerName, session?.server?.id]);
+
+  useEffect(() => {
+    if (sharedOslcConsumer?.consumer_key && !oslcManualKey) {
+      setOslcManualKey(sharedOslcConsumer.consumer_key);
+    }
+  }, [oslcManualKey, sharedOslcConsumer?.consumer_key]);
 
   const contextParameterValue = (parameter: SwaggerParameterSpec): string => {
     const normalized = parameter.name.toLowerCase();
@@ -430,7 +469,7 @@ export default function WorkspacePage() {
 
     if (connected === "connected") {
       setNotice({ severity: "success", message: "OSLC connection is ready for this Teamwork Cloud server." });
-      void queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
+      void queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status", ...sessionCacheKey] });
     } else if (authError) {
       setNotice({ severity: "error", message: authError });
     }
@@ -441,10 +480,19 @@ export default function WorkspacePage() {
     setSearchParams(nextParams, { replace: true });
   }, [queryClient, searchParams, setSearchParams]);
 
+  useEffect(() => {
+    if (!isAdmin && tab === "api") {
+      setTab("dashboard");
+    }
+  }, [isAdmin, tab]);
+
   const itemQuery = useQuery({
-    queryKey: ["workspace-item", selectedItemId, selectedProjectId, selectedBranchId],
+    queryKey: ["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId],
     queryFn: () => api.getItem(selectedItemId, selectedProjectId || undefined, selectedBranchId || undefined),
     enabled: Boolean(selectedItemId),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
@@ -478,6 +526,54 @@ export default function WorkspacePage() {
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
+  const refreshProjectsMutation = useMutation({
+    mutationFn: () => api.getProjects(true),
+    onSuccess: (projects) => {
+      queryClient.setQueryData(["workspace-projects", ...sessionCacheKey], projects);
+      setNotice({ severity: "success", message: "Project catalog refreshed." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const refreshSelectedProjectMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedProjectId) {
+        throw new Error("Select a project before refreshing.");
+      }
+      const branches = await api.getProjectBranches(selectedProjectId, selectedProject?.workspace_id || undefined, true);
+      let tree: TreeNode[] | null = null;
+      const currentBranchId = selectedBranchId || branches[0]?.id;
+      if (currentBranchId) {
+        tree = await api.getTree(selectedProjectId, currentBranchId, true);
+      }
+      return { branches, tree, branchId: currentBranchId ?? "" };
+    },
+    onSuccess: ({ branches, tree, branchId }) => {
+      queryClient.setQueryData(["workspace-branches", ...sessionCacheKey, selectedProjectId, selectedProject?.workspace_id], branches);
+      if (branchId) {
+        queryClient.setQueryData(["workspace-tree", ...sessionCacheKey, selectedProjectId, branchId], tree ?? []);
+        setSelectedBranchId(branchId);
+      }
+      setNotice({ severity: "success", message: "Selected project data refreshed." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const refreshItemMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedItemId) {
+        throw new Error("Select an item before refreshing.");
+      }
+      return api.getItem(selectedItemId, selectedProjectId || undefined, selectedBranchId || undefined, true);
+    },
+    onSuccess: (item) => {
+      queryClient.setQueryData(["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId], item);
+      setItemDraft(item);
+      setNotice({ severity: "success", message: "Model item refreshed." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
   const saveItemMutation = useMutation({
     mutationFn: () => {
       if (!selectedItemId || !itemDraft) {
@@ -496,8 +592,8 @@ export default function WorkspacePage() {
     },
     onSuccess: async (savedItem) => {
       setItemDraft(savedItem);
-      await queryClient.invalidateQueries({ queryKey: ["workspace-item"] });
-      await queryClient.invalidateQueries({ queryKey: ["workspace-tree"] });
+      await queryClient.invalidateQueries({ queryKey: ["workspace-item", ...sessionCacheKey] });
+      await queryClient.invalidateQueries({ queryKey: ["workspace-tree", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "Item saved to Teamwork Cloud." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
@@ -565,7 +661,7 @@ export default function WorkspacePage() {
   const disconnectOslcMutation = useMutation({
     mutationFn: () => api.disconnectOslc(csrfToken),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "OSLC connection was cleared for this app session." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
@@ -577,43 +673,45 @@ export default function WorkspacePage() {
         {
           name: oslcConsumerName.trim(),
           secret: oslcConsumerSecret,
-          remember_for_session: true,
+          remember_for_session: false,
         },
         csrfToken,
       ),
     onSuccess: async (result) => {
       setOslcManualKey(result.consumer_key);
-      setOslcConsumerSecret("");
-      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
-      setNotice({ severity: "success", message: result.message });
+      setOslcManualSecret(oslcConsumerSecret);
+      setNotice({ severity: "success", message: `${result.message} Save the generated key as the shared consumer when you're ready.` });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
   const storeOslcConsumerMutation = useMutation({
     mutationFn: () =>
-      api.storeOslcConsumer(
+      api.updateSharedOslcConsumer(
         {
           consumer_key: oslcManualKey.trim(),
           consumer_secret: oslcManualSecret,
         },
         csrfToken,
       ),
-    onSuccess: async (result) => {
+    onSuccess: async () => {
+      setOslcConsumerSecret("");
       setOslcManualSecret("");
-      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
-      setNotice({ severity: "success", message: result.message || "OSLC consumer credentials were stored for this app session." });
+      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status", ...sessionCacheKey] });
+      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-shared-consumer", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Shared OSLC consumer credentials were saved for this Teamwork Cloud server." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
   const clearOslcConsumerMutation = useMutation({
-    mutationFn: () => api.clearOslcConsumer(csrfToken),
+    mutationFn: () => api.clearSharedOslcConsumer(csrfToken),
     onSuccess: async () => {
       setOslcManualKey("");
       setOslcManualSecret("");
-      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] });
-      setNotice({ severity: "success", message: "Session-scoped OSLC consumer credentials were cleared." });
+      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status", ...sessionCacheKey] });
+      await queryClient.invalidateQueries({ queryKey: ["workspace-oslc-shared-consumer", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Shared OSLC consumer credentials were cleared for this server." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -624,8 +722,14 @@ export default function WorkspacePage() {
 
   const selectProject = (projectId: string) => {
     setSelectedProjectId(projectId);
+    setSelectedBranchId("");
     setSelectedItemId("");
     setItemDraft(null);
+  };
+
+  const openProjectInModelBrowser = (projectId: string) => {
+    selectProject(projectId);
+    setTab("models");
   };
 
   const openNode = (node: TreeNode) => {
@@ -704,10 +808,10 @@ export default function WorkspacePage() {
           <Card sx={{ height: "100%", borderRadius: 2 }}>
             <CardContent>
               <Typography variant="overline" color="text.secondary">
-                Branches
+                Active Project Branches
               </Typography>
-              <Typography variant="h3">{projects.reduce((count, project) => count + project.branches.length, 0)}</Typography>
-              <Typography color="text.secondary">Branch records loaded through the repository API.</Typography>
+              <Typography variant="h3">{selectedProjectId ? selectedProjectBranches.length : 0}</Typography>
+              <Typography color="text.secondary">Loaded only for the currently selected project.</Typography>
             </CardContent>
           </Card>
         </Grid>
@@ -727,10 +831,10 @@ export default function WorkspacePage() {
         <Stack spacing={2}>
           <Typography variant="h5">Swagger Contract Boundary</Typography>
           <Typography color="text.secondary">
-            This workspace exposes only Teamwork Cloud operations present in RealSwagger.json. The curated tabs cover the common repository and model flows; API Explorer exposes the complete contract surface for advanced workflows.
+            This workspace exposes only Teamwork Cloud operations present in RealSwagger.json. The curated tabs cover the common repository and model flows{isAdmin ? "; API Explorer exposes the complete contract surface for advanced workflows." : "."}
           </Typography>
           <Typography color="text.secondary">
-            Simulation, collaborator workspaces, global model search, publishing, export jobs, job center, saved searches, bookmarks, comments, documents, and collaborator-style attachments are not shown because this Swagger file does not define those APIs. Swagger artifact upload and download operations are available in API Explorer.
+            Simulation, collaborator workspaces, global model search, publishing, export jobs, job center, saved searches, bookmarks, comments, documents, and collaborator-style attachments are not shown because this Swagger file does not define those APIs.{isAdmin ? " Swagger artifact upload and download operations are available in API Explorer." : ""}
           </Typography>
           {contractManifest ? (
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
@@ -745,7 +849,7 @@ export default function WorkspacePage() {
               {warning}
             </Alert>
           ))}
-          {dashboardQuery.data?.capability_badges.length ? <CapabilityBadges capabilities={dashboardQuery.data.capability_badges} /> : null}
+          {session?.capabilities ? <CapabilityBadges capabilities={Object.values(session.capabilities.capabilities)} /> : null}
         </Stack>
       </Paper>
     </Stack>
@@ -753,7 +857,22 @@ export default function WorkspacePage() {
 
   const renderProjects = () => (
     <Stack spacing={2}>
-      <Typography variant="h5">Project Browser</Typography>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+        <Box>
+          <Typography variant="h5">Project Browser</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Pick a project here. Branch and model context load after selection in Model Browser.
+          </Typography>
+        </Box>
+        <Button
+          variant="outlined"
+          startIcon={<RefreshRoundedIcon />}
+          onClick={() => refreshProjectsMutation.mutate()}
+          disabled={refreshProjectsMutation.isPending}
+        >
+          Refresh Catalog
+        </Button>
+      </Stack>
       {projectsQuery.isLoading ? <CircularProgress size={28} /> : null}
       <Grid container spacing={2}>
         {projects.map((project) => (
@@ -770,15 +889,10 @@ export default function WorkspacePage() {
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                     <Chip label={`Resource ${project.resource_id ?? project.id}`} variant="outlined" />
                     {project.workspace_id ? <Chip label={`Workspace ${project.workspace_id}`} variant="outlined" /> : null}
-                    <Chip label={`${project.branches.length} branches`} />
+                    {selectedProjectId === project.id ? <Chip label="Selected project" color="primary" /> : null}
                   </Stack>
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    {project.branches.map((branch) => (
-                      <Chip key={branch.id} label={branch.name} variant={selectedBranchId === branch.id && selectedProjectId === project.id ? "filled" : "outlined"} />
-                    ))}
-                  </Stack>
-                  <Button variant="contained" onClick={() => selectProject(project.id)}>
-                    Open Project
+                  <Button variant="contained" onClick={() => openProjectInModelBrowser(project.id)}>
+                    Open in Model Browser
                   </Button>
                 </Stack>
               </CardContent>
@@ -795,13 +909,44 @@ export default function WorkspacePage() {
         <Box>
           <Typography variant="h5">Model Browser</Typography>
           <Typography variant="body2" color="text.secondary">
-            {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProject, selectedBranchId)}` : "Select a project to load models."}
+            {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : "Select a project to load models."}
           </Typography>
         </Box>
-        <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-tree"] })} disabled={!selectedProjectId}>
-          Refresh Models
+        <Button
+          variant="outlined"
+          startIcon={<RefreshRoundedIcon />}
+          onClick={() => refreshSelectedProjectMutation.mutate()}
+          disabled={!selectedProjectId || refreshSelectedProjectMutation.isPending}
+        >
+          Refresh Selected Project
         </Button>
       </Stack>
+      {selectedProject ? (
+        <Paper sx={{ p: 3, borderRadius: 2 }}>
+          <Stack spacing={1.5}>
+            <Typography variant="h6">{selectedProject.name}</Typography>
+            <Typography variant="body2" color="text.secondary">
+              {selectedProject.description || "Use the branch selector in the left panel to change the current model context."}
+            </Typography>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip label={`Resource ${selectedProject.resource_id ?? selectedProject.id}`} variant="outlined" />
+              {selectedProject.workspace_id ? <Chip label={`Workspace ${selectedProject.workspace_id}`} variant="outlined" /> : null}
+              <Chip
+                label={
+                  branchesQuery.isLoading
+                    ? "Loading branches"
+                    : selectedBranchId
+                      ? `Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`
+                      : "Default branch context"
+                }
+                color="primary"
+              />
+            </Stack>
+          </Stack>
+        </Paper>
+      ) : null}
+      {branchesQuery.isLoading && selectedProjectId ? <CircularProgress size={28} /> : null}
+      {branchesQuery.error ? <Alert severity="error">{errorMessage(branchesQuery.error)}</Alert> : null}
       {treeQuery.isLoading ? <CircularProgress size={28} /> : null}
       {treeQuery.error ? <Alert severity="error">{errorMessage(treeQuery.error)}</Alert> : null}
       <Grid container spacing={2}>
@@ -870,12 +1015,15 @@ export default function WorkspacePage() {
       <Stack spacing={2}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
           <Box>
-            <Typography variant="h5">Item Details</Typography>
+            <Typography variant="h5">Model Viewer / Editor</Typography>
             <Typography variant="body2" color="text.secondary">
               {selectedItem?.path ?? selectedItemId}
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
+            <Button startIcon={<RefreshRoundedIcon />} onClick={() => refreshItemMutation.mutate()} disabled={refreshItemMutation.isPending}>
+              Refresh
+            </Button>
             <Button startIcon={<CompareArrowsRoundedIcon />} onClick={() => pickCompareSide("left", selectedItemId)}>
               Compare Left
             </Button>
@@ -925,6 +1073,15 @@ export default function WorkspacePage() {
                   fullWidth
                   multiline
                   minRows={8}
+                />
+                <TextField
+                  label="Source Payload"
+                  value={JSON.stringify(itemDraft.source_payload ?? {}, null, 2)}
+                  disabled
+                  helperText="Read-only viewer for the cached Teamwork Cloud payload behind this model item."
+                  fullWidth
+                  multiline
+                  minRows={12}
                 />
               </Stack>
             </Paper>
@@ -1047,6 +1204,8 @@ export default function WorkspacePage() {
     const consumerSourceLabel =
       oslcStatus?.consumer_key_source === "config"
         ? "Config consumer"
+        : oslcStatus?.consumer_key_source === "shared"
+          ? "Shared consumer"
         : oslcStatus?.consumer_key_source === "session"
           ? "Session consumer"
           : "No consumer";
@@ -1055,13 +1214,13 @@ export default function WorkspacePage() {
       <Stack spacing={2}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
           <Box>
-            <Typography variant="h5">OSLC Explorer</Typography>
+            <Typography variant="h5">OSLC Settings</Typography>
             <Typography variant="body2" color="text.secondary">
-              OSLC is a separate connector from the RealSwagger `/osmc` API. This tab uses OSLC root services discovery and OAuth 1.0a consumer authorization.
+              OSLC is a separate connector from the RealSwagger `/osmc` API. Admins configure the shared consumer here, then authorize OSLC access for this server when needed.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
-            <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status"] })}>
+            <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-oslc-status", ...sessionCacheKey] })}>
               Refresh OSLC
             </Button>
             {oslcStatus?.authorized ? (
@@ -1093,7 +1252,7 @@ export default function WorkspacePage() {
               {oslcStatus.message ? <Alert severity="warning">{oslcStatus.message}</Alert> : null}
               {!oslcStatus.configured && rootservices?.request_consumer_key_url ? (
                 <Alert severity="info">
-                  This server publishes an OSLC consumer registration endpoint. Generate a consumer below or paste an approved consumer key and secret for this app session.
+                  This server publishes an OSLC consumer registration endpoint. Generate a consumer below or save an approved shared consumer key and secret for this Teamwork Cloud server.
                 </Alert>
               ) : null}
               {rootservices ? (
@@ -1132,7 +1291,7 @@ export default function WorkspacePage() {
           <Stack spacing={2}>
             <Typography variant="subtitle2">OSLC Consumer Setup</Typography>
             <Typography variant="body2" color="text.secondary">
-              Teamwork Cloud OSLC uses OAuth 1.0a. You can either generate a consumer key through root services or paste an approved consumer key and secret for this app session.
+              Teamwork Cloud OSLC uses OAuth 1.0a. Save one approved consumer key and secret here, then every admin session on this server can reuse that shared configuration.
             </Typography>
             <Grid container spacing={2}>
               <Grid item xs={12} md={6}>
@@ -1153,7 +1312,7 @@ export default function WorkspacePage() {
                     onChange={(event) => setOslcConsumerSecret(event.target.value)}
                     helperText={
                       rootservices?.request_consumer_key_url
-                        ? "The returned key is stored for this app session, but it still needs admin approval in Magic Collaboration Studio Settings before OSLC sign-in will succeed."
+                        ? "The returned key still needs approval in Magic Collaboration Studio Settings before OSLC sign-in will succeed."
                         : "This server did not publish a consumer-key registration endpoint in root services."
                     }
                     fullWidth
@@ -1170,7 +1329,7 @@ export default function WorkspacePage() {
                       }
                       onClick={() => generateOslcConsumerMutation.mutate()}
                     >
-                      Generate and Store for Session
+                      Generate Consumer Key
                     </Button>
                     {generateOslcConsumerMutation.isPending ? <CircularProgress size={24} /> : null}
                   </Stack>
@@ -1179,7 +1338,7 @@ export default function WorkspacePage() {
               <Grid item xs={12} md={6}>
                 <Stack spacing={1.5}>
                   <Typography variant="body2" fontWeight={600}>
-                    Use Approved Consumer for This Session
+                    Shared Consumer for This Server
                   </Typography>
                   <TextField
                     label="Consumer Key"
@@ -1192,7 +1351,11 @@ export default function WorkspacePage() {
                     type="password"
                     value={oslcManualSecret}
                     onChange={(event) => setOslcManualSecret(event.target.value)}
-                    helperText="Use the key and secret created or approved in Teamwork Cloud Settings when you do not want to edit backend env config."
+                    helperText={
+                      sharedOslcConsumer?.configured
+                        ? "Enter a new secret only when rotating the shared OSLC consumer for this server."
+                        : "Use the key and secret created or approved in Teamwork Cloud Settings."
+                    }
                     fullWidth
                   />
                   <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
@@ -1201,15 +1364,15 @@ export default function WorkspacePage() {
                       disabled={!csrfToken || !oslcManualKey.trim() || !oslcManualSecret || storeOslcConsumerMutation.isPending}
                       onClick={() => storeOslcConsumerMutation.mutate()}
                     >
-                      Store for Session
+                      Save Shared Consumer
                     </Button>
                     <Button
                       variant="text"
                       color="warning"
-                      disabled={!csrfToken || oslcStatus?.consumer_key_source !== "session" || clearOslcConsumerMutation.isPending}
+                      disabled={!csrfToken || sharedOslcConsumer?.source !== "shared" || clearOslcConsumerMutation.isPending}
                       onClick={() => clearOslcConsumerMutation.mutate()}
                     >
-                      Forget Session Consumer
+                      Clear Shared Consumer
                     </Button>
                     {storeOslcConsumerMutation.isPending || clearOslcConsumerMutation.isPending ? <CircularProgress size={24} /> : null}
                   </Stack>
@@ -1271,7 +1434,7 @@ export default function WorkspacePage() {
             ) : null}
             {!oslcStatus?.configured ? (
               <Alert severity="warning">
-                OSLC needs an approved consumer key and secret before authorization can start. Generate one from root services or store an approved pair for this app session.
+                OSLC needs an approved shared consumer key and secret before authorization can start. Generate one from root services or save an approved pair for this server.
               </Alert>
             ) : null}
             <Stack direction="row" spacing={1.5} alignItems="center">
@@ -1328,6 +1491,9 @@ export default function WorkspacePage() {
 
   const renderApiExplorer = () => {
     const response = apiOperationMutation.data ?? null;
+    if (!isAdmin) {
+      return <Alert severity="warning">Administrator access is required for API Explorer.</Alert>;
+    }
     return (
       <Stack spacing={2}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
@@ -1337,7 +1503,7 @@ export default function WorkspacePage() {
               Every action here is generated from RealSwagger.json and executed only through declared method/path/parameter combinations.
             </Typography>
           </Box>
-          <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-contract"] })}>
+          <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-contract", ...sessionCacheKey] })}>
             Refresh Contract
           </Button>
         </Stack>
@@ -1601,14 +1767,18 @@ export default function WorkspacePage() {
               value={selectedBranchId}
               onChange={(event) => setSelectedBranchId(event.target.value)}
               fullWidth
-              disabled={!selectedProject?.branches.length}
+              disabled={!selectedProjectId || branchesQuery.isLoading || !selectedProjectBranches.length}
             >
-              {selectedProject?.branches.length ? (
-                selectedProject.branches.map((branch) => (
+              {selectedProjectBranches.length ? (
+                selectedProjectBranches.map((branch) => (
                   <MenuItem key={branch.id} value={branch.id}>
                     {branch.name}
                   </MenuItem>
                 ))
+              ) : branchesQuery.isLoading ? (
+                <MenuItem value="" disabled>
+                  Loading branches...
+                </MenuItem>
               ) : (
                 <MenuItem value="">Default</MenuItem>
               )}
@@ -1620,7 +1790,6 @@ export default function WorkspacePage() {
         </Paper>
         <Stack spacing={2} component="main">
           {notice ? <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.message}</Alert> : null}
-          {dashboardQuery.error ? <Alert severity="error">{errorMessage(dashboardQuery.error)}</Alert> : null}
           {projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
           <Paper sx={{ borderRadius: 2 }}>
             <Tabs value={tab} onChange={handleTabChange} variant="scrollable" scrollButtons="auto">
@@ -1629,8 +1798,7 @@ export default function WorkspacePage() {
               <Tab label="Model Browser" value="models" />
               <Tab label="Item Details" value="details" />
               <Tab label="Compare" value="compare" />
-              <Tab label="OSLC Explorer" value="oslc" />
-              <Tab label="API Explorer" value="api" />
+              {isAdmin ? <Tab label="API Explorer" value="api" /> : null}
             </Tabs>
           </Paper>
           <Box>
@@ -1639,7 +1807,6 @@ export default function WorkspacePage() {
             {tab === "models" ? renderModels() : null}
             {tab === "details" ? renderDetails() : null}
             {tab === "compare" ? renderCompare() : null}
-            {tab === "oslc" ? renderOslc() : null}
             {tab === "api" ? renderApiExplorer() : null}
           </Box>
         </Stack>
@@ -1648,6 +1815,7 @@ export default function WorkspacePage() {
         open={settingsOpen}
         preferences={session?.preferences ?? { theme_mode: "system", font_scale: 1, request_timeout_seconds: 30, live_log_poll_interval_ms: 2500, presentation_font_scale: 1.2 }}
         saving={settingsMutation.isPending}
+        extraContent={isAdmin ? renderOslc() : null}
         onClose={() => setSettingsOpen(false)}
         onSave={async (preferences) => {
           await settingsMutation.mutateAsync(preferences);

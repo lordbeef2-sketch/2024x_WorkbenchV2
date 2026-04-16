@@ -27,7 +27,7 @@ function createDefaultProfile(defaultDisplayOrder = 0): ServerProfileInput {
   return {
     name: "",
     base_url: "",
-    version: "auto",
+    version: "2022x",
     verify_tls: true,
     ca_bundle_path: null,
     enabled: true,
@@ -50,7 +50,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
     setForm({
       name: initialValue.name,
       base_url: initialValue.base_url,
-      version: initialValue.version,
+      version: "2022x",
       verify_tls: initialValue.verify_tls,
       ca_bundle_path: initialValue.ca_bundle_path,
       enabled: initialValue.enabled,
@@ -98,9 +98,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
               onChange={(event) => setField("version", event.target.value as TWCVersion)}
               fullWidth
             >
-              <MenuItem value="auto">Auto Detect</MenuItem>
               <MenuItem value="2022x">2022x</MenuItem>
-              <MenuItem value="2024x">2024x</MenuItem>
             </TextField>
           </Grid>
           <Grid item xs={12}>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import {
   Button,
   Dialog,
@@ -19,11 +19,12 @@ interface SettingsDialogProps {
   open: boolean;
   preferences: SessionPreferences;
   saving: boolean;
+  extraContent?: ReactNode;
   onClose: () => void;
   onSave: (preferences: SessionPreferences) => Promise<void> | void;
 }
 
-export default function SettingsDialog({ open, preferences, saving, onClose, onSave }: SettingsDialogProps) {
+export default function SettingsDialog({ open, preferences, saving, extraContent, onClose, onSave }: SettingsDialogProps) {
   const [draft, setDraft] = useState<SessionPreferences>(preferences);
 
   useEffect(() => {
@@ -42,7 +43,7 @@ export default function SettingsDialog({ open, preferences, saving, onClose, onS
   };
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="lg">
       <DialogTitle>Workspace Settings</DialogTitle>
       <DialogContent>
         <Stack spacing={3} sx={{ mt: 1 }}>
@@ -107,6 +108,7 @@ export default function SettingsDialog({ open, preferences, saving, onClose, onS
               />
             </Grid>
           </Grid>
+          {extraContent ? <>{extraContent}</> : null}
         </Stack>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 3 }}>

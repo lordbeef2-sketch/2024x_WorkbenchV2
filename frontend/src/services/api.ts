@@ -1,5 +1,6 @@
 import {
   AuthOptions,
+  BranchSummary,
   CapabilitySummary,
   CompareResult,
   DashboardPayload,
@@ -7,6 +8,8 @@ import {
   OSLCAuthorizationStatus,
   OSLCGenerateConsumerRequest,
   OSLCGenerateConsumerResponse,
+  OSLCSharedConsumerRequest,
+  OSLCSharedConsumerStatus,
   OSLCStoreConsumerRequest,
   OSLCExecuteRequest,
   OSLCExecuteResponse,
@@ -140,6 +143,22 @@ export const api = {
   getOslcStatus() {
     return request<OSLCAuthorizationStatus>("/workspace/oslc/status");
   },
+  getSharedOslcConsumer() {
+    return request<OSLCSharedConsumerStatus>("/workspace/oslc/shared-consumer");
+  },
+  updateSharedOslcConsumer(payload: OSLCSharedConsumerRequest, csrfToken: string) {
+    return request<OSLCSharedConsumerStatus>("/workspace/oslc/shared-consumer", {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  clearSharedOslcConsumer(csrfToken: string) {
+    return request<{ ok: boolean }>("/workspace/oslc/shared-consumer", {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
   executeOslcRequest(payload: OSLCExecuteRequest, csrfToken: string) {
     return request<OSLCExecuteResponse>("/workspace/oslc/request", {
       method: "POST",
@@ -201,27 +220,49 @@ export const api = {
       body,
     });
   },
-  getProjects() {
-    return request<ProjectSummary[]>("/workspace/projects");
+  getProjects(refresh = false) {
+    const params = new URLSearchParams();
+    if (refresh) {
+      params.set("refresh", "true");
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<ProjectSummary[]>(`/workspace/projects${suffix}`);
   },
-  getTree(projectId?: string, branchId?: string) {
+  getProjectBranches(projectId: string, workspaceId?: string, refresh = false) {
+    const params = new URLSearchParams();
+    if (workspaceId) {
+      params.set("workspaceId", workspaceId);
+    }
+    if (refresh) {
+      params.set("refresh", "true");
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<BranchSummary[]>(`/workspace/projects/${projectId}/branches${suffix}`);
+  },
+  getTree(projectId?: string, branchId?: string, refresh = false) {
     const params = new URLSearchParams();
     if (projectId) {
       params.set("projectId", projectId);
     }
     if (branchId) {
       params.set("branchId", branchId);
+    }
+    if (refresh) {
+      params.set("refresh", "true");
     }
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request<TreeNode[]>(`/workspace/tree${suffix}`);
   },
-  getItem(itemId: string, projectId?: string, branchId?: string) {
+  getItem(itemId: string, projectId?: string, branchId?: string, refresh = false) {
     const params = new URLSearchParams();
     if (projectId) {
       params.set("projectId", projectId);
     }
     if (branchId) {
       params.set("branchId", branchId);
+    }
+    if (refresh) {
+      params.set("refresh", "true");
     }
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request<ItemDetails>(`/workspace/items/${itemId}${suffix}`);

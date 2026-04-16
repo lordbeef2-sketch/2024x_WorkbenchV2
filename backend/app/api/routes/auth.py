@@ -12,7 +12,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
-from app.api.deps import get_container, get_session, require_csrf
+from app.api.deps import get_container, require_admin, require_csrf
 from app.auth.twc import build_twc_authorize_base_url, build_twc_saml_signin_url, exchange_twc_auth_code
 from app.models.domain import OSLCConsumerCredentials, OSLCRootServicesSummary, TokenLoginRequest
 from app.services.platform import ApplicationContainer
@@ -391,16 +391,17 @@ async def callback(
 
 @router.get("/oslc/signin")
 async def oslc_signin(
-    session=Depends(get_session),
+    session=Depends(require_admin),
     container: ApplicationContainer = Depends(get_container),
 ):
     server = container.platform.get_server(session.server.id, include_disabled=False)
     if not server:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
 
+    shared_consumer, _ = container.platform._shared_oslc_consumer_credentials(server.id)
     session_consumer = container.sessions.get_oslc_consumer_credentials(session)
-    resolved_consumer = container.oauth.effective_consumer_credentials(server, session_consumer)
-    configuration_error = container.oauth.configuration_error(server, session_consumer)
+    resolved_consumer = container.oauth.effective_consumer_credentials(server, shared_consumer, session_consumer)
+    configuration_error = container.oauth.configuration_error(server, shared_consumer, session_consumer)
     if configuration_error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=configuration_error)
 
@@ -413,6 +414,7 @@ async def oslc_signin(
             discovery.summary,
             callback_url,
             consumer_credentials=resolved_consumer,
+            shared_credentials=shared_consumer,
         )
         cookie_value = create_oslc_auth_state_cookie(
             container,
@@ -485,6 +487,7 @@ async def oslc_callback(
 
     try:
         summary = OSLCRootServicesSummary.model_validate(oslc_state.get("rootservices_summary") or {})
+        shared_consumer, _ = container.platform._shared_oslc_consumer_credentials(server.id)
         consumer_credentials = None
         consumer_key = oslc_state.get("consumer_key")
         consumer_secret = oslc_state.get("consumer_secret")
@@ -501,6 +504,7 @@ async def oslc_callback(
             request_token_secret=str(oslc_state["request_token_secret"]),
             verifier=oauth_verifier,
             consumer_credentials=consumer_credentials,
+            shared_credentials=shared_consumer,
         )
         container.sessions.set_oslc_credentials(session, credentials)
     except (PermissionError, RuntimeError) as exc:

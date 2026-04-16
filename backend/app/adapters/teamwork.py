@@ -1255,7 +1255,7 @@ class TeamworkAdapter:
                 branches.append(BranchSummary(id=branch_id, name=branch_id, description=""))
         return branches
 
-    async def _list_remote_projects(self) -> list[ProjectSummary]:
+    async def _list_remote_projects(self, include_branches: bool = False) -> list[ProjectSummary]:
         self._last_project_list_issue = None
         parsed_projects: dict[str, ProjectSummary] = {}
         total_items_received = 0
@@ -1442,18 +1442,20 @@ class TeamworkAdapter:
                 continue
 
             workspace_id = project.get("workspace_id") if isinstance(project.get("workspace_id"), str) else None
-            branch_uuid = project.get("branch_uuid") if isinstance(project.get("branch_uuid"), str) else None
-            if branch_uuid:
-                branches = [BranchSummary(id=branch_uuid, name=branch_uuid, description="")]
-            else:
-                branches = await self._list_remote_branches(resource_id, workspace_id)
-                if not branches:
-                    logger.warning(
-                        "twc-project-list-branches-missing",
-                        server_id=self.context.server.id,
-                        workspace_id=workspace_id,
-                        resource_id=resource_id,
-                    )
+            branches: list[BranchSummary] = []
+            if include_branches:
+                branch_uuid = project.get("branch_uuid") if isinstance(project.get("branch_uuid"), str) else None
+                if branch_uuid:
+                    branches = [BranchSummary(id=branch_uuid, name=branch_uuid, description="")]
+                else:
+                    branches = await self._list_remote_branches(resource_id, workspace_id)
+                    if not branches:
+                        logger.warning(
+                            "twc-project-list-branches-missing",
+                            server_id=self.context.server.id,
+                            workspace_id=workspace_id,
+                            resource_id=resource_id,
+                        )
 
             parsed_projects[resource_id] = ProjectSummary(
                 id=resource_id,
@@ -1620,6 +1622,7 @@ class TeamworkAdapter:
             editable=True,
             attachment_supported=False,
             collaborators=[],
+            source_payload=entity,
         )
         return item
 
@@ -1779,7 +1782,7 @@ class TeamworkAdapter:
     async def update_branch(self, project_id: str, branch_id: str, payload: dict[str, Any]) -> BranchSummary:
         version = await self.detect_version()
         if version != "2024x":
-            raise PermissionError("Branch rename and metadata updates are only available for 2024x servers.")
+            raise PermissionError("Branch rename and metadata updates are not supported in the 2022x deployment profile.")
 
         current_payload = await self._request_candidates("GET", self.branch_candidates(project_id, branch_id))
         entity = _payload_entity(current_payload, "branch")
@@ -1891,9 +1894,9 @@ class TeamworkAdapter:
 
         return self._remote_item_details(response_payload or remote_payload, item_id, project_id, branch_id)
 
-    async def list_projects(self) -> list[ProjectSummary]:
+    async def list_projects(self, include_branches: bool = False) -> list[ProjectSummary]:
         try:
-            remote_projects = await self._list_remote_projects()
+            remote_projects = await self._list_remote_projects(include_branches=include_branches)
             logger.info("Fetched projects from TWC", server_id=self.context.server.id, fetched_count=len(remote_projects))
             return remote_projects
         except RuntimeError:
@@ -1901,6 +1904,28 @@ class TeamworkAdapter:
         except Exception as exc:
             logger.exception("TWC project fetch failed", server_id=self.context.server.id)
             raise RuntimeError("Failed to load projects from TWC") from exc
+
+    async def list_project_branches(self, project_id: str, workspace_id: str | None = None) -> list[BranchSummary]:
+        try:
+            branches = await self._list_remote_branches(project_id, workspace_id)
+            logger.info(
+                "Fetched project branches from TWC",
+                server_id=self.context.server.id,
+                project_id=project_id,
+                workspace_id=workspace_id,
+                fetched_count=len(branches),
+            )
+            return branches
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "TWC branch fetch failed",
+                server_id=self.context.server.id,
+                project_id=project_id,
+                workspace_id=workspace_id,
+            )
+            raise RuntimeError("Failed to load project branches from TWC") from exc
 
     async def get_model_tree(self, project_id: str | None = None, branch_id: str | None = None) -> list[TreeNode]:
         if project_id and branch_id:

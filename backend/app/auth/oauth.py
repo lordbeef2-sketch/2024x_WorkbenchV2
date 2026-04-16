@@ -144,10 +144,13 @@ class OAuthService:
     def effective_consumer_credentials(
         self,
         server: ServerProfile,
+        shared_credentials: OSLCConsumerCredentials | None = None,
         session_credentials: OSLCConsumerCredentials | None = None,
     ) -> OSLCConsumerCredentials | None:
         if session_credentials and session_credentials.consumer_key and session_credentials.consumer_secret:
             return session_credentials
+        if shared_credentials and shared_credentials.consumer_key and shared_credentials.consumer_secret:
+            return shared_credentials
         return self.configured_consumer_credentials(server)
 
     def rootservices_url(self, server: ServerProfile) -> str:
@@ -178,18 +181,20 @@ class OAuthService:
     def is_configured_for_server(
         self,
         server: ServerProfile,
+        shared_credentials: OSLCConsumerCredentials | None = None,
         session_credentials: OSLCConsumerCredentials | None = None,
     ) -> bool:
-        return self.effective_consumer_credentials(server, session_credentials) is not None
+        return self.effective_consumer_credentials(server, shared_credentials, session_credentials) is not None
 
     def configuration_error(
         self,
         server: ServerProfile,
+        shared_credentials: OSLCConsumerCredentials | None = None,
         session_credentials: OSLCConsumerCredentials | None = None,
     ) -> str | None:
-        if self.is_configured_for_server(server, session_credentials):
+        if self.is_configured_for_server(server, shared_credentials, session_credentials):
             return None
-        return "OSLC requires an approved OAuth consumer key and consumer secret for this server, either from app config or this session."
+        return "OSLC requires an approved OAuth consumer key and consumer secret for this server, either from app config, shared admin settings, or this session."
 
     async def discover(self, server: ServerProfile) -> OSLCDiscoveryResult:
         rootservices_url = self.rootservices_url(server)
@@ -270,8 +275,9 @@ class OAuthService:
         callback_url: str,
         *,
         consumer_credentials: OSLCConsumerCredentials | None = None,
+        shared_credentials: OSLCConsumerCredentials | None = None,
     ) -> tuple[str, str]:
-        resolved_credentials = self.effective_consumer_credentials(server, consumer_credentials)
+        resolved_credentials = self.effective_consumer_credentials(server, shared_credentials, consumer_credentials)
         if resolved_credentials is None:
             raise PermissionError("OSLC requires an approved OAuth consumer key and consumer secret.")
         if not summary.request_token_url:
@@ -315,8 +321,9 @@ class OAuthService:
         request_token_secret: str,
         verifier: str,
         consumer_credentials: OSLCConsumerCredentials | None = None,
+        shared_credentials: OSLCConsumerCredentials | None = None,
     ) -> OSLCTokenBundle:
-        resolved_credentials = self.effective_consumer_credentials(server, consumer_credentials)
+        resolved_credentials = self.effective_consumer_credentials(server, shared_credentials, consumer_credentials)
         if resolved_credentials is None:
             raise PermissionError("OSLC requires an approved OAuth consumer key and consumer secret.")
         if not summary.access_token_url:
