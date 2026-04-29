@@ -15,6 +15,30 @@ Preset-management authorization is derived from Teamwork Cloud user context and 
 - Branch rename and branch metadata edit are not exposed because the provided `RealSwagger.json` does not define those update paths.
 - Simulation, collaborator workspace, attachments, comments, documents, publish/export jobs, job center, saved searches, bookmarks, and global model search are not exposed because this Swagger file does not define those APIs.
 
+## Artifact-First Extractor
+
+For offline or scripted extraction, use `app.extractors.twc_artifact_extractor`. It intentionally starts from branch artifacts because the validated Swagger for this project exposes:
+
+- `GET /osmc/workspaces/{workspaceId}/resources/{resourceId}/branches/{branchId}/artifacts`
+- `GET /osmc/workspaces/{workspaceId}/resources/{resourceId}/branches/{branchId}/artifacts/{artifact}`
+- `POST /osmc/workspaces/{workspaceId}/resources/{resourceId}/branches/{branchId}/elements`
+
+but does not expose a root `GET .../elements` listing path for the whole branch.
+
+Windows example:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.extractors.twc_artifact_extractor `
+  --base-url https://twc-host:8111 `
+  --token <bearer-token> `
+  --workspace-id <workspace-id> `
+  --resource-id <resource-id> `
+  --branch-id <branch-id> `
+  --verify-tls false
+```
+
+The extractor caches discovered IDs in `backend/data/twc_artifact_extractor.sqlite3` unless you override `--cache-path`, and `--refresh-discovery` forces a new artifact walk when you need one.
+
 Run locally from the repository root virtual environment:
 
 Windows:

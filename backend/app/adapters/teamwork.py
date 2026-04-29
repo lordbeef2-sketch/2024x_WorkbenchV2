@@ -137,6 +137,15 @@ def _payload_shape(payload: Any, depth: int = 2) -> Any:
     return type(payload).__name__
 
 
+def _looks_like_identifier(value: str) -> bool:
+    candidate = value.strip()
+    if not candidate:
+        return False
+    if UUID_PATTERN.fullmatch(candidate):
+        return True
+    return candidate.startswith("_")
+
+
 def _payload_entity(payload: Any, *markers: str) -> dict[str, Any] | None:
     objects = _payload_dicts(payload)
     if not objects:
@@ -1610,10 +1619,49 @@ class TeamworkAdapter:
         )
         return projects
 
-    def _model_tree_node(self, model_id: str, payload: dict[str, Any], project_id: str, branch_id: str) -> TreeNode:
+    async def _resolve_tree_reference_node(
+        self,
+        *,
+        item_id: str,
+        fallback_label: str,
+        fallback_node_type: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        parent_path: str,
+    ) -> TreeNode:
+        label = fallback_label or item_id
+        node_type = fallback_node_type
+        should_resolve = not fallback_label or fallback_label == item_id or _looks_like_identifier(fallback_label)
+        if should_resolve:
+            remote_payload = await self._remote_item_payload(project_id, branch_id, item_id)
+            entity = _payload_entity(remote_payload) if remote_payload is not None else None
+            if isinstance(entity, dict):
+                resolved_name = self._extract_display_name(entity)
+                if resolved_name:
+                    label = resolved_name
+                raw_types = _normalize_types(entity.get("@type"))
+                if raw_types:
+                    node_type = _humanize_type(raw_types[0])
+
+        return TreeNode(
+            id=item_id,
+            label=label or item_id,
+            node_type=node_type,
+            path=f"{parent_path}/{label or item_id}",
+            children=[],
+            metadata={
+                "project_id": project_id,
+                "branch_id": branch_id,
+                "model_id": model_id,
+            },
+        )
+
+    async def _model_tree_node(self, model_id: str, payload: dict[str, Any], project_id: str, branch_id: str) -> TreeNode:
         entity = _payload_entity(payload) or {}
         model_name = self._extract_display_name(entity) or model_id.upper()
         children: list[TreeNode] = []
+        model_path = f"{project_id}/{branch_id}/{model_name}"
         roots = _as_list(entity.get("models:roots"))
         for root in roots:
             if not isinstance(root, dict):
@@ -1622,18 +1670,16 @@ class TeamworkAdapter:
             if not root_id:
                 continue
             root_name = _first_text(root.get("models:name"), root_id)
+            root_type = _humanize_type(str(root.get("@type") or "model_root"))
             children.append(
-                TreeNode(
-                    id=root_id,
-                    label=root_name,
-                    node_type=_humanize_type(str(root.get("@type") or "model_root")),
-                    path=f"{project_id}/{branch_id}/{model_name}/{root_name}",
-                    children=[],
-                    metadata={
-                        "project_id": project_id,
-                        "branch_id": branch_id,
-                        "model_id": model_id,
-                    },
+                await self._resolve_tree_reference_node(
+                    item_id=root_id,
+                    fallback_label=root_name,
+                    fallback_node_type=root_type,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    model_id=model_id,
+                    parent_path=model_path,
                 )
             )
 
@@ -1648,17 +1694,14 @@ class TeamworkAdapter:
                 if not usage_id:
                     continue
                 children.append(
-                    TreeNode(
-                        id=usage_id,
-                        label=usage_name or usage_id,
-                        node_type="usage",
-                        path=f"{project_id}/{branch_id}/{model_name}/{usage_name or usage_id}",
-                        children=[],
-                        metadata={
-                            "project_id": project_id,
-                            "branch_id": branch_id,
-                            "model_id": model_id,
-                        },
+                    await self._resolve_tree_reference_node(
+                        item_id=usage_id,
+                        fallback_label=usage_name or usage_id,
+                        fallback_node_type="usage",
+                        project_id=project_id,
+                        branch_id=branch_id,
+                        model_id=model_id,
+                        parent_path=model_path,
                     )
                 )
 
@@ -1666,7 +1709,7 @@ class TeamworkAdapter:
             id=model_id,
             label=model_name,
             node_type="model",
-            path=f"{project_id}/{branch_id}/{model_name}",
+            path=model_path,
             children=children,
             metadata={
                 "project_id": project_id,
@@ -1694,7 +1737,7 @@ class TeamworkAdapter:
                 ],
             )
             if _payload_entity(model_payload) is not None:
-                nodes.append(self._model_tree_node(model_id, model_payload, project_id, branch_id))
+                nodes.append(await self._model_tree_node(model_id, model_payload, project_id, branch_id))
         return nodes
 
     async def _element_seed_ids(

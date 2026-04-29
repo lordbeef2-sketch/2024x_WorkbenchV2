@@ -509,6 +509,8 @@ export default function WorkspacePage() {
     setItemDraft(itemQuery.data ?? null);
   }, [itemQuery.data]);
 
+  const selectedWorkspaceItem = itemQuery.data ?? itemDraft ?? null;
+
   const logoutMutation = useMutation({
     mutationFn: () => api.logout(csrfToken),
     onSuccess: async () => {
@@ -1096,13 +1098,13 @@ export default function WorkspacePage() {
                     {elementDiscovery.entries.map((entry) => (
                       <ListItemButton key={entry.id} alignItems="flex-start" onClick={() => openElementId(entry.id)}>
                         <ListItemText
-                          primary={entry.id}
+                          primary={entry.name || entry.id}
                           secondary={
                             <Box component="span" sx={{ display: "block", mt: 0.75 }}>
-                              <Typography component="span" variant="body2" sx={{ display: "block" }}>
-                                {entry.name || "Unnamed element"}
-                              </Typography>
                               <Typography component="span" variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                                {entry.id}
+                              </Typography>
+                              <Typography component="span" variant="body2" sx={{ display: "block" }}>
                                 {entry.item_type} · {entry.child_count} contained elements
                               </Typography>
                             </Box>
@@ -1914,6 +1916,19 @@ export default function WorkspacePage() {
               )}
             </TextField>
             <TextField label="Filter model tree" value={treeFilter} onChange={(event) => setTreeFilter(event.target.value)} fullWidth />
+            {selectedWorkspaceItem ? (
+              <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                <Stack spacing={0.75}>
+                  <Typography variant="overline" color="text.secondary">
+                    Current Selection
+                  </Typography>
+                  <Typography variant="subtitle2">{selectedWorkspaceItem.name || selectedWorkspaceItem.id}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {selectedWorkspaceItem.item_type} · {selectedWorkspaceItem.id}
+                  </Typography>
+                </Stack>
+              </Paper>
+            ) : null}
             <Divider />
             <ProjectTree nodes={treeNodes} selectedId={selectedItemId} filter={treeFilter} onSelect={openNode} />
           </Stack>
