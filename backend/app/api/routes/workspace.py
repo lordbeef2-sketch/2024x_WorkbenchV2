@@ -228,6 +228,27 @@ async def tree(
     return await container.platform.get_model_tree(session, projectId, branchId, refresh=refresh)
 
 
+@router.get("/elements/discovery")
+async def discover_elements(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    workspaceId: str | None = Query(default=None),
+    refresh: bool = Query(default=False),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.discover_elements(
+            session,
+            projectId,
+            branchId,
+            workspace_id=workspaceId,
+            refresh=refresh,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
 @router.get("/items/{item_id}")
 async def item(
     item_id: str,

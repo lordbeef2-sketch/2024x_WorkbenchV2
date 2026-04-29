@@ -314,6 +314,30 @@ class ItemDetails(BaseModel):
     source_payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class ElementDiscoveryEntry(BaseModel):
+    id: str
+    name: str = ""
+    item_type: str = "element"
+    child_count: int = 0
+
+
+class ElementDiscoveryResult(BaseModel):
+    project_id: str
+    branch_id: str
+    workspace_id: str | None = None
+    seed_source: str = ""
+    seed_ids: list[str] = Field(default_factory=list)
+    ids: list[str] = Field(default_factory=list)
+    entries: list[ElementDiscoveryEntry] = Field(default_factory=list)
+    total_ids: int = 0
+    traversed_elements: int = 0
+    hydrated_elements: int = 0
+    batch_count: int = 0
+    batch_size: int = 200
+    warnings: list[str] = Field(default_factory=list)
+    discovered_at: datetime = Field(default_factory=utcnow)
+
+
 class SearchResult(BaseModel):
     id: str
     title: str

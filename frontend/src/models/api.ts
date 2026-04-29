@@ -156,6 +156,30 @@ export interface ItemDetails {
   source_payload: Record<string, unknown>;
 }
 
+export interface ElementDiscoveryEntry {
+  id: string;
+  name: string;
+  item_type: string;
+  child_count: number;
+}
+
+export interface ElementDiscoveryResult {
+  project_id: string;
+  branch_id: string;
+  workspace_id?: string | null;
+  seed_source: string;
+  seed_ids: string[];
+  ids: string[];
+  entries: ElementDiscoveryEntry[];
+  total_ids: number;
+  traversed_elements: number;
+  hydrated_elements: number;
+  batch_count: number;
+  batch_size: number;
+  warnings: string[];
+  discovered_at: string;
+}
+
 export interface SearchResult {
   id: string;
   title: string;

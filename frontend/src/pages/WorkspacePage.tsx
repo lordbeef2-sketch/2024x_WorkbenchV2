@@ -36,6 +36,7 @@ import CapabilityBadges from "../components/CapabilityBadges";
 import ProjectTree from "../components/ProjectTree";
 import SettingsDialog from "../components/SettingsDialog";
 import {
+  ElementDiscoveryResult,
   ItemDetails,
   OSLCExecuteResponse,
   ProjectSummary,
@@ -49,7 +50,7 @@ import {
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
-type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "api";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "elements" | "details" | "compare" | "api";
 
 function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : "The request failed.";
@@ -344,6 +345,15 @@ export default function WorkspacePage() {
 
   const treeNodes = treeQuery.data ?? [];
   const flatNodes = useMemo(() => flattenTree(treeNodes), [treeNodes]);
+  const elementDiscoveryQuery = useQuery({
+    queryKey: ["workspace-elements", ...sessionCacheKey, selectedProjectId, selectedBranchId, selectedProject?.workspace_id],
+    queryFn: () => api.getElementDiscovery(selectedProjectId, selectedBranchId, selectedProject?.workspace_id || undefined),
+    enabled: tab === "elements" && Boolean(selectedProjectId) && Boolean(selectedBranchId),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const elementDiscovery: ElementDiscoveryResult | null = elementDiscoveryQuery.data ?? null;
   const contractManifest = contractQuery.data ?? null;
   const apiTags = useMemo(
     () => Object.keys(contractManifest?.tag_counts ?? {}).sort((left, right) => left.localeCompare(right)),
@@ -574,6 +584,23 @@ export default function WorkspacePage() {
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
+  const refreshElementDiscoveryMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedProjectId || !selectedBranchId) {
+        throw new Error("Select a project branch before refreshing elements.");
+      }
+      return api.getElementDiscovery(selectedProjectId, selectedBranchId, selectedProject?.workspace_id || undefined, true);
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData(
+        ["workspace-elements", ...sessionCacheKey, selectedProjectId, selectedBranchId, selectedProject?.workspace_id],
+        result,
+      );
+      setNotice({ severity: "success", message: "Element discovery refreshed for the selected branch." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
   const saveItemMutation = useMutation({
     mutationFn: () => {
       if (!selectedItemId || !itemDraft) {
@@ -734,6 +761,11 @@ export default function WorkspacePage() {
 
   const openNode = (node: TreeNode) => {
     setSelectedItemId(node.id);
+    setTab("details");
+  };
+
+  const openElementId = (itemId: string) => {
+    setSelectedItemId(itemId);
     setTab("details");
   };
 
@@ -991,6 +1023,104 @@ export default function WorkspacePage() {
       ) : null}
     </Stack>
   );
+
+  const renderElementTesting = () => {
+    if (!selectedProjectId) {
+      return (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h5">Select a project</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            Element discovery runs against the currently selected project and branch.
+          </Typography>
+        </Paper>
+      );
+    }
+
+    if (!selectedBranchId) {
+      return (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h5">Select a branch</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            This tab walks the real TWC element graph for one branch at a time.
+          </Typography>
+        </Paper>
+      );
+    }
+
+    return (
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">Element Testing</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Discover reachable element IDs for {selectedProject?.name ?? selectedProjectId} / {branchLabel(selectedProjectBranches, selectedBranchId)} by traversing Swagger-backed model roots and recursively following <code>ldp:contains</code>.
+            </Typography>
+          </Box>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshRoundedIcon />}
+            onClick={() => refreshElementDiscoveryMutation.mutate()}
+            disabled={!selectedProjectId || !selectedBranchId || refreshElementDiscoveryMutation.isPending}
+          >
+            Refresh Elements
+          </Button>
+        </Stack>
+        {elementDiscoveryQuery.isLoading ? <CircularProgress size={28} /> : null}
+        {elementDiscoveryQuery.error ? <Alert severity="error">{errorMessage(elementDiscoveryQuery.error)}</Alert> : null}
+        {elementDiscovery ? (
+          <>
+            <Paper sx={{ p: 3, borderRadius: 2 }}>
+              <Stack spacing={2}>
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                  <Chip label={`${elementDiscovery.total_ids} element IDs`} color="primary" />
+                  <Chip label={`${elementDiscovery.traversed_elements} traversed`} variant="outlined" />
+                  <Chip label={`${elementDiscovery.hydrated_elements} batch hydrated`} variant="outlined" />
+                  <Chip label={`${elementDiscovery.batch_count} batches`} variant="outlined" />
+                  <Chip label={elementDiscovery.seed_source || "model-roots"} variant="outlined" />
+                </Stack>
+                <Typography variant="body2" color="text.secondary">
+                  This run stays inside the Swagger contract: seed roots come from the selected branch models, each discovered element is fetched through the branch element endpoint, and batch hydration uses the branch-level element POST in chunks of {elementDiscovery.batch_size}.
+                </Typography>
+                {elementDiscovery.warnings.map((warning) => (
+                  <Alert severity="warning" key={warning}>
+                    {warning}
+                  </Alert>
+                ))}
+              </Stack>
+            </Paper>
+            <Paper sx={{ p: 3, borderRadius: 2 }}>
+              <Stack spacing={2}>
+                <Typography variant="h6">Discovered Element IDs</Typography>
+                {elementDiscovery.entries.length ? (
+                  <List dense disablePadding sx={{ maxHeight: 640, overflow: "auto" }}>
+                    {elementDiscovery.entries.map((entry) => (
+                      <ListItemButton key={entry.id} alignItems="flex-start" onClick={() => openElementId(entry.id)}>
+                        <ListItemText
+                          primary={entry.id}
+                          secondary={
+                            <Box component="span" sx={{ display: "block", mt: 0.75 }}>
+                              <Typography component="span" variant="body2" sx={{ display: "block" }}>
+                                {entry.name || "Unnamed element"}
+                              </Typography>
+                              <Typography component="span" variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                                {entry.item_type} · {entry.child_count} contained elements
+                              </Typography>
+                            </Box>
+                          }
+                        />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                ) : (
+                  <Typography color="text.secondary">No element IDs were discovered for this branch.</Typography>
+                )}
+              </Stack>
+            </Paper>
+          </>
+        ) : null}
+      </Stack>
+    );
+  };
 
   const renderDetails = () => {
     const selectedItem = itemQuery.data ?? null;
@@ -1796,6 +1926,7 @@ export default function WorkspacePage() {
               <Tab label="Dashboard" value="dashboard" />
               <Tab label="Project Browser" value="projects" />
               <Tab label="Model Browser" value="models" />
+              <Tab label="Element testing" value="elements" />
               <Tab label="Item Details" value="details" />
               <Tab label="Compare" value="compare" />
               {isAdmin ? <Tab label="API Explorer" value="api" /> : null}
@@ -1805,6 +1936,7 @@ export default function WorkspacePage() {
             {tab === "dashboard" ? renderDashboard() : null}
             {tab === "projects" ? renderProjects() : null}
             {tab === "models" ? renderModels() : null}
+            {tab === "elements" ? renderElementTesting() : null}
             {tab === "details" ? renderDetails() : null}
             {tab === "compare" ? renderCompare() : null}
             {tab === "api" ? renderApiExplorer() : null}

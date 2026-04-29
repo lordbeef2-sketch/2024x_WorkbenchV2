@@ -22,6 +22,8 @@ from app.models.domain import (
     CommentEntry,
     CompareDifference,
     CompareResult,
+    ElementDiscoveryEntry,
+    ElementDiscoveryResult,
     DocumentVersion,
     ItemDetails,
     ProjectSummary,
@@ -946,6 +948,112 @@ class TeamworkAdapter:
                 parts.append(f"{candidate} -> {attempt['error']}")
         return "; ".join(parts) or "no usable candidate response"
 
+    def _candidate_from_reference(self, reference: Any) -> str | None:
+        raw_value: str | None = None
+        if isinstance(reference, dict):
+            for key in ("href", "@id", "id", "url", "next"):
+                value = reference.get(key)
+                if isinstance(value, str) and value.strip():
+                    raw_value = value.strip()
+                    break
+        elif isinstance(reference, str):
+            raw_value = reference.strip()
+
+        if not raw_value:
+            return None
+
+        parsed = urlparse(raw_value)
+        if parsed.scheme and parsed.netloc:
+            candidate = parsed.path or "/"
+            if parsed.query:
+                candidate = f"{candidate}?{parsed.query}"
+            return candidate
+        if raw_value.startswith("/"):
+            return raw_value
+        return None
+
+    def _pagination_candidate(self, payload: Any, response: httpx.Response) -> str | None:
+        link_header = response.headers.get("link", "")
+        if link_header:
+            for part in link_header.split(","):
+                if 'rel="next"' not in part:
+                    continue
+                start = part.find("<")
+                end = part.find(">", start + 1)
+                if start >= 0 and end > start:
+                    candidate = self._candidate_from_reference(part[start + 1 : end])
+                    if candidate:
+                        return candidate
+
+        if not isinstance(payload, dict):
+            return None
+
+        for key in ("hydra:next", "ldp:nextPage", "next", "nextPage"):
+            candidate = self._candidate_from_reference(payload.get(key))
+            if candidate:
+                return candidate
+
+        links = payload.get("links")
+        if isinstance(links, dict):
+            candidate = self._candidate_from_reference(links.get("next"))
+            if candidate:
+                return candidate
+
+        return None
+
+    def _merge_paged_payload(self, current: Any, extra: Any) -> Any:
+        if isinstance(current, list) and isinstance(extra, list):
+            merged = list(current)
+            for item in extra:
+                if item not in merged:
+                    merged.append(item)
+            return merged
+
+        if isinstance(current, dict) and isinstance(extra, dict):
+            merged = dict(current)
+            for key in ("ldp:contains", "items", "data"):
+                current_items = merged.get(key)
+                extra_items = extra.get(key)
+                if isinstance(current_items, list) and isinstance(extra_items, list):
+                    combined = list(current_items)
+                    for item in extra_items:
+                        if item not in combined:
+                            combined.append(item)
+                    merged[key] = combined
+            return merged
+
+        return current
+
+    async def _request_candidates_paged(
+        self,
+        method: str,
+        candidates: list[str],
+        *,
+        timeout: float = 20.0,
+    ) -> dict[str, Any] | list[Any] | None:
+        raw_result = await self._request_raw_candidates(method, candidates, timeout=timeout)
+        if not raw_result:
+            return None
+
+        response, _ = raw_result
+        if response.status_code in {401, 403}:
+            return {"restricted": True, "status_code": response.status_code}
+
+        payload: dict[str, Any] | list[Any] = self._decode_response(response)
+        next_candidate = self._pagination_candidate(payload, response)
+        seen_candidates: set[str] = set()
+
+        while next_candidate and next_candidate not in seen_candidates:
+            seen_candidates.add(next_candidate)
+            next_response, _ = await self.execute_contract_request("GET", next_candidate, timeout=timeout)
+            if next_response.status_code in {401, 403}:
+                break
+            next_payload = self._decode_response(next_response)
+            payload = self._merge_paged_payload(payload, next_payload)
+            next_candidate = self._pagination_candidate(next_payload, next_response)
+
+        return payload
+
     def _extract_current_username(self, payload: Any) -> str | None:
         candidates: list[dict[str, Any]] = []
         if isinstance(payload, dict):
@@ -1588,6 +1696,210 @@ class TeamworkAdapter:
             if _payload_entity(model_payload) is not None:
                 nodes.append(self._model_tree_node(model_id, model_payload, project_id, branch_id))
         return nodes
+
+    async def _element_seed_ids(
+        self,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None = None,
+    ) -> tuple[list[str], str, list[str]]:
+        warnings: list[str] = [
+            "RealSwagger.json does not declare GET /osmc/workspaces/{workspaceId}/resources/{resourceId}/branches/{branchId}/elements, so discovery starts from Swagger-declared model roots and then traverses GET /elements/{elementId} recursively."
+        ]
+        model_payload = await self._request_candidates_paged(
+            "GET",
+            [
+                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models",) if workspace_id else ()),
+                f"/osmc/resources/{project_id}/branches/{branch_id}/models",
+            ],
+            timeout=30.0,
+        )
+        if model_payload is None:
+            warnings.append("Model discovery returned no response.")
+            return [], "model-roots", warnings
+        if isinstance(model_payload, dict) and model_payload.get("restricted"):
+            warnings.append("Model discovery is restricted for the current Teamwork Cloud session.")
+            return [], "model-roots", warnings
+
+        model_ids = _container_member_ids(model_payload)
+        if not model_ids:
+            warnings.append("No model IDs were returned for the selected project and branch.")
+            return [], "model-roots", warnings
+
+        seed_ids: list[str] = []
+        for model_id in model_ids:
+            model_detail = await self._request_candidates_paged(
+                "GET",
+                [
+                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models/{model_id}",) if workspace_id else ()),
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
+                ],
+                timeout=30.0,
+            )
+            entity = _payload_entity(model_detail) if model_detail is not None else None
+            if not isinstance(entity, dict):
+                continue
+            for root in _as_list(entity.get("models:roots")):
+                if not isinstance(root, dict):
+                    continue
+                root_id = _reference_id(root.get("models:root") or root.get("@id"))
+                if root_id and root_id not in seed_ids:
+                    seed_ids.append(root_id)
+
+        if not seed_ids:
+            warnings.append("No model roots were available to seed element traversal.")
+        seed_source = "workspace-model-roots" if workspace_id else "resource-model-roots"
+        return seed_ids, seed_source, warnings
+
+    async def discover_elements(
+        self,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None = None,
+        *,
+        batch_size: int = 200,
+    ) -> ElementDiscoveryResult:
+        seed_ids, seed_source, warnings = await self._element_seed_ids(project_id, branch_id, workspace_id)
+        seed_ids = list(dict.fromkeys(seed_ids))
+        if not seed_ids:
+            return ElementDiscoveryResult(
+                project_id=project_id,
+                branch_id=branch_id,
+                workspace_id=workspace_id,
+                seed_source=seed_source,
+                seed_ids=[],
+                ids=[],
+                entries=[],
+                total_ids=0,
+                traversed_elements=0,
+                hydrated_elements=0,
+                batch_count=0,
+                batch_size=batch_size,
+                warnings=warnings,
+            )
+
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        for seed_id in seed_ids:
+            queue.put_nowait(seed_id)
+
+        discovered_ids = list(seed_ids)
+        enqueued_ids = set(seed_ids)
+        visited_ids: set[str] = set()
+        payloads_by_id: dict[str, Any] = {}
+        warnings_lock = asyncio.Lock()
+
+        async def append_warning(message: str) -> None:
+            async with warnings_lock:
+                if len(warnings) < 50:
+                    warnings.append(message)
+
+        async def fetch_element_payload(element_id: str) -> Any:
+            payload = await self._request_candidates_paged(
+                "GET",
+                [
+                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/elements/{element_id}",) if workspace_id else ()),
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/elements/{element_id}",
+                ],
+                timeout=30.0,
+            )
+            if isinstance(payload, dict) and payload.get("restricted"):
+                raise PermissionError(f"Access to element {element_id} is restricted for the current Teamwork Cloud session.")
+            if payload is None:
+                raise RuntimeError(f"No response was returned for element {element_id}.")
+            return payload
+
+        async def worker() -> None:
+            while True:
+                element_id = await queue.get()
+                if element_id is None:
+                    queue.task_done()
+                    return
+                try:
+                    if element_id in visited_ids:
+                        continue
+                    payload = await fetch_element_payload(element_id)
+                    payloads_by_id[element_id] = payload
+                    visited_ids.add(element_id)
+                    for child_id in _container_member_ids(payload):
+                        if child_id in enqueued_ids:
+                            continue
+                        enqueued_ids.add(child_id)
+                        discovered_ids.append(child_id)
+                        queue.put_nowait(child_id)
+                except PermissionError as exc:
+                    await append_warning(str(exc))
+                except RuntimeError as exc:
+                    await append_warning(str(exc))
+                finally:
+                    queue.task_done()
+
+        worker_count = min(8, max(1, len(seed_ids)))
+        workers = [asyncio.create_task(worker()) for _ in range(worker_count)]
+        await queue.join()
+        for _ in workers:
+            queue.put_nowait(None)
+        await asyncio.gather(*workers)
+
+        batch_count = 0
+        hydrated_ids: set[str] = set()
+        for chunk_start in range(0, len(discovered_ids), batch_size):
+            chunk = discovered_ids[chunk_start : chunk_start + batch_size]
+            batch_payload = await self._request_candidates(
+                "POST",
+                [
+                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/elements",) if workspace_id else ()),
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/elements",
+                ],
+                json_payload=chunk,
+                timeout=60.0,
+            )
+            if batch_payload is None:
+                await append_warning(f"Element batch request returned no response for chunk starting at {chunk_start + 1}.")
+                continue
+            if isinstance(batch_payload, dict) and batch_payload.get("restricted"):
+                await append_warning("Element batch retrieval is restricted for the current Teamwork Cloud session.")
+                continue
+            if not isinstance(batch_payload, dict):
+                await append_warning(f"Unexpected element batch payload type: {type(batch_payload).__name__}.")
+                continue
+
+            batch_count += 1
+            for element_id, raw_payload in batch_payload.items():
+                entity = _payload_entity(raw_payload)
+                if entity is None:
+                    continue
+                payloads_by_id[element_id] = raw_payload
+                hydrated_ids.add(element_id)
+
+        entries: list[ElementDiscoveryEntry] = []
+        for element_id in discovered_ids:
+            payload = payloads_by_id.get(element_id)
+            entity = _payload_entity(payload) if payload is not None else None
+            raw_types = _normalize_types(entity.get("@type")) if isinstance(entity, dict) else []
+            entries.append(
+                ElementDiscoveryEntry(
+                    id=element_id,
+                    name=self._extract_display_name(payload) if payload is not None else element_id,
+                    item_type=_humanize_type(raw_types[0]) if raw_types else "element",
+                    child_count=len(_container_member_ids(payload)) if payload is not None else 0,
+                )
+            )
+
+        return ElementDiscoveryResult(
+            project_id=project_id,
+            branch_id=branch_id,
+            workspace_id=workspace_id,
+            seed_source=seed_source,
+            seed_ids=seed_ids,
+            ids=discovered_ids,
+            entries=entries,
+            total_ids=len(discovered_ids),
+            traversed_elements=len(visited_ids),
+            hydrated_elements=len(hydrated_ids),
+            batch_count=batch_count,
+            batch_size=batch_size,
+            warnings=warnings,
+        )
 
     async def _remote_item_payload(self, project_id: str, branch_id: str, item_id: str) -> Any | None:
         payload = await self._request_candidates(

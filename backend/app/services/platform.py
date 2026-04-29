@@ -27,6 +27,7 @@ from app.models.domain import (
     CommentEntry,
     CompareResult,
     DashboardPayload,
+    ElementDiscoveryResult,
     ExportRequest,
     ItemDetails,
     JobRecord,
@@ -373,6 +374,30 @@ class PlatformService:
             )
         return tree
 
+    async def discover_elements(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None = None,
+        refresh: bool = False,
+    ) -> ElementDiscoveryResult:
+        cache_key = self._element_discovery_cache_key(project_id, branch_id)
+        if not refresh:
+            cached_result = self._cached_model(session, cache_key, ElementDiscoveryResult)
+            if cached_result is not None:
+                return cached_result
+
+        resolved_workspace_id = workspace_id or await self._workspace_id_for_project(session, project_id)
+        result = await self._adapter_for_session(session).discover_elements(project_id, branch_id, resolved_workspace_id)
+        self.repo.upsert_user_cache(
+            self._user_key(session.user.preferred_username),
+            session.server.id,
+            cache_key,
+            json.loads(result.model_dump_json()),
+        )
+        return result
+
     async def update_branch(
         self,
         session: SessionData,
@@ -440,6 +465,12 @@ class PlatformService:
                 self._user_key(session.user.preferred_username),
                 session.server.id,
                 tree_cache_key,
+            )
+        if project_id and branch_id:
+            self.repo.delete_user_cache(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                self._element_discovery_cache_key(project_id, branch_id),
             )
         self.sessions.add_recent_item(
             session,
@@ -1096,11 +1127,26 @@ class PlatformService:
         normalized_branch = branch_id or "_default"
         return f"project:{project_id}:branch:{normalized_branch}:tree"
 
+    def _element_discovery_cache_key(self, project_id: str, branch_id: str) -> str:
+        return f"project:{project_id}:branch:{branch_id}:elements"
+
     def _item_cache_key(self, project_id: str | None, branch_id: str | None, item_id: str) -> str | None:
         if not project_id:
             return None
         normalized_branch = branch_id or "_default"
         return f"project:{project_id}:branch:{normalized_branch}:item:{item_id}"
+
+    async def _workspace_id_for_project(self, session: SessionData, project_id: str) -> str | None:
+        cached_projects = self._cached_model_list(session, PROJECT_LIST_CACHE_KEY, ProjectSummary)
+        for project in cached_projects or []:
+            if project.id == project_id and project.workspace_id:
+                return project.workspace_id
+
+        projects = await self.list_projects(session, refresh=False)
+        for project in projects:
+            if project.id == project_id and project.workspace_id:
+                return project.workspace_id
+        return None
 
     def _shared_oslc_secret_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"
