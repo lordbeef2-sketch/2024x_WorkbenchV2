@@ -83,6 +83,27 @@ function branchLabel(branches: ProjectSummary["branches"], branchId: string): st
   return branches.find((branch) => branch.id === branchId)?.name ?? branchId;
 }
 
+function normalizeLookupKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function humanizeFieldLabel(value: string): string {
+  return value
+    .replace(/^kerml:/i, "")
+    .replace(/^dcterms:/i, "")
+    .replace(/^models:/i, "")
+    .replace(/^esi\./i, "ESI ")
+    .replace(/[_:.-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function projectSummaryText(project: ProjectSummary): string {
+  return project.description || "Project available for model exploration.";
+}
+
 function defaultParameterValue(parameter: SwaggerParameterSpec): string {
   if (parameter.default === null || parameter.default === undefined) {
     return "";
@@ -510,6 +531,26 @@ export default function WorkspacePage() {
   }, [itemQuery.data]);
 
   const selectedWorkspaceItem = itemQuery.data ?? itemDraft ?? null;
+  const itemNameById = useMemo(() => {
+    const lookup: Record<string, string> = {};
+    flatNodes.forEach((node) => {
+      if (node.label) {
+        lookup[normalizeLookupKey(node.id)] = node.label;
+      }
+    });
+    elementDiscovery?.entries.forEach((entry) => {
+      if (entry.name) {
+        lookup[normalizeLookupKey(entry.id)] = entry.name;
+      }
+    });
+    if (selectedWorkspaceItem?.name) {
+      lookup[normalizeLookupKey(selectedWorkspaceItem.id)] = selectedWorkspaceItem.name;
+    }
+    return lookup;
+  }, [elementDiscovery?.entries, flatNodes, selectedWorkspaceItem]);
+
+  const compareLeftName = compareLeft.trim() ? itemNameById[normalizeLookupKey(compareLeft)] ?? "" : "";
+  const compareRightName = compareRight.trim() ? itemNameById[normalizeLookupKey(compareRight)] ?? "" : "";
 
   const logoutMutation = useMutation({
     mutationFn: () => api.logout(csrfToken),
@@ -917,12 +958,15 @@ export default function WorkspacePage() {
                   <Stack spacing={0.5}>
                     <Typography variant="h6">{project.name}</Typography>
                     <Typography variant="body2" color="text.secondary">
-                      {project.description || project.id}
+                      {projectSummaryText(project)}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Project ID: {project.id}
                     </Typography>
                   </Stack>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip label={`Resource ${project.resource_id ?? project.id}`} variant="outlined" />
-                    {project.workspace_id ? <Chip label={`Workspace ${project.workspace_id}`} variant="outlined" /> : null}
+                    <Chip label="Repository Resource" variant="outlined" />
+                    {project.workspace_id ? <Chip label="Workspace-scoped" variant="outlined" /> : null}
                     {selectedProjectId === project.id ? <Chip label="Selected project" color="primary" /> : null}
                   </Stack>
                   <Button variant="contained" onClick={() => openProjectInModelBrowser(project.id)}>
@@ -962,9 +1006,12 @@ export default function WorkspacePage() {
             <Typography variant="body2" color="text.secondary">
               {selectedProject.description || "Use the branch selector in the left panel to change the current model context."}
             </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Project ID: {selectedProject.id}
+            </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-              <Chip label={`Resource ${selectedProject.resource_id ?? selectedProject.id}`} variant="outlined" />
-              {selectedProject.workspace_id ? <Chip label={`Workspace ${selectedProject.workspace_id}`} variant="outlined" /> : null}
+              <Chip label="Repository Resource" variant="outlined" />
+              {selectedProject.workspace_id ? <Chip label="Workspace-scoped" variant="outlined" /> : null}
               <Chip
                 label={
                   branchesQuery.isLoading
@@ -992,14 +1039,16 @@ export default function WorkspacePage() {
                   <Box>
                     <Typography variant="h6">{node.label}</Typography>
                     <Typography variant="body2" color="text.secondary">
-                      {node.path}
+                      {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : node.node_type}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {humanizeFieldLabel(node.node_type)} ID: {node.id}
                     </Typography>
                   </Box>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip label={node.node_type} size="small" />
-                    {Object.entries(node.metadata).slice(0, 3).map(([key, value]) => (
-                      <Chip key={key} label={`${key}: ${valueText(value)}`} size="small" variant="outlined" />
-                    ))}
+                    <Chip label={humanizeFieldLabel(node.node_type)} size="small" />
+                    {selectedProject ? <Chip label={`Project: ${selectedProject.name}`} size="small" variant="outlined" /> : null}
+                    {selectedBranchId ? <Chip label={`Branch: ${branchLabel(selectedProjectBranches, selectedBranchId)}`} size="small" variant="outlined" /> : null}
                   </Stack>
                   <Stack direction="row" spacing={1}>
                     <Button size="small" variant="contained" onClick={() => openNode(node)}>
@@ -1055,7 +1104,7 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Element Testing</Typography>
             <Typography variant="body2" color="text.secondary">
-              Discover reachable element IDs for {selectedProject?.name ?? selectedProjectId} / {branchLabel(selectedProjectBranches, selectedBranchId)} by traversing Swagger-backed model roots and recursively following <code>ldp:contains</code>.
+              Discover reachable elements for {selectedProject?.name ?? selectedProjectId} / {branchLabel(selectedProjectBranches, selectedBranchId)} by traversing Swagger-backed model roots and recursively following <code>ldp:contains</code>.
             </Typography>
           </Box>
           <Button
@@ -1092,7 +1141,7 @@ export default function WorkspacePage() {
             </Paper>
             <Paper sx={{ p: 3, borderRadius: 2 }}>
               <Stack spacing={2}>
-                <Typography variant="h6">Discovered Element IDs</Typography>
+                <Typography variant="h6">Discovered Elements</Typography>
                 {elementDiscovery.entries.length ? (
                   <List dense disablePadding sx={{ maxHeight: 640, overflow: "auto" }}>
                     {elementDiscovery.entries.map((entry) => (
@@ -1105,7 +1154,7 @@ export default function WorkspacePage() {
                                 {entry.id}
                               </Typography>
                               <Typography component="span" variant="body2" sx={{ display: "block" }}>
-                                {entry.item_type} · {entry.child_count} contained elements
+                                {humanizeFieldLabel(entry.item_type)} · {entry.child_count} contained elements
                               </Typography>
                             </Box>
                           }
@@ -1149,7 +1198,10 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Model Viewer / Editor</Typography>
             <Typography variant="body2" color="text.secondary">
-              {selectedItem?.path ?? selectedItemId}
+              {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : selectedItemId}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {itemDraft.item_type} ID: {selectedItemId}
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
@@ -1223,17 +1275,17 @@ export default function WorkspacePage() {
               <Stack spacing={2}>
                 <Typography variant="h6">Metadata</Typography>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                  <Chip label={itemDraft.item_type} />
+                  <Chip label={humanizeFieldLabel(itemDraft.item_type)} />
                   <Chip label={`Version ${itemDraft.version}`} variant="outlined" />
-                  <Chip label={`Project ${itemDraft.project_id}`} variant="outlined" />
-                  <Chip label={`Branch ${itemDraft.branch_id}`} variant="outlined" />
+                  {selectedProject ? <Chip label={`Project ${selectedProject.name}`} variant="outlined" /> : null}
+                  <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
                 </Stack>
                 <Divider />
                 {Object.entries(itemDraft.metadata).length ? (
                   <List dense disablePadding>
                     {Object.entries(itemDraft.metadata).map(([key, value]) => (
                       <ListItemButton key={key} dense>
-                        <ListItemText primary={key} secondary={valueText(value)} />
+                        <ListItemText primary={humanizeFieldLabel(key)} secondary={valueText(value)} />
                       </ListItemButton>
                     ))}
                   </List>
@@ -1265,15 +1317,27 @@ export default function WorkspacePage() {
     <Stack spacing={2}>
       <Typography variant="h5">Compare</Typography>
       <Typography variant="body2" color="text.secondary">
-        Compare element/model IDs in the current project context. Numeric left and right IDs on the same project use the RealSwagger revision diff endpoint.
+        Compare model items or revisions in the current project context. Numeric left and right revisions on the same project use the RealSwagger revision diff endpoint.
       </Typography>
       <Paper sx={{ p: 3, borderRadius: 2 }}>
         <Grid container spacing={2}>
           <Grid item xs={12} md={5}>
-            <TextField label="Left ID or revision" value={compareLeft} onChange={(event) => setCompareLeft(event.target.value)} fullWidth />
+            <TextField
+              label="Left item or revision"
+              value={compareLeft}
+              onChange={(event) => setCompareLeft(event.target.value)}
+              helperText={compareLeftName && compareLeftName !== compareLeft ? compareLeftName : "Use a discovered item or a revision number."}
+              fullWidth
+            />
           </Grid>
           <Grid item xs={12} md={5}>
-            <TextField label="Right ID or revision" value={compareRight} onChange={(event) => setCompareRight(event.target.value)} fullWidth />
+            <TextField
+              label="Right item or revision"
+              value={compareRight}
+              onChange={(event) => setCompareRight(event.target.value)}
+              helperText={compareRightName && compareRightName !== compareRight ? compareRightName : "Use a discovered item or a revision number."}
+              fullWidth
+            />
           </Grid>
           <Grid item xs={12} md={2}>
             <Button
@@ -1289,6 +1353,34 @@ export default function WorkspacePage() {
           </Grid>
         </Grid>
       </Paper>
+      {(compareLeftName || compareRightName) && (
+        <Paper sx={{ p: 3, borderRadius: 2 }}>
+          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+            {compareLeft.trim() ? (
+              <Box sx={{ flex: 1 }}>
+                <Typography variant="overline" color="text.secondary">
+                  Left Selection
+                </Typography>
+                <Typography variant="subtitle2">{compareLeftName || compareLeft}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {compareLeft}
+                </Typography>
+              </Box>
+            ) : null}
+            {compareRight.trim() ? (
+              <Box sx={{ flex: 1 }}>
+                <Typography variant="overline" color="text.secondary">
+                  Right Selection
+                </Typography>
+                <Typography variant="subtitle2">{compareRightName || compareRight}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {compareRight}
+                </Typography>
+              </Box>
+            ) : null}
+          </Stack>
+        </Paper>
+      )}
       {compareMutation.isPending ? <CircularProgress size={28} /> : null}
       {compareMutation.data ? (
         <Paper sx={{ p: 3, borderRadius: 2 }}>
@@ -1924,7 +2016,10 @@ export default function WorkspacePage() {
                   </Typography>
                   <Typography variant="subtitle2">{selectedWorkspaceItem.name || selectedWorkspaceItem.id}</Typography>
                   <Typography variant="caption" color="text.secondary">
-                    {selectedWorkspaceItem.item_type} · {selectedWorkspaceItem.id}
+                    {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : humanizeFieldLabel(selectedWorkspaceItem.item_type)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {humanizeFieldLabel(selectedWorkspaceItem.item_type)} ID · {selectedWorkspaceItem.id}
                   </Typography>
                 </Stack>
               </Paper>

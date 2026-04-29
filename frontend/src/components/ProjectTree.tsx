@@ -48,6 +48,15 @@ function matchesFilter(node: TreeNode, filter: string): boolean {
   return node.children.some((child) => matchesFilter(child, filter));
 }
 
+function humanizeNodeType(nodeType: string): string {
+  return nodeType
+    .replace(/[_:.-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 export default function ProjectTree({ nodes, selectedId, filter, onSelect }: ProjectTreeProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -73,7 +82,7 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect }: Pro
           sx={{ pl: 2 + depth * 2, borderRadius: 2, mb: 0.5 }}
         >
           <ListItemIcon sx={{ minWidth: 30 }}>{iconForNode(node.node_type)}</ListItemIcon>
-          <ListItemText primary={node.label} secondary={node.node_type} />
+          <ListItemText primary={node.label} secondary={humanizeNodeType(node.node_type)} />
           {hasChildren ? (isOpen ? <ExpandMoreRoundedIcon fontSize="small" /> : <ChevronRightRoundedIcon fontSize="small" />) : null}
         </ListItemButton>
         {hasChildren ? <Collapse in={isOpen}>{node.children.map((child) => renderNode(child, depth + 1))}</Collapse> : null}
