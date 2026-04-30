@@ -1,0 +1,42 @@
+{
+  "base_url": "https://your-twc-host:8111",
+  "verify_tls": false,
+  "request_timeout_seconds": 30,
+  "auth": {
+    "client_id": "twcworkbench",
+    "client_secret": "",
+    "scope": "",
+    "authorize_url": "",
+    "token_url": "",
+    "auth_scheme": "https",
+    "auth_port": 8443,
+    "authorize_path": "/authentication/authorize",
+    "token_path": "/authentication/api/token",
+    "callback_host": "127.0.0.1",
+    "callback_port": 8765,
+    "callback_path": "/callback",
+    "open_browser": true,
+    "auth_timeout_seconds": 300,
+    "token_cache_file": ".twc_sso_token_cache.json"
+  },
+  "context": {
+    "workspace_id": "",
+    "resource_id": "",
+    "branch_id": "",
+    "model_id": "",
+    "element_id": "",
+    "element_ids": [],
+    "source_revision": "",
+    "target_revision": "",
+    "artifact_id": "",
+    "update_payload": {
+      "name": "Updated element name from examples",
+      "description": "Updated by examples/12_element_update.py"
+    },
+    "contract_example": {
+      "method": "GET",
+      "path": "/osmc/version",
+      "query_params": {}
+    }
+  }
+}
