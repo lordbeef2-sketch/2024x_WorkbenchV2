@@ -296,6 +296,14 @@ class TreeNode(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ItemReference(BaseModel):
+    id: str
+    name: str = ""
+    item_type: str = "item"
+    relationship_type: str = ""
+    path: str = ""
+
+
 class ItemDetails(BaseModel):
     id: str
     name: str
@@ -305,6 +313,12 @@ class ItemDetails(BaseModel):
     branch_id: str
     description: str = ""
     documentation_markdown: str = ""
+    raw_types: list[str] = Field(default_factory=list)
+    stereotypes: list[str] = Field(default_factory=list)
+    owner: ItemReference | None = None
+    type_references: list[ItemReference] = Field(default_factory=list)
+    contained_elements: list[ItemReference] = Field(default_factory=list)
+    related_items: list[ItemReference] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     relationships: list[dict[str, Any]] = Field(default_factory=list)
     version: str = "1.0"

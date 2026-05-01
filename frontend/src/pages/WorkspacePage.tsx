@@ -37,6 +37,7 @@ import ProjectTree from "../components/ProjectTree";
 import SettingsDialog from "../components/SettingsDialog";
 import {
   ElementDiscoveryResult,
+  ItemReference,
   ItemDetails,
   OSLCExecuteResponse,
   ProjectSummary,
@@ -80,11 +81,26 @@ function branchLabel(branches: ProjectSummary["branches"], branchId: string): st
   if (!branchId) {
     return "Default branch context";
   }
-  return branches.find((branch) => branch.id === branchId)?.name ?? branchId;
+  return branches.find((branch) => branch.id === branchId)?.name ?? "Selected branch";
 }
 
 function normalizeLookupKey(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function isRevisionValue(value: string): boolean {
+  return /^\d+$/.test(value.trim());
+}
+
+function isOpaqueIdentifier(value: string): boolean {
+  const cleaned = value.trim();
+  if (!cleaned) {
+    return false;
+  }
+  return (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleaned) ||
+    /^[0-9a-f]{24,32}$/i.test(cleaned)
+  );
 }
 
 function humanizeFieldLabel(value: string): string {
@@ -102,6 +118,116 @@ function humanizeFieldLabel(value: string): string {
 
 function projectSummaryText(project: ProjectSummary): string {
   return project.description || "Project available for model exploration.";
+}
+
+function compareDisplayValues(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
+}
+
+function resolvedNameForId(value: string, lookup: Record<string, string>): string | null {
+  const normalized = normalizeLookupKey(value);
+  const resolved = lookup[normalized]?.trim();
+  if (!resolved) {
+    return null;
+  }
+  return normalizeLookupKey(resolved) === normalized ? null : resolved;
+}
+
+function friendlyPath(path: string, lookup: Record<string, string>): string {
+  const cleaned = path.trim();
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned
+    .split("/")
+    .map((segment) => {
+      const trimmed = segment.trim();
+      return resolvedNameForId(trimmed, lookup) ?? (isOpaqueIdentifier(trimmed) ? "Unnamed item" : trimmed);
+    })
+    .join(" / ");
+}
+
+function humanReadableReference(value: string, lookup: Record<string, string>): string {
+  const cleaned = value.trim();
+  if (!cleaned) {
+    return "";
+  }
+  const resolved = resolvedNameForId(cleaned, lookup);
+  if (resolved) {
+    return resolved;
+  }
+  if (isRevisionValue(cleaned)) {
+    return `Revision ${cleaned}`;
+  }
+  const resolvedPath = cleaned.includes("/") ? friendlyPath(cleaned, lookup) : "";
+  if (resolvedPath && resolvedPath !== cleaned) {
+    return resolvedPath;
+  }
+  return isOpaqueIdentifier(cleaned) ? "Referenced item" : cleaned;
+}
+
+function displayEntityName(name: string, id: string, itemType: string, lookup: Record<string, string>): string {
+  const cleanedName = name.trim();
+  if (cleanedName && normalizeLookupKey(cleanedName) !== normalizeLookupKey(id)) {
+    return cleanedName;
+  }
+  return resolvedNameForId(id, lookup) ?? `Unnamed ${humanizeFieldLabel(itemType || "item")}`;
+}
+
+function itemReferenceDisplayName(reference: ItemReference, lookup: Record<string, string>): string {
+  return displayEntityName(reference.name, reference.id, reference.item_type, lookup);
+}
+
+function itemReferenceSecondaryText(reference: ItemReference, lookup: Record<string, string>): string {
+  const path = friendlyPath(reference.path, lookup);
+  if (path) {
+    return path;
+  }
+  if (reference.relationship_type) {
+    return humanizeFieldLabel(reference.relationship_type);
+  }
+  return humanizeFieldLabel(reference.item_type);
+}
+
+function humanizeFieldPath(path: string): string {
+  return path
+    .split(".")
+    .map((segment) =>
+      segment
+        .replace(/\[(\d+)\]/g, " $1")
+        .trim(),
+    )
+    .map((segment) => humanizeFieldLabel(segment || "Value"))
+    .join(" / ");
+}
+
+function resolveDisplayValue(value: unknown, lookup: Record<string, string>): unknown {
+  if (typeof value === "string") {
+    return humanReadableReference(value, lookup);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveDisplayValue(item, lookup));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => [key, resolveDisplayValue(nestedValue, lookup)]),
+    );
+  }
+  return value;
+}
+
+function humanReadableValue(value: unknown, lookup: Record<string, string>): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return humanReadableReference(value, lookup);
+  }
+  const resolved = resolveDisplayValue(value, lookup);
+  if (typeof resolved === "string") {
+    return resolved;
+  }
+  return JSON.stringify(resolved, null, 2);
 }
 
 function defaultParameterValue(parameter: SwaggerParameterSpec): string {
@@ -270,6 +396,8 @@ export default function WorkspacePage() {
   const [itemDraft, setItemDraft] = useState<ItemDetails | null>(null);
   const [compareLeft, setCompareLeft] = useState("");
   const [compareRight, setCompareRight] = useState("");
+  const [compareLeftDisplay, setCompareLeftDisplay] = useState("");
+  const [compareRightDisplay, setCompareRightDisplay] = useState("");
   const [selectedApiTag, setSelectedApiTag] = useState("");
   const [selectedOperationKey, setSelectedOperationKey] = useState("");
   const [apiSearch, setApiSearch] = useState("");
@@ -321,7 +449,17 @@ export default function WorkspacePage() {
     refetchOnWindowFocus: false,
   });
 
-  const projects = projectsQuery.data ?? [];
+  const projects = useMemo(
+    () =>
+      [...(projectsQuery.data ?? [])].sort((left, right) => {
+        const nameComparison = compareDisplayValues(left.name || left.id, right.name || right.id);
+        if (nameComparison !== 0) {
+          return nameComparison;
+        }
+        return compareDisplayValues(left.id, right.id);
+      }),
+    [projectsQuery.data],
+  );
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
@@ -334,7 +472,17 @@ export default function WorkspacePage() {
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
   });
-  const selectedProjectBranches = branchesQuery.data ?? [];
+  const selectedProjectBranches = useMemo(
+    () =>
+      [...(branchesQuery.data ?? [])].sort((left, right) => {
+        const nameComparison = compareDisplayValues(left.name || left.id, right.name || right.id);
+        if (nameComparison !== 0) {
+          return nameComparison;
+        }
+        return compareDisplayValues(left.id, right.id);
+      }),
+    [branchesQuery.data],
+  );
 
   useEffect(() => {
     if (!selectedProjectId && projects.length) {
@@ -531,8 +679,21 @@ export default function WorkspacePage() {
   }, [itemQuery.data]);
 
   const selectedWorkspaceItem = itemQuery.data ?? itemDraft ?? null;
-  const itemNameById = useMemo(() => {
+  const referenceNameById = useMemo(() => {
     const lookup: Record<string, string> = {};
+    projects.forEach((project) => {
+      if (project.name) {
+        lookup[normalizeLookupKey(project.id)] = project.name;
+      }
+      if (project.resource_id) {
+        lookup[normalizeLookupKey(project.resource_id)] = project.name;
+      }
+    });
+    selectedProjectBranches.forEach((branch) => {
+      if (branch.name) {
+        lookup[normalizeLookupKey(branch.id)] = branch.name;
+      }
+    });
     flatNodes.forEach((node) => {
       if (node.label) {
         lookup[normalizeLookupKey(node.id)] = node.label;
@@ -546,11 +707,45 @@ export default function WorkspacePage() {
     if (selectedWorkspaceItem?.name) {
       lookup[normalizeLookupKey(selectedWorkspaceItem.id)] = selectedWorkspaceItem.name;
     }
+    if (selectedWorkspaceItem?.owner?.name) {
+      lookup[normalizeLookupKey(selectedWorkspaceItem.owner.id)] = selectedWorkspaceItem.owner.name;
+    }
+    selectedWorkspaceItem?.type_references.forEach((reference) => {
+      if (reference.name) {
+        lookup[normalizeLookupKey(reference.id)] = reference.name;
+      }
+    });
+    selectedWorkspaceItem?.contained_elements.forEach((reference) => {
+      if (reference.name) {
+        lookup[normalizeLookupKey(reference.id)] = reference.name;
+      }
+    });
+    selectedWorkspaceItem?.related_items.forEach((reference) => {
+      if (reference.name) {
+        lookup[normalizeLookupKey(reference.id)] = reference.name;
+      }
+    });
     return lookup;
-  }, [elementDiscovery?.entries, flatNodes, selectedWorkspaceItem]);
+  }, [elementDiscovery?.entries, flatNodes, projects, selectedProjectBranches, selectedWorkspaceItem]);
 
-  const compareLeftName = compareLeft.trim() ? itemNameById[normalizeLookupKey(compareLeft)] ?? "" : "";
-  const compareRightName = compareRight.trim() ? itemNameById[normalizeLookupKey(compareRight)] ?? "" : "";
+  const selectedWorkspaceItemName = selectedWorkspaceItem
+    ? displayEntityName(selectedWorkspaceItem.name, selectedWorkspaceItem.id, selectedWorkspaceItem.item_type, referenceNameById)
+    : "";
+  const selectedWorkspaceItemPath = selectedWorkspaceItem ? friendlyPath(selectedWorkspaceItem.path, referenceNameById) : "";
+  const compareLeftName = compareLeft.trim() ? humanReadableReference(compareLeft, referenceNameById) : "";
+  const compareRightName = compareRight.trim() ? humanReadableReference(compareRight, referenceNameById) : "";
+  const compareLeftFieldValue = compareLeftDisplay || compareLeft;
+  const compareRightFieldValue = compareRightDisplay || compareRight;
+  const compareLeftLabel = compareLeft.trim()
+    ? compareLeftName !== compareLeft || isRevisionValue(compareLeft)
+      ? compareLeftName
+      : "Selected item reference"
+    : "";
+  const compareRightLabel = compareRight.trim()
+    ? compareRightName !== compareRight || isRevisionValue(compareRight)
+      ? compareRightName
+      : "Selected item reference"
+    : "";
 
   const logoutMutation = useMutation({
     mutationFn: () => api.logout(csrfToken),
@@ -813,10 +1008,13 @@ export default function WorkspacePage() {
   };
 
   const pickCompareSide = (side: "left" | "right", itemId: string) => {
+    const readableLabel = humanReadableReference(itemId, referenceNameById);
     if (side === "left") {
       setCompareLeft(itemId);
+      setCompareLeftDisplay(readableLabel);
     } else {
       setCompareRight(itemId);
+      setCompareRightDisplay(readableLabel);
     }
     setTab("compare");
   };
@@ -960,13 +1158,11 @@ export default function WorkspacePage() {
                     <Typography variant="body2" color="text.secondary">
                       {projectSummaryText(project)}
                     </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      Project ID: {project.id}
-                    </Typography>
                   </Stack>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                     <Chip label="Repository Resource" variant="outlined" />
                     {project.workspace_id ? <Chip label="Workspace-scoped" variant="outlined" /> : null}
+                    <Chip label="Select to load branches and models" variant="outlined" />
                     {selectedProjectId === project.id ? <Chip label="Selected project" color="primary" /> : null}
                   </Stack>
                   <Button variant="contained" onClick={() => openProjectInModelBrowser(project.id)}>
@@ -1006,9 +1202,6 @@ export default function WorkspacePage() {
             <Typography variant="body2" color="text.secondary">
               {selectedProject.description || "Use the branch selector in the left panel to change the current model context."}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-              Project ID: {selectedProject.id}
-            </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
               <Chip label="Repository Resource" variant="outlined" />
               {selectedProject.workspace_id ? <Chip label="Workspace-scoped" variant="outlined" /> : null}
@@ -1041,9 +1234,11 @@ export default function WorkspacePage() {
                     <Typography variant="body2" color="text.secondary">
                       {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : node.node_type}
                     </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {humanizeFieldLabel(node.node_type)} ID: {node.id}
-                    </Typography>
+                    {node.path ? (
+                      <Typography variant="caption" color="text.secondary">
+                        {friendlyPath(node.path, referenceNameById)}
+                      </Typography>
+                    ) : null}
                   </Box>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                     <Chip label={humanizeFieldLabel(node.node_type)} size="small" />
@@ -1104,7 +1299,7 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Element Testing</Typography>
             <Typography variant="body2" color="text.secondary">
-              Discover reachable elements for {selectedProject?.name ?? selectedProjectId} / {branchLabel(selectedProjectBranches, selectedBranchId)} by traversing Swagger-backed model roots and recursively following <code>ldp:contains</code>.
+              Discover reachable elements for {selectedProject?.name ?? "the selected project"} / {branchLabel(selectedProjectBranches, selectedBranchId)} by traversing Swagger-backed model roots and recursively following <code>ldp:contains</code>.
             </Typography>
           </Box>
           <Button
@@ -1123,7 +1318,7 @@ export default function WorkspacePage() {
             <Paper sx={{ p: 3, borderRadius: 2 }}>
               <Stack spacing={2}>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                  <Chip label={`${elementDiscovery.total_ids} element IDs`} color="primary" />
+                  <Chip label={`${elementDiscovery.total_ids} elements`} color="primary" />
                   <Chip label={`${elementDiscovery.traversed_elements} traversed`} variant="outlined" />
                   <Chip label={`${elementDiscovery.hydrated_elements} batch hydrated`} variant="outlined" />
                   <Chip label={`${elementDiscovery.batch_count} batches`} variant="outlined" />
@@ -1147,12 +1342,9 @@ export default function WorkspacePage() {
                     {elementDiscovery.entries.map((entry) => (
                       <ListItemButton key={entry.id} alignItems="flex-start" onClick={() => openElementId(entry.id)}>
                         <ListItemText
-                          primary={entry.name || entry.id}
+                          primary={displayEntityName(entry.name, entry.id, entry.item_type, referenceNameById)}
                           secondary={
                             <Box component="span" sx={{ display: "block", mt: 0.75 }}>
-                              <Typography component="span" variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                                {entry.id}
-                              </Typography>
                               <Typography component="span" variant="body2" sx={{ display: "block" }}>
                                 {humanizeFieldLabel(entry.item_type)} · {entry.child_count} contained elements
                               </Typography>
@@ -1163,7 +1355,7 @@ export default function WorkspacePage() {
                     ))}
                   </List>
                 ) : (
-                  <Typography color="text.secondary">No element IDs were discovered for this branch.</Typography>
+                  <Typography color="text.secondary">No elements were discovered for this branch.</Typography>
                 )}
               </Stack>
             </Paper>
@@ -1193,20 +1385,22 @@ export default function WorkspacePage() {
     }
 
     return (
-      <Stack spacing={2}>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
-          <Box>
-            <Typography variant="h5">Model Viewer / Editor</Typography>
-            <Typography variant="body2" color="text.secondary">
-              {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : selectedItemId}
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {itemDraft.item_type} ID: {selectedItemId}
-            </Typography>
-          </Box>
-          <Stack direction="row" spacing={1}>
-            <Button startIcon={<RefreshRoundedIcon />} onClick={() => refreshItemMutation.mutate()} disabled={refreshItemMutation.isPending}>
-              Refresh
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+            <Box>
+              <Typography variant="h5">Model Viewer / Editor</Typography>
+              <Typography variant="body2" color="text.secondary">
+                {displayEntityName(itemDraft.name, selectedItemId, itemDraft.item_type, referenceNameById)}
+              </Typography>
+              {itemDraft.path ? (
+                <Typography variant="caption" color="text.secondary">
+                  {friendlyPath(itemDraft.path, referenceNameById)}
+                </Typography>
+              ) : null}
+            </Box>
+            <Stack direction="row" spacing={1}>
+              <Button startIcon={<RefreshRoundedIcon />} onClick={() => refreshItemMutation.mutate()} disabled={refreshItemMutation.isPending}>
+                Refresh
             </Button>
             <Button startIcon={<CompareArrowsRoundedIcon />} onClick={() => pickCompareSide("left", selectedItemId)}>
               Compare Left
@@ -1234,6 +1428,12 @@ export default function WorkspacePage() {
             <Paper sx={{ p: 3, borderRadius: 2 }}>
               <Stack spacing={2}>
                 <TextField
+                  label="Path"
+                  value={friendlyPath(itemDraft.path, referenceNameById)}
+                  disabled
+                  fullWidth
+                />
+                <TextField
                   label="Name"
                   value={itemDraft.name}
                   disabled={!editable}
@@ -1260,7 +1460,7 @@ export default function WorkspacePage() {
                 />
                 <TextField
                   label="Source Payload"
-                  value={JSON.stringify(itemDraft.source_payload ?? {}, null, 2)}
+                  value={humanReadableValue(itemDraft.source_payload ?? {}, referenceNameById)}
                   disabled
                   helperText="Read-only viewer for the cached Teamwork Cloud payload behind this model item."
                   fullWidth
@@ -1273,19 +1473,61 @@ export default function WorkspacePage() {
           <Grid item xs={12} md={5}>
             <Paper sx={{ p: 3, borderRadius: 2 }}>
               <Stack spacing={2}>
-                <Typography variant="h6">Metadata</Typography>
+                <Typography variant="h6">Element Overview</Typography>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                   <Chip label={humanizeFieldLabel(itemDraft.item_type)} />
                   <Chip label={`Version ${itemDraft.version}`} variant="outlined" />
                   {selectedProject ? <Chip label={`Project ${selectedProject.name}`} variant="outlined" /> : null}
                   <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
+                  {itemDraft.raw_types.map((rawType) => (
+                    <Chip key={rawType} label={humanizeFieldLabel(rawType)} size="small" variant="outlined" />
+                  ))}
                 </Stack>
+                {itemDraft.stereotypes.length ? (
+                  <Stack spacing={1}>
+                    <Typography variant="subtitle2">Applied Stereotypes</Typography>
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                      {itemDraft.stereotypes.map((stereotype) => (
+                        <Chip key={stereotype} label={stereotype} size="small" />
+                      ))}
+                    </Stack>
+                  </Stack>
+                ) : null}
+                {itemDraft.owner ? (
+                  <Stack spacing={1}>
+                    <Typography variant="subtitle2">Owner</Typography>
+                    <List dense disablePadding>
+                      <ListItemButton dense onClick={() => openElementId(itemDraft.owner!.id)}>
+                        <ListItemText
+                          primary={itemReferenceDisplayName(itemDraft.owner, referenceNameById)}
+                          secondary={itemReferenceSecondaryText(itemDraft.owner, referenceNameById)}
+                        />
+                      </ListItemButton>
+                    </List>
+                  </Stack>
+                ) : null}
+                {itemDraft.type_references.length ? (
+                  <Stack spacing={1}>
+                    <Typography variant="subtitle2">Type and Classifier</Typography>
+                    <List dense disablePadding>
+                      {itemDraft.type_references.map((reference) => (
+                        <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
+                          <ListItemText
+                            primary={itemReferenceDisplayName(reference, referenceNameById)}
+                            secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
+                          />
+                        </ListItemButton>
+                      ))}
+                    </List>
+                  </Stack>
+                ) : null}
                 <Divider />
+                <Typography variant="h6">Properties</Typography>
                 {Object.entries(itemDraft.metadata).length ? (
                   <List dense disablePadding>
                     {Object.entries(itemDraft.metadata).map(([key, value]) => (
                       <ListItemButton key={key} dense>
-                        <ListItemText primary={humanizeFieldLabel(key)} secondary={valueText(value)} />
+                        <ListItemText primary={humanizeFieldLabel(key)} secondary={humanReadableValue(value, referenceNameById)} />
                       </ListItemButton>
                     ))}
                   </List>
@@ -1293,17 +1535,56 @@ export default function WorkspacePage() {
                   <Typography color="text.secondary">No metadata returned for this item.</Typography>
                 )}
                 <Divider />
-                <Typography variant="h6">Relationships</Typography>
-                {itemDraft.relationships.length ? (
-                  <List dense disablePadding>
-                    {itemDraft.relationships.map((relationship, index) => (
-                      <ListItemButton key={`${relationship.type ?? "relationship"}-${index}`} dense>
-                        <ListItemText primary={valueText(relationship.type ?? `Relationship ${index + 1}`)} secondary={valueText(relationship)} />
+                <Divider />
+                <Typography variant="h6">Contained Elements</Typography>
+                {itemDraft.contained_elements.length ? (
+                  <List dense disablePadding sx={{ maxHeight: 280, overflow: "auto" }}>
+                    {itemDraft.contained_elements.map((reference) => (
+                      <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
+                        <ListItemText
+                          primary={itemReferenceDisplayName(reference, referenceNameById)}
+                          secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
+                        />
                       </ListItemButton>
                     ))}
                   </List>
                 ) : (
-                  <Typography color="text.secondary">No relationships returned for this item.</Typography>
+                  <Typography color="text.secondary">No contained elements were returned for this item.</Typography>
+                )}
+                <Divider />
+                <Typography variant="h6">Related Elements</Typography>
+                {itemDraft.related_items.length ? (
+                  <List dense disablePadding sx={{ maxHeight: 280, overflow: "auto" }}>
+                    {itemDraft.related_items.map((reference) => (
+                      <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
+                        <ListItemText
+                          primary={itemReferenceDisplayName(reference, referenceNameById)}
+                          secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
+                        />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                ) : itemDraft.relationships.length ? (
+                  <List dense disablePadding>
+                    {itemDraft.relationships.map((relationship, index) => (
+                      <ListItemButton key={`${relationship.type ?? "relationship"}-${index}`} dense>
+                        <ListItemText
+                          primary={humanizeFieldLabel(String(relationship.type ?? `Relationship ${index + 1}`))}
+                          secondary={
+                            typeof relationship.target_name === "string" && relationship.target_name
+                              ? relationship.target_name
+                              : typeof relationship.target === "string"
+                                ? (humanReadableReference(relationship.target, referenceNameById) !== relationship.target
+                                    ? humanReadableReference(relationship.target, referenceNameById)
+                                    : "Related item")
+                              : humanReadableValue(relationship.target ?? relationship, referenceNameById)
+                          }
+                        />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                ) : (
+                  <Typography color="text.secondary">No related elements were returned for this item.</Typography>
                 )}
               </Stack>
             </Paper>
@@ -1316,26 +1597,34 @@ export default function WorkspacePage() {
   const renderCompare = () => (
     <Stack spacing={2}>
       <Typography variant="h5">Compare</Typography>
-      <Typography variant="body2" color="text.secondary">
-        Compare model items or revisions in the current project context. Numeric left and right revisions on the same project use the RealSwagger revision diff endpoint.
-      </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Compare model items or revisions in the current project context. Numeric left and right revisions on the same project use the RealSwagger revision diff endpoint.
+              </Typography>
       <Paper sx={{ p: 3, borderRadius: 2 }}>
         <Grid container spacing={2}>
           <Grid item xs={12} md={5}>
             <TextField
               label="Left item or revision"
-              value={compareLeft}
-              onChange={(event) => setCompareLeft(event.target.value)}
-              helperText={compareLeftName && compareLeftName !== compareLeft ? compareLeftName : "Use a discovered item or a revision number."}
+              value={compareLeftFieldValue}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setCompareLeft(nextValue);
+                setCompareLeftDisplay(nextValue);
+              }}
+              helperText={compareLeft.trim() ? compareLeftLabel : "Use a discovered item or a revision number."}
               fullWidth
             />
           </Grid>
           <Grid item xs={12} md={5}>
             <TextField
               label="Right item or revision"
-              value={compareRight}
-              onChange={(event) => setCompareRight(event.target.value)}
-              helperText={compareRightName && compareRightName !== compareRight ? compareRightName : "Use a discovered item or a revision number."}
+              value={compareRightFieldValue}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setCompareRight(nextValue);
+                setCompareRightDisplay(nextValue);
+              }}
+              helperText={compareRight.trim() ? compareRightLabel : "Use a discovered item or a revision number."}
               fullWidth
             />
           </Grid>
@@ -1353,7 +1642,7 @@ export default function WorkspacePage() {
           </Grid>
         </Grid>
       </Paper>
-      {(compareLeftName || compareRightName) && (
+      {(compareLeft.trim() || compareRight.trim()) && (
         <Paper sx={{ p: 3, borderRadius: 2 }}>
           <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
             {compareLeft.trim() ? (
@@ -1361,9 +1650,9 @@ export default function WorkspacePage() {
                 <Typography variant="overline" color="text.secondary">
                   Left Selection
                 </Typography>
-                <Typography variant="subtitle2">{compareLeftName || compareLeft}</Typography>
+                <Typography variant="subtitle2">{compareLeftLabel}</Typography>
                 <Typography variant="caption" color="text.secondary">
-                  {compareLeft}
+                  {isRevisionValue(compareLeft) ? "Current project revision context" : selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : "Selected workbench context"}
                 </Typography>
               </Box>
             ) : null}
@@ -1372,9 +1661,9 @@ export default function WorkspacePage() {
                 <Typography variant="overline" color="text.secondary">
                   Right Selection
                 </Typography>
-                <Typography variant="subtitle2">{compareRightName || compareRight}</Typography>
+                <Typography variant="subtitle2">{compareRightLabel}</Typography>
                 <Typography variant="caption" color="text.secondary">
-                  {compareRight}
+                  {isRevisionValue(compareRight) ? "Current project revision context" : selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : "Selected workbench context"}
                 </Typography>
               </Box>
             ) : null}
@@ -1384,24 +1673,24 @@ export default function WorkspacePage() {
       {compareMutation.isPending ? <CircularProgress size={28} /> : null}
       {compareMutation.data ? (
         <Paper sx={{ p: 3, borderRadius: 2 }}>
-          <Stack spacing={2}>
-            <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-              <Typography variant="h6">{compareMutation.data.summary}</Typography>
-              <Chip label={compareMutation.data.compare_type} />
-              <Chip label={`${compareMutation.data.differences.length} differences`} variant="outlined" />
-            </Stack>
+            <Stack spacing={2}>
+              <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+              <Typography variant="h6">{compareLeftLabel && compareRightLabel ? `${compareLeftLabel} vs ${compareRightLabel}` : compareMutation.data.summary}</Typography>
+                <Chip label={compareMutation.data.compare_type} />
+                <Chip label={`${compareMutation.data.differences.length} differences`} variant="outlined" />
+              </Stack>
             <List disablePadding>
               {compareMutation.data.differences.map((difference) => (
                 <ListItemButton key={difference.field_path} alignItems="flex-start">
                   <ListItemText
-                    primary={difference.field_path}
+                    primary={humanizeFieldPath(difference.field_path)}
                     secondary={
                       <Box component="span" sx={{ display: "block", mt: 1 }}>
                         <Typography component="span" variant="body2" sx={{ display: "block" }}>
                           {difference.summary}
                         </Typography>
                         <Typography component="pre" variant="caption" sx={{ display: "block", whiteSpace: "pre-wrap", mt: 1, mb: 0 }}>
-                          {`Left: ${valueText(difference.left_value)}\nRight: ${valueText(difference.right_value)}`}
+                          {`Left: ${humanReadableValue(difference.left_value, referenceNameById)}\nRight: ${humanReadableValue(difference.right_value, referenceNameById)}`}
                         </Typography>
                       </Box>
                     }
@@ -2014,12 +2303,12 @@ export default function WorkspacePage() {
                   <Typography variant="overline" color="text.secondary">
                     Current Selection
                   </Typography>
-                  <Typography variant="subtitle2">{selectedWorkspaceItem.name || selectedWorkspaceItem.id}</Typography>
+                  <Typography variant="subtitle2">{selectedWorkspaceItemName}</Typography>
                   <Typography variant="caption" color="text.secondary">
-                    {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : humanizeFieldLabel(selectedWorkspaceItem.item_type)}
+                    {selectedWorkspaceItemPath || (selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : humanizeFieldLabel(selectedWorkspaceItem.item_type))}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    {humanizeFieldLabel(selectedWorkspaceItem.item_type)} ID · {selectedWorkspaceItem.id}
+                    {humanizeFieldLabel(selectedWorkspaceItem.item_type)}
                   </Typography>
                 </Stack>
               </Paper>

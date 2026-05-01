@@ -138,6 +138,14 @@ export interface TreeNode {
   metadata: Record<string, string>;
 }
 
+export interface ItemReference {
+  id: string;
+  name: string;
+  item_type: string;
+  relationship_type: string;
+  path: string;
+}
+
 export interface ItemDetails {
   id: string;
   name: string;
@@ -147,8 +155,14 @@ export interface ItemDetails {
   branch_id: string;
   description: string;
   documentation_markdown: string;
-  metadata: Record<string, string>;
-  relationships: Array<Record<string, string>>;
+  raw_types: string[];
+  stereotypes: string[];
+  owner: ItemReference | null;
+  type_references: ItemReference[];
+  contained_elements: ItemReference[];
+  related_items: ItemReference[];
+  metadata: Record<string, unknown>;
+  relationships: Array<Record<string, unknown>>;
   version: string;
   editable: boolean;
   attachment_supported: boolean;

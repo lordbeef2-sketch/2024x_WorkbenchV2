@@ -25,6 +25,7 @@ from app.models.domain import (
     ElementDiscoveryEntry,
     ElementDiscoveryResult,
     DocumentVersion,
+    ItemReference,
     ItemDetails,
     ProjectSummary,
     PublishPreset,
@@ -1290,23 +1291,318 @@ class TeamworkAdapter:
         entity = _payload_entity(payload) or {}
         return _first_text(entity.get("kerml:comment"), entity.get("dcterms:description"), entity.get("description"), entity.get("summary"))
 
-    def _item_path(self, project_id: str, branch_id: str, item_name: str) -> str:
+    def _normalize_path_text(self, value: str) -> str:
+        normalized = value.strip().replace("\\", "/").replace("::", "/")
+        normalized = re.sub(r"/+", "/", normalized)
+        return normalized.strip("/")
+
+    def _extract_path_hint(self, payload: dict[str, Any]) -> str:
+        entity = _payload_entity(payload) or {}
+        esi_data = entity.get("kerml:esiData")
+        if isinstance(esi_data, dict):
+            path_hint = _first_text(
+                esi_data.get("qualifiedName"),
+                esi_data.get("qualified_name"),
+                esi_data.get("path"),
+                esi_data.get("humanName"),
+            )
+            if path_hint:
+                return self._normalize_path_text(path_hint)
+        path_hint = _first_text(
+            entity.get("qualifiedName"),
+            entity.get("qualified_name"),
+            entity.get("kerml:qualifiedName"),
+            entity.get("path"),
+            entity.get("humanName"),
+            entity.get("breadcrumbs_path"),
+        )
+        return self._normalize_path_text(path_hint) if path_hint else ""
+
+    def _item_path(self, project_id: str, branch_id: str, item_name: str, payload: dict[str, Any] | None = None) -> str:
+        if payload is not None:
+            path_hint = self._extract_path_hint(payload)
+            if path_hint:
+                return path_hint
         normalized_name = item_name or "Unnamed Item"
         return f"{project_id}/{branch_id}/{normalized_name}"
 
     def _extract_item_metadata(self, payload: dict[str, Any]) -> dict[str, str]:
         entity = _payload_entity(payload) or {}
         metadata: dict[str, str] = {}
-        for key in ("createdDate", "modifiedDate", "creator", "author", "commitID", "branchID", "resourceId", "resourceID", "removed"):
-            value = entity.get(key)
-            if value not in (None, ""):
+        ignored_keys = {
+            "@context",
+            "@base",
+            "@id",
+            "@type",
+            "id",
+            "ID",
+            "name",
+            "label",
+            "title",
+            "dcterms:title",
+            "dcterms:description",
+            "description",
+            "summary",
+            "kerml:name",
+            "kerml:comment",
+            "kerml:owner",
+            "kerml:ownedElement",
+            "kerml:packagedElement",
+            "ldp:contains",
+            "ldp:hasMemberRelation",
+            "ldp:membershipResource",
+            "kerml:esiData",
+        }
+        for key, value in entity.items():
+            if key in ignored_keys or value in (None, "", [], {}):
+                continue
+            if isinstance(value, bool):
+                metadata[key] = "true" if value else "false"
+                continue
+            if isinstance(value, (int, float)):
                 metadata[key] = str(value)
+                continue
+            if not isinstance(value, str):
+                continue
+            if _reference_id(value) and _is_uuid_like(_reference_id(value) or ""):
+                continue
+            metadata[key] = value
         esi_data = entity.get("kerml:esiData")
         if isinstance(esi_data, dict):
             for key, value in esi_data.items():
                 if isinstance(value, (str, int, float, bool)):
                     metadata[f"esi.{key}"] = str(value)
         return metadata
+
+    def _reference_values_for_field(self, value: Any) -> list[Any]:
+        if isinstance(value, list):
+            references: list[Any] = []
+            for item in value:
+                references.extend(self._reference_values_for_field(item))
+            return references
+        if isinstance(value, dict):
+            contains = value.get("ldp:contains")
+            if isinstance(contains, list):
+                references: list[Any] = []
+                for item in contains:
+                    references.extend(self._reference_values_for_field(item))
+                if references:
+                    return references
+            identifier = _reference_id(value)
+            if identifier and identifier != "it":
+                return [value]
+            return []
+        if isinstance(value, (str, int)):
+            raw_value = str(value).strip()
+            identifier = _reference_id(raw_value)
+            if identifier and identifier != "it" and (_is_uuid_like(identifier) or raw_value.startswith(("#", "_")) or "/" in raw_value):
+                return [value]
+        return []
+
+    def _extract_stereotypes(self, payload: dict[str, Any]) -> list[str]:
+        entity = _payload_entity(payload) or {}
+        stereotypes: list[str] = []
+        stereotype_values: list[Any] = []
+        for key in ("uml:stereotypeName", "stereotypeName", "stereotypes"):
+            stereotype_values.extend(_as_list(entity.get(key)))
+        for value in stereotype_values:
+            if isinstance(value, dict):
+                stereotype_name = _first_text(value.get("uml:stereotypeName"), value.get("name"), value.get("label"))
+            else:
+                stereotype_name = str(value).strip() if str(value).strip() and not _is_uuid_like(str(value)) else ""
+            if stereotype_name and stereotype_name not in stereotypes:
+                stereotypes.append(stereotype_name)
+        return stereotypes
+
+    async def _batch_resolve_element_entities(
+        self,
+        project_id: str,
+        branch_id: str,
+        element_ids: list[str],
+        workspace_id: str | None = None,
+        *,
+        batch_size: int = 200,
+    ) -> dict[str, dict[str, Any]]:
+        resolved: dict[str, dict[str, Any]] = {}
+        pending_ids = list(dict.fromkeys(element_id for element_id in element_ids if element_id))
+        if not pending_ids:
+            return resolved
+
+        for chunk_start in range(0, len(pending_ids), batch_size):
+            chunk = pending_ids[chunk_start : chunk_start + batch_size]
+            payload = await self._request_candidates(
+                "POST",
+                [
+                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/elements",) if workspace_id else ()),
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/elements",
+                ],
+                json_payload=chunk,
+                timeout=60.0,
+            )
+            if not isinstance(payload, dict) or payload.get("restricted"):
+                continue
+            for element_id, raw_payload in payload.items():
+                entity = _payload_entity(raw_payload)
+                if isinstance(entity, dict):
+                    resolved[element_id] = entity
+        return resolved
+
+    def _reference_summary(
+        self,
+        reference: Any,
+        *,
+        relationship_type: str,
+        project_id: str,
+        branch_id: str,
+        resolved_entities: dict[str, dict[str, Any]],
+        parent_path: str = "",
+    ) -> ItemReference | None:
+        reference_id = _reference_id(reference)
+        if not reference_id or reference_id == "it":
+            return None
+
+        local_entity = _payload_entity(reference) if isinstance(reference, (dict, list)) else None
+        resolved_entity = resolved_entities.get(reference_id) or (local_entity if isinstance(local_entity, dict) else None)
+        if resolved_entity is None and not _is_uuid_like(reference_id):
+            return None
+        reference_name = self._extract_display_name(resolved_entity) if isinstance(resolved_entity, dict) else ""
+        raw_types = _normalize_types(resolved_entity.get("@type")) if isinstance(resolved_entity, dict) else []
+        item_type = _humanize_type(raw_types[0]) if raw_types else "item"
+        path = self._item_path(project_id, branch_id, reference_name or reference_id, resolved_entity) if isinstance(resolved_entity, dict) else ""
+        if not path and parent_path and relationship_type in {"contains", "ownedElement", "packagedElement"}:
+            path = f"{parent_path}/{reference_name or reference_id}"
+        return ItemReference(
+            id=reference_id,
+            name=reference_name or reference_id,
+            item_type=item_type,
+            relationship_type=relationship_type,
+            path=path,
+        )
+
+    def _dedupe_item_references(self, references: list[ItemReference]) -> list[ItemReference]:
+        deduped: list[ItemReference] = []
+        seen: set[tuple[str, str]] = set()
+        for reference in references:
+            key = (reference.id, reference.relationship_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(reference)
+        return deduped
+
+    async def _extract_item_references(
+        self,
+        payload: dict[str, Any],
+        *,
+        project_id: str,
+        branch_id: str,
+        item_path: str,
+    ) -> tuple[ItemReference | None, list[ItemReference], list[ItemReference], list[ItemReference]]:
+        entity = _payload_entity(payload) or {}
+        containment_keys = {
+            "ldp:contains": "contains",
+            "kerml:ownedElement": "ownedElement",
+            "kerml:packagedElement": "packagedElement",
+        }
+        type_keys = {
+            "kerml:type": "type",
+            "type": "type",
+            "kerml:classifier": "classifier",
+            "classifier": "classifier",
+        }
+        ignored_keys = {
+            "@context",
+            "@base",
+            "@id",
+            "@type",
+            "id",
+            "ID",
+            "name",
+            "label",
+            "title",
+            "dcterms:title",
+            "dcterms:description",
+            "description",
+            "summary",
+            "kerml:name",
+            "kerml:comment",
+            "kerml:esiData",
+            "ldp:hasMemberRelation",
+            "ldp:membershipResource",
+            "createdDate",
+            "modifiedDate",
+            "creator",
+            "author",
+            "commitID",
+            "branchID",
+            "resourceId",
+            "resourceID",
+            "removed",
+            "uml:stereotypeName",
+            "uml:stereotypeId",
+            "stereotypeName",
+            "stereotypes",
+        }
+
+        resolution_ids: list[str] = []
+        for key, value in entity.items():
+            if key in ignored_keys:
+                continue
+            for reference in self._reference_values_for_field(value):
+                reference_id = _reference_id(reference)
+                if reference_id and reference_id not in resolution_ids:
+                    resolution_ids.append(reference_id)
+
+        resolved_entities = await self._batch_resolve_element_entities(project_id, branch_id, resolution_ids)
+
+        owner: ItemReference | None = None
+        for reference in self._reference_values_for_field(entity.get("kerml:owner")):
+            owner = self._reference_summary(
+                reference,
+                relationship_type="owner",
+                project_id=project_id,
+                branch_id=branch_id,
+                resolved_entities=resolved_entities,
+            )
+            if owner is not None:
+                break
+
+        type_references: list[ItemReference] = []
+        contained_elements: list[ItemReference] = []
+        related_items: list[ItemReference] = []
+        for key, value in entity.items():
+            if key in ignored_keys or key == "kerml:owner":
+                continue
+            relationship_type = containment_keys.get(key) or type_keys.get(key) or key.split(":")[-1]
+            references = self._reference_values_for_field(value)
+            if not references:
+                continue
+            summaries = [
+                summary
+                for reference in references
+                if (summary := self._reference_summary(
+                    reference,
+                    relationship_type=relationship_type,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    resolved_entities=resolved_entities,
+                    parent_path=item_path,
+                ))
+                is not None
+            ]
+            if key in containment_keys:
+                contained_elements.extend(summaries)
+            elif key in type_keys:
+                type_references.extend(summaries)
+            else:
+                related_items.extend(summaries)
+
+        return (
+            owner,
+            self._dedupe_item_references(type_references),
+            self._dedupe_item_references(contained_elements),
+            self._dedupe_item_references(related_items),
+        )
 
     def _extract_relationships(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         entity = _payload_entity(payload) or {}
@@ -1341,6 +1637,12 @@ class TeamworkAdapter:
                 "documentation_markdown": overlay.documentation_markdown or item.documentation_markdown,
                 "metadata": overlay.metadata or item.metadata,
                 "relationships": overlay.relationships or item.relationships,
+                "raw_types": overlay.raw_types or item.raw_types,
+                "stereotypes": overlay.stereotypes or item.stereotypes,
+                "owner": overlay.owner or item.owner,
+                "type_references": overlay.type_references or item.type_references,
+                "contained_elements": overlay.contained_elements or item.contained_elements,
+                "related_items": overlay.related_items or item.related_items,
                 "version": overlay.version or item.version,
                 "attachment_supported": overlay.attachment_supported or item.attachment_supported,
                 "collaborators": overlay.collaborators or item.collaborators,
@@ -1955,24 +2257,47 @@ class TeamworkAdapter:
         )
         return payload
 
-    def _remote_item_details(self, payload: dict[str, Any], item_id: str, project_id: str, branch_id: str) -> ItemDetails:
+    async def _remote_item_details(self, payload: dict[str, Any], item_id: str, project_id: str, branch_id: str) -> ItemDetails:
         entity = _payload_entity(payload) or {}
         raw_types = _normalize_types(entity.get("@type"))
         metadata = self._extract_item_metadata(entity)
         name = self._extract_display_name(entity) or item_id
         description = self._extract_description(entity)
         item_type = _humanize_type(raw_types[0]) if raw_types else "item"
+        item_path = self._item_path(project_id, branch_id, name, entity)
+        owner, type_references, contained_elements, related_items = await self._extract_item_references(
+            entity,
+            project_id=project_id,
+            branch_id=branch_id,
+            item_path=item_path,
+        )
+        relationships = [
+            {
+                "type": reference.relationship_type,
+                "target": reference.id,
+                "target_name": reference.name,
+                "item_type": reference.item_type,
+                "path": reference.path,
+            }
+            for reference in [*contained_elements, *type_references, *related_items, *([owner] if owner else [])]
+        ]
         item = ItemDetails(
             id=item_id,
             name=name,
             item_type=item_type,
-            path=self._item_path(project_id, branch_id, name),
+            path=item_path,
             project_id=project_id,
             branch_id=branch_id,
             description=description,
             documentation_markdown=self._build_item_markdown(name, description, raw_types, metadata),
+            raw_types=raw_types,
+            stereotypes=self._extract_stereotypes(entity),
+            owner=owner,
+            type_references=type_references,
+            contained_elements=contained_elements,
+            related_items=related_items,
             metadata=metadata,
-            relationships=self._extract_relationships(entity),
+            relationships=relationships or self._extract_relationships(entity),
             version=metadata.get("modifiedDate") or metadata.get("commitID") or "remote",
             editable=True,
             attachment_supported=False,
@@ -2247,7 +2572,7 @@ class TeamworkAdapter:
             if not response_payload:
                 raise PermissionError("Remote Teamwork Cloud item update could not be confirmed for this element.")
 
-        return self._remote_item_details(response_payload or remote_payload, item_id, project_id, branch_id)
+        return await self._remote_item_details(response_payload or remote_payload, item_id, project_id, branch_id)
 
     async def list_projects(self, include_branches: bool = False) -> list[ProjectSummary]:
         try:
@@ -2299,7 +2624,7 @@ class TeamworkAdapter:
         if project_id and branch_id:
             remote_payload = await self._remote_item_payload(project_id, branch_id, item_id)
             if _payload_entity(remote_payload) is not None:
-                return self._remote_item_details(remote_payload, item_id, project_id, branch_id)
+                return await self._remote_item_details(remote_payload, item_id, project_id, branch_id)
 
         payload = await self._request_candidates("GET", self.item_candidates(item_id))
         if isinstance(payload, dict) and payload.get("id"):
