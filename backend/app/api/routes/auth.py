@@ -102,7 +102,12 @@ def build_workspace_redirect(
 
 
 def build_session_redirect(container: ApplicationContainer, session_id: str) -> RedirectResponse:
-    return build_workspace_redirect(container, session_id)
+    redirect = RedirectResponse(f"{container.settings.resolved_app_origin}/", status_code=status.HTTP_302_FOUND)
+    set_session_cookie(redirect, container, session_id)
+    clear_pending_server_cookie(redirect, container)
+    clear_auth_state_cookie(redirect, container)
+    clear_oslc_auth_state_cookie(redirect, container)
+    return redirect
 
 
 def build_error_redirect(container: ApplicationContainer, detail: str) -> RedirectResponse:
