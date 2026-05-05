@@ -181,6 +181,7 @@ export interface ElementDiscoveryResult {
   project_id: string;
   branch_id: string;
   workspace_id?: string | null;
+  latest_revision?: string | null;
   seed_source: string;
   seed_ids: string[];
   ids: string[];
@@ -190,6 +191,7 @@ export interface ElementDiscoveryResult {
   hydrated_elements: number;
   batch_count: number;
   batch_size: number;
+  cache_status?: "full-refresh" | "incremental-refresh" | "cache-hit";
   warnings: string[];
   discovered_at: string;
 }

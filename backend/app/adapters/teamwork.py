@@ -104,6 +104,73 @@ def _first_text(*values: Any) -> str:
     return ""
 
 
+def _revision_from_value(value: Any) -> str | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        match = re.search(r"/revisions/(\d+)(?:/|$)", text)
+        if match:
+            return match.group(1)
+        if text.isdigit():
+            return text
+    if isinstance(value, dict):
+        for key in ("@id", "id", "href", "kerml:revision", "revision", "latestRevision", "commitID"):
+            resolved = _revision_from_value(value.get(key))
+            if resolved:
+                return resolved
+    if isinstance(value, list):
+        for item in value:
+            resolved = _revision_from_value(item)
+            if resolved:
+                return resolved
+    return None
+
+
+def _revision_candidates(payload: Any, *keys: str) -> list[str]:
+    candidates: list[str] = []
+    for item in _payload_dicts(payload):
+        for key in keys:
+            if key not in item:
+                continue
+            resolved = _revision_from_value(item.get(key))
+            if resolved and resolved not in candidates:
+                candidates.append(resolved)
+    return candidates
+
+
+def _changed_element_ids(payload: Any) -> tuple[list[str], list[str], list[str]]:
+    added: list[str] = []
+    changed: list[str] = []
+    removed: list[str] = []
+
+    if not isinstance(payload, dict):
+        return added, changed, removed
+
+    groups = (
+        ("added", added),
+        ("changed", changed),
+        ("modified", changed),
+        ("updated", changed),
+        ("removed", removed),
+        ("deleted", removed),
+    )
+    for key, bucket in groups:
+        values = payload.get(key)
+        if values is None:
+            continue
+        for raw_value in _as_list(values):
+            candidate = _reference_id(raw_value)
+            if candidate and candidate not in bucket:
+                bucket.append(candidate)
+
+    return added, changed, removed
+
+
 def _payload_dicts(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         return [payload]
@@ -1310,6 +1377,16 @@ class TeamworkAdapter:
         entity = _payload_entity(payload) or {}
         return _first_text(entity.get("kerml:comment"), entity.get("dcterms:description"), entity.get("description"), entity.get("summary"))
 
+    def element_discovery_entry(self, element_id: str, payload: Any, fallback: ElementDiscoveryEntry | None = None) -> ElementDiscoveryEntry:
+        entity = _payload_entity(payload) if payload is not None else None
+        raw_types = _normalize_types(entity.get("@type")) if isinstance(entity, dict) else []
+        return ElementDiscoveryEntry(
+            id=element_id,
+            name=self._extract_display_name(payload) if isinstance(payload, dict) else (fallback.name if fallback else element_id),
+            item_type=_humanize_type(raw_types[0]) if raw_types else (fallback.item_type if fallback else "element"),
+            child_count=len(_element_containment_ids(payload)) if payload is not None else (fallback.child_count if fallback else 0),
+        )
+
     def _normalize_path_text(self, value: str) -> str:
         normalized = value.strip().replace("\\", "/").replace("::", "/")
         normalized = re.sub(r"/+", "/", normalized)
@@ -2125,6 +2202,7 @@ class TeamworkAdapter:
         *,
         batch_size: int = 200,
     ) -> ElementDiscoveryResult:
+        latest_revision = await self.get_latest_branch_revision(project_id, branch_id, workspace_id)
         seed_ids, seed_source, warnings = await self._element_seed_ids(project_id, branch_id, workspace_id)
         seed_ids = list(dict.fromkeys(seed_ids))
         if ELEMENT_DISCOVERY_THROTTLE_EVERY > 0 and ELEMENT_DISCOVERY_THROTTLE_SECONDS > 0:
@@ -2136,6 +2214,7 @@ class TeamworkAdapter:
                 project_id=project_id,
                 branch_id=branch_id,
                 workspace_id=workspace_id,
+                latest_revision=latest_revision,
                 seed_source=seed_source,
                 seed_ids=[],
                 ids=[],
@@ -2145,6 +2224,7 @@ class TeamworkAdapter:
                 hydrated_elements=0,
                 batch_count=0,
                 batch_size=batch_size,
+                cache_status="full-refresh",
                 warnings=warnings,
             )
 
@@ -2268,21 +2348,13 @@ class TeamworkAdapter:
         entries: list[ElementDiscoveryEntry] = []
         for element_id in discovered_ids:
             payload = payloads_by_id.get(element_id)
-            entity = _payload_entity(payload) if payload is not None else None
-            raw_types = _normalize_types(entity.get("@type")) if isinstance(entity, dict) else []
-            entries.append(
-                ElementDiscoveryEntry(
-                    id=element_id,
-                    name=self._extract_display_name(payload) if payload is not None else element_id,
-                    item_type=_humanize_type(raw_types[0]) if raw_types else "element",
-                    child_count=len(_element_containment_ids(payload)) if payload is not None else 0,
-                )
-            )
+            entries.append(self.element_discovery_entry(element_id, payload))
 
         return ElementDiscoveryResult(
             project_id=project_id,
             branch_id=branch_id,
             workspace_id=workspace_id,
+            latest_revision=latest_revision,
             seed_source=seed_source,
             seed_ids=seed_ids,
             ids=discovered_ids,
@@ -2292,8 +2364,80 @@ class TeamworkAdapter:
             hydrated_elements=len(hydrated_ids),
             batch_count=batch_count,
             batch_size=batch_size,
+            cache_status="full-refresh",
             warnings=warnings,
         )
+
+    async def get_latest_branch_revision(
+        self,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None = None,
+    ) -> str | None:
+        branch_payload = await self._request_candidates(
+            "GET",
+            self.branch_candidates(project_id, branch_id, workspace_id),
+            timeout=20.0,
+        )
+        for candidate in _revision_candidates(branch_payload, "latestRevision", "revision", "commitID", "kerml:revision"):
+            return candidate
+
+        payload = await self._request_candidates(
+            "GET",
+            [
+                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/revisions",) if workspace_id else ()),
+                f"/osmc/resources/{project_id}/branches/{branch_id}/revisions",
+            ],
+            timeout=20.0,
+        )
+        for candidate in _revision_candidates(payload, "latestRevision", "revision", "commitID", "kerml:revision"):
+            return candidate
+        for candidate in _revision_candidates(payload, "kerml:revisions", "revisions"):
+            return candidate
+        return None
+
+    async def changed_elements_between_revisions(
+        self,
+        project_id: str,
+        source_revision: str,
+        target_revision: str,
+        workspace_id: str | None = None,
+    ) -> tuple[list[str], list[str], list[str]]:
+        payload = await self._request_candidates(
+            "GET",
+            [
+                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/revisiondiff?source={source_revision}&target={target_revision}",) if workspace_id else ()),
+                f"/osmc/resources/{project_id}/revisiondiff?source={source_revision}&target={target_revision}",
+            ],
+            timeout=30.0,
+        )
+        if isinstance(payload, dict) and payload.get("restricted"):
+            return [], [], []
+        return _changed_element_ids(payload)
+
+    async def get_elements_by_ids(
+        self,
+        project_id: str,
+        branch_id: str,
+        element_ids: list[str],
+        workspace_id: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        resolved_ids = [element_id for element_id in dict.fromkeys(element_ids) if element_id]
+        if not resolved_ids:
+            return {}
+
+        payload = await self._request_candidates(
+            "POST",
+            [
+                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/elements",) if workspace_id else ()),
+                f"/osmc/resources/{project_id}/branches/{branch_id}/elements",
+            ],
+            json_payload=resolved_ids,
+            timeout=60.0,
+        )
+        if not isinstance(payload, dict) or payload.get("restricted"):
+            return {}
+        return {str(key): value for key, value in payload.items() if isinstance(value, dict)}
 
     async def _remote_item_payload(self, project_id: str, branch_id: str, item_id: str) -> Any | None:
         payload = await self._request_candidates(

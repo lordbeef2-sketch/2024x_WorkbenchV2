@@ -339,6 +339,7 @@ class ElementDiscoveryResult(BaseModel):
     project_id: str
     branch_id: str
     workspace_id: str | None = None
+    latest_revision: str | None = None
     seed_source: str = ""
     seed_ids: list[str] = Field(default_factory=list)
     ids: list[str] = Field(default_factory=list)
@@ -348,6 +349,7 @@ class ElementDiscoveryResult(BaseModel):
     hydrated_elements: int = 0
     batch_count: int = 0
     batch_size: int = 200
+    cache_status: Literal["full-refresh", "incremental-refresh", "cache-hit"] = "full-refresh"
     warnings: list[str] = Field(default_factory=list)
     discovered_at: datetime = Field(default_factory=utcnow)
 

@@ -383,13 +383,47 @@ class PlatformService:
         refresh: bool = False,
     ) -> ElementDiscoveryResult:
         cache_key = self._element_discovery_cache_key(project_id, branch_id)
-        if not refresh:
-            cached_result = self._cached_model(session, cache_key, ElementDiscoveryResult)
-            if cached_result is not None:
-                return cached_result
-
         resolved_workspace_id = workspace_id or await self._workspace_id_for_project(session, project_id)
-        result = await self._adapter_for_session(session).discover_elements(project_id, branch_id, resolved_workspace_id)
+        adapter = self._adapter_for_session(session)
+        cached_result = self._cached_model(session, cache_key, ElementDiscoveryResult)
+
+        if cached_result is not None:
+            current_revision = await adapter.get_latest_branch_revision(project_id, branch_id, resolved_workspace_id)
+            cached_revision = (cached_result.latest_revision or "").strip() or None
+
+            if not refresh and current_revision and cached_revision and current_revision == cached_revision:
+                cache_hit = cached_result.model_copy(update={"cache_status": "cache-hit"})
+                self.repo.upsert_user_cache(
+                    self._user_key(session.user.preferred_username),
+                    session.server.id,
+                    cache_key,
+                    json.loads(cache_hit.model_dump_json()),
+                )
+                return cache_hit
+
+            if current_revision and cached_revision and current_revision != cached_revision:
+                merged_result = await self._refresh_element_cache_incrementally(
+                    cached_result,
+                    adapter=adapter,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    workspace_id=resolved_workspace_id,
+                    source_revision=cached_revision,
+                    target_revision=current_revision,
+                )
+                if merged_result is not None:
+                    self.repo.upsert_user_cache(
+                        self._user_key(session.user.preferred_username),
+                        session.server.id,
+                        cache_key,
+                        json.loads(merged_result.model_dump_json()),
+                    )
+                    return merged_result
+
+            if not refresh and cached_result is not None and not current_revision:
+                return cached_result.model_copy(update={"cache_status": "cache-hit"})
+
+        result = await adapter.discover_elements(project_id, branch_id, resolved_workspace_id)
         self.repo.upsert_user_cache(
             self._user_key(session.user.preferred_username),
             session.server.id,
@@ -397,6 +431,70 @@ class PlatformService:
             json.loads(result.model_dump_json()),
         )
         return result
+
+    async def _refresh_element_cache_incrementally(
+        self,
+        cached_result: ElementDiscoveryResult,
+        *,
+        adapter: TeamworkAdapter,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None,
+        source_revision: str,
+        target_revision: str,
+    ) -> ElementDiscoveryResult | None:
+        added_ids, changed_ids, removed_ids = await adapter.changed_elements_between_revisions(
+            project_id,
+            source_revision,
+            target_revision,
+            workspace_id,
+        )
+        touched_ids = [element_id for element_id in dict.fromkeys([*added_ids, *changed_ids]) if element_id]
+        if not touched_ids and not removed_ids:
+            return cached_result.model_copy(
+                update={
+                    "latest_revision": target_revision,
+                    "cache_status": "incremental-refresh",
+                    "warnings": list(cached_result.warnings),
+                    "discovered_at": utcnow(),
+                }
+            )
+
+        payloads_by_id = await adapter.get_elements_by_ids(project_id, branch_id, touched_ids, workspace_id)
+        if touched_ids and not payloads_by_id:
+            return None
+
+        removed_set = set(removed_ids)
+        updated_entries_by_id = {entry.id: entry for entry in cached_result.entries if entry.id not in removed_set}
+        updated_ids = [element_id for element_id in cached_result.ids if element_id not in removed_set]
+
+        for element_id in touched_ids:
+            payload = payloads_by_id.get(element_id)
+            if payload is None:
+                continue
+            entry = adapter.element_discovery_entry(element_id, payload, updated_entries_by_id.get(element_id))
+            updated_entries_by_id[element_id] = entry
+            if element_id not in updated_ids:
+                updated_ids.append(element_id)
+
+        updated_entries = [updated_entries_by_id[element_id] for element_id in updated_ids if element_id in updated_entries_by_id]
+        warnings = [warning for warning in cached_result.warnings if warning]
+        warnings.append(
+            f"Incremental cache refresh applied from revision {source_revision} to {target_revision} for {len(touched_ids)} added or changed elements and {len(removed_set)} removed elements."
+        )
+        return cached_result.model_copy(
+            update={
+                "workspace_id": workspace_id,
+                "latest_revision": target_revision,
+                "ids": updated_ids,
+                "entries": updated_entries,
+                "total_ids": len(updated_ids),
+                "hydrated_elements": len(updated_entries),
+                "cache_status": "incremental-refresh",
+                "warnings": warnings[-50:],
+                "discovered_at": utcnow(),
+            }
+        )
 
     async def update_branch(
         self,
