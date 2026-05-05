@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-import requests
-import urllib3
+import httpx
 
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
@@ -246,31 +245,30 @@ def build_requests_verify(config: ExampleConfig) -> bool | str:
     return parse_verify_tls(config.verify_tls)
 
 
-def requests_session(config: ExampleConfig) -> requests.Session:
-    session = requests.Session()
-    session.headers.update(
-        {
+def requests_session(config: ExampleConfig) -> httpx.Client:
+    return httpx.Client(
+        headers={
             "Accept": "application/ld+json, application/json;q=0.9, */*;q=0.8",
-        }
+        },
+        verify=build_requests_verify(config),
+        follow_redirects=True,
     )
-    return session
 
 
 def exchange_auth_code(config: ExampleConfig, code: str) -> TokenBundle:
-    session = requests_session(config)
-    response = session.post(
-        token_url(config),
-        headers={"X-Auth-Secret": config.auth.client_secret.strip()},
-        data={
-            "scope": config.resolved_auth_scope,
-            "redirect_uri": config.callback_url,
-            "client_id": config.auth.client_id.strip(),
-            "grant_type": "authorization_code",
-            "code": code,
-        },
-        timeout=max(config.request_timeout_seconds, 30),
-        verify=build_requests_verify(config),
-    )
+    with requests_session(config) as session:
+        response = session.post(
+            token_url(config),
+            headers={"X-Auth-Secret": config.auth.client_secret.strip()},
+            data={
+                "scope": config.resolved_auth_scope,
+                "redirect_uri": config.callback_url,
+                "client_id": config.auth.client_id.strip(),
+                "grant_type": "authorization_code",
+                "code": code,
+            },
+            timeout=max(config.request_timeout_seconds, 30),
+        )
     if response.status_code >= 400:
         raise ExampleError(f"AuthServer token exchange failed with HTTP {response.status_code}: {response.text[:500]}")
     try:
@@ -281,20 +279,19 @@ def exchange_auth_code(config: ExampleConfig, code: str) -> TokenBundle:
 
 
 def refresh_auth_token(config: ExampleConfig, refresh_token: str) -> TokenBundle:
-    session = requests_session(config)
-    response = session.post(
-        token_url(config),
-        headers={"X-Auth-Secret": config.auth.client_secret.strip()},
-        data={
-            "scope": config.resolved_auth_scope,
-            "redirect_uri": config.callback_url,
-            "client_id": config.auth.client_id.strip(),
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        },
-        timeout=max(config.request_timeout_seconds, 30),
-        verify=build_requests_verify(config),
-    )
+    with requests_session(config) as session:
+        response = session.post(
+            token_url(config),
+            headers={"X-Auth-Secret": config.auth.client_secret.strip()},
+            data={
+                "scope": config.resolved_auth_scope,
+                "redirect_uri": config.callback_url,
+                "client_id": config.auth.client_id.strip(),
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+            timeout=max(config.request_timeout_seconds, 30),
+        )
     if response.status_code >= 400:
         raise ExampleError(f"AuthServer token refresh failed with HTTP {response.status_code}: {response.text[:500]}")
     try:
@@ -408,10 +405,6 @@ def capture_auth_callback(config: ExampleConfig, state: str) -> dict[str, str]:
 
 
 def ensure_authenticated_token(config: ExampleConfig) -> TokenBundle:
-    verify_setting = build_requests_verify(config)
-    if verify_setting is False:
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
     cached = load_token_bundle(config)
     if cached and not cached.is_expired:
         return cached
@@ -455,7 +448,6 @@ class TwcExampleClient:
         text_body: str | None = None,
         timeout: int | None = None,
     ) -> Any:
-        verify = build_requests_verify(self.config)
         timeout_value = timeout or self.config.request_timeout_seconds
         last_status: int | None = None
         last_error: Exception | None = None
@@ -475,12 +467,11 @@ class TwcExampleClient:
                     url=self.build_url(candidate),
                     params=params,
                     json=json_body if text_body is None else None,
-                    data=text_body,
+                    content=text_body,
                     headers=headers,
                     timeout=timeout_value,
-                    verify=verify,
                 )
-            except requests.RequestException as exc:
+            except httpx.HTTPError as exc:
                 last_error = exc
                 continue
 
@@ -616,6 +607,32 @@ def container_member_ids(payload: Any) -> list[str]:
         if candidate and candidate != "it" and candidate not in identifiers:
             identifiers.append(candidate)
     return identifiers
+
+
+def element_containment_ids(payload: Any) -> list[str]:
+    identifiers: list[str] = []
+
+    if isinstance(payload, dict):
+        payloads = [payload]
+    elif isinstance(payload, list):
+        payloads = [item for item in payload if isinstance(item, dict)]
+    else:
+        payloads = []
+
+    for item in payloads:
+        for key in ("ldp:contains", "kerml:ownedElement", "kerml:packagedElement"):
+            raw_values = item.get(key)
+            if not isinstance(raw_values, list):
+                continue
+            for value in raw_values:
+                candidate = reference_id(value)
+                if candidate and candidate != "it" and candidate not in identifiers:
+                    identifiers.append(candidate)
+
+    if identifiers:
+        return identifiers
+
+    return container_member_ids(payload)
 
 
 def display_name(payload: Any, fallback_id: str) -> str:

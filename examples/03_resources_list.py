@@ -1,17 +1,9 @@
-from common import build_client, print_json
+from Modules import build_authenticated_client, list_resources, print_json
 
 
 def main() -> None:
-    client = build_client()
-    payload = client.request_json(
-        "GET",
-        [
-            "/osmc/resources?includeBody=true&includeRemovedResource=false",
-            "/osmc/resources?includeBody=true",
-            "/osmc/resources",
-        ],
-    )
-    print_json(payload)
+    client = build_authenticated_client()
+    print_json(list_resources(client))
 
 
 if __name__ == "__main__":

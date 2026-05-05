@@ -1,10 +1,9 @@
-from common import build_client, print_json
+from Modules import build_authenticated_client, get_current_user, print_json
 
 
 def main() -> None:
-    client = build_client()
-    payload = client.request_json("GET", ["/osmc/admin/currentUser?permission=true"])
-    print_json(payload)
+    client = build_authenticated_client()
+    print_json(get_current_user(client))
 
 
 if __name__ == "__main__":

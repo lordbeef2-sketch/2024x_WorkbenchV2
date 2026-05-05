@@ -1,18 +1,10 @@
-from common import build_client, print_json, require_context_fields
+from Modules import build_authenticated_client, get_revision_diff, print_json, require_context_fields
 
 
 def main() -> None:
-    client = build_client()
+    client = build_authenticated_client()
     require_context_fields(client.config, "resource_id", "source_revision", "target_revision")
-    payload = client.request_json(
-        "GET",
-        client.render_candidates(
-            [
-                "/osmc/resources/{resource_id}/revisiondiff?source={source_revision}&target={target_revision}",
-            ]
-        ),
-    )
-    print_json(payload)
+    print_json(get_revision_diff(client))
 
 
 if __name__ == "__main__":

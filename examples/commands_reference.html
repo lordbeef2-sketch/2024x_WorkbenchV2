@@ -1,0 +1,1344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Modules Command Browser</title>
+  <style>
+    :root {
+      --paper: #f7f1e4;
+      --ink: #172320;
+      --muted: #5d6b66;
+      --panel: rgba(255, 252, 246, 0.84);
+      --panel-strong: rgba(255, 252, 246, 0.96);
+      --line: rgba(23, 35, 32, 0.12);
+      --shadow: 0 24px 60px rgba(31, 46, 42, 0.14);
+      --accent: #b34a28;
+      --accent-soft: #f2d6b7;
+      --secondary: #1e726f;
+      --secondary-soft: #cde8e6;
+      --violet: #6b5bd2;
+      --violet-soft: #ddd9ff;
+      --font-display: "Bahnschrift", "Aptos Display", "Segoe UI Variable Display", sans-serif;
+      --font-body: "Segoe UI Variable Text", "Trebuchet MS", sans-serif;
+      --font-mono: "Cascadia Code", "Consolas", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: var(--font-body);
+      background:
+        radial-gradient(circle at top left, rgba(179, 74, 40, 0.22), transparent 28%),
+        radial-gradient(circle at top right, rgba(30, 114, 111, 0.18), transparent 30%),
+        linear-gradient(160deg, #efe6d4 0%, #f8f5ef 44%, #f0ecdf 100%);
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      inset: auto;
+      border-radius: 999px;
+      filter: blur(10px);
+      pointer-events: none;
+      opacity: 0.55;
+      z-index: 0;
+    }
+
+    body::before {
+      top: 6rem;
+      right: -5rem;
+      width: 18rem;
+      height: 18rem;
+      background: rgba(107, 91, 210, 0.15);
+    }
+
+    body::after {
+      bottom: 4rem;
+      left: -4rem;
+      width: 16rem;
+      height: 16rem;
+      background: rgba(30, 114, 111, 0.14);
+    }
+
+    .page {
+      position: relative;
+      z-index: 1;
+      width: min(1400px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 1.5rem 0 4rem;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.9fr);
+      gap: 1.5rem;
+      align-items: stretch;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-card,
+    .status-card,
+    .toolbar,
+    .section,
+    .footer-note {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+      border-radius: 28px;
+    }
+
+    .hero-card {
+      padding: 2rem;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      right: -3rem;
+      top: -3rem;
+      width: 12rem;
+      height: 12rem;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(179, 74, 40, 0.18) 0%, rgba(179, 74, 40, 0) 70%);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      border-radius: 999px;
+      background: rgba(23, 35, 32, 0.06);
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      font-family: var(--font-display);
+      line-height: 1.05;
+    }
+
+    h1 {
+      font-size: clamp(2.2rem, 4vw, 4.3rem);
+      margin-top: 1rem;
+      max-width: 12ch;
+    }
+
+    .hero-copy {
+      margin-top: 1rem;
+      max-width: 62ch;
+      color: var(--muted);
+      font-size: 1.05rem;
+      line-height: 1.7;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.8rem;
+      margin-top: 1.25rem;
+    }
+
+    .action-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.75rem 1rem;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.58);
+      border: 1px solid rgba(23, 35, 32, 0.08);
+      text-decoration: none;
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .action-chip strong {
+      color: var(--accent);
+    }
+
+    .status-card {
+      padding: 1.5rem;
+      display: grid;
+      gap: 1rem;
+      align-content: start;
+    }
+
+    .stats {
+      display: grid;
+      gap: 0.9rem;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .stat {
+      padding: 1rem;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid rgba(23, 35, 32, 0.07);
+    }
+
+    .stat-label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.45rem;
+      display: block;
+    }
+
+    .stat-value {
+      font-size: 1.65rem;
+      font-family: var(--font-display);
+    }
+
+    .legend {
+      display: grid;
+      gap: 0.7rem;
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.6;
+    }
+
+    .legend strong {
+      color: var(--ink);
+    }
+
+    .toolbar {
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+      display: grid;
+      gap: 1rem;
+    }
+
+    .toolbar-top {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.9rem;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .toolbar-copy {
+      color: var(--muted);
+      font-size: 0.96rem;
+      line-height: 1.6;
+      max-width: 72ch;
+    }
+
+    .search-wrap {
+      display: grid;
+      gap: 0.4rem;
+      min-width: min(100%, 420px);
+      flex: 1 1 320px;
+    }
+
+    .search-wrap label,
+    .code-label {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    #command-search {
+      width: 100%;
+      padding: 0.95rem 1rem;
+      border-radius: 18px;
+      border: 1px solid rgba(23, 35, 32, 0.12);
+      background: rgba(255, 255, 255, 0.72);
+      font: inherit;
+      color: var(--ink);
+    }
+
+    #command-search:focus {
+      outline: 2px solid rgba(107, 91, 210, 0.25);
+      border-color: rgba(107, 91, 210, 0.45);
+    }
+
+    .category-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    .category-button {
+      border: 0;
+      border-radius: 999px;
+      padding: 0.72rem 1rem;
+      font: inherit;
+      font-weight: 700;
+      background: rgba(255, 255, 255, 0.76);
+      color: var(--ink);
+      border: 1px solid rgba(23, 35, 32, 0.08);
+      cursor: pointer;
+      transition: transform 140ms ease, background 140ms ease, color 140ms ease;
+    }
+
+    .category-button:hover,
+    .category-button:focus-visible {
+      transform: translateY(-1px);
+      outline: none;
+    }
+
+    .category-button.active[data-category="Auth and Setup"] {
+      background: var(--accent-soft);
+      color: #71311d;
+    }
+
+    .category-button.active[data-category="TWC REST"] {
+      background: var(--secondary-soft);
+      color: #174b49;
+    }
+
+    .category-button.active[data-category="No Magic 2022x"] {
+      background: var(--violet-soft);
+      color: #3e338d;
+    }
+
+    .category-button.active[data-category="All"] {
+      background: rgba(23, 35, 32, 0.12);
+    }
+
+    .results-line {
+      color: var(--muted);
+      font-size: 0.92rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    .quick-start {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .section {
+      padding: 1.3rem;
+    }
+
+    .section-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.8rem;
+      margin-bottom: 0.9rem;
+    }
+
+    .section-header p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+      max-width: 64ch;
+    }
+
+    .command-groups {
+      display: grid;
+      gap: 1.2rem;
+    }
+
+    .group {
+      display: grid;
+      gap: 1rem;
+    }
+
+    .group-heading {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.8rem;
+      padding: 0 0.1rem;
+    }
+
+    .group-heading span {
+      color: var(--muted);
+      font-size: 0.92rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+      gap: 1rem;
+    }
+
+    .card {
+      background: var(--panel-strong);
+      border: 1px solid rgba(23, 35, 32, 0.08);
+      border-radius: 24px;
+      padding: 1.2rem;
+      display: grid;
+      gap: 0.95rem;
+      box-shadow: 0 20px 40px rgba(28, 42, 38, 0.08);
+      transform: translateY(0);
+      transition: transform 180ms ease, box-shadow 180ms ease;
+    }
+
+    .card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 24px 46px rgba(28, 42, 38, 0.12);
+    }
+
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-start;
+    }
+
+    .command-name {
+      display: grid;
+      gap: 0.35rem;
+    }
+
+    .command-name code,
+    .badge,
+    pre,
+    .inline-code {
+      font-family: var(--font-mono);
+    }
+
+    .module-path {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 0.45rem 0.75rem;
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+      background: rgba(23, 35, 32, 0.08);
+    }
+
+    .badge[data-category="Auth and Setup"] {
+      background: var(--accent-soft);
+      color: #71311d;
+    }
+
+    .badge[data-category="TWC REST"] {
+      background: var(--secondary-soft);
+      color: #174b49;
+    }
+
+    .badge[data-category="No Magic 2022x"] {
+      background: var(--violet-soft);
+      color: #3e338d;
+    }
+
+    .summary {
+      margin: 0;
+      color: var(--ink);
+      line-height: 1.65;
+    }
+
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.8rem;
+    }
+
+    .meta-block {
+      padding: 0.85rem 0.9rem;
+      border-radius: 18px;
+      background: rgba(23, 35, 32, 0.035);
+      border: 1px solid rgba(23, 35, 32, 0.06);
+    }
+
+    .meta-block strong {
+      display: block;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      margin-bottom: 0.45rem;
+    }
+
+    .meta-block div {
+      line-height: 1.55;
+      word-break: break-word;
+    }
+
+    pre {
+      margin: 0;
+      padding: 1rem;
+      border-radius: 18px;
+      background: #101714;
+      color: #edf4ef;
+      overflow-x: auto;
+      font-size: 0.88rem;
+      line-height: 1.55;
+    }
+
+    .footer-note {
+      margin-top: 1.5rem;
+      padding: 1.25rem 1.35rem;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .footer-note strong {
+      color: var(--ink);
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    @media (max-width: 1080px) {
+      .hero,
+      .quick-start {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        width: min(100% - 1rem, 1400px);
+      }
+
+      .hero-card,
+      .status-card,
+      .toolbar,
+      .section,
+      .footer-note {
+        border-radius: 22px;
+      }
+
+      .hero-card,
+      .status-card,
+      .toolbar,
+      .section {
+        padding: 1rem;
+      }
+
+      .meta,
+      .stats {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <article class="hero-card">
+        <div class="eyebrow">Python Command Browser</div>
+        <h1>Browse the Modules API without reading the source first.</h1>
+        <p class="hero-copy">
+          This page documents the public command helpers exposed by <span class="inline-code">Modules</span>
+          and <span class="inline-code">Modules.commands</span>. It groups setup helpers, Teamwork Cloud REST
+          commands, and local MagicDraw or Cameo 2022x helpers with short descriptions, expected inputs, and
+          copy-paste usage snippets.
+        </p>
+        <div class="hero-actions">
+          <a class="action-chip" href="./README.md"><strong>Open</strong> examples README</a>
+          <a class="action-chip" href="./config.json"><strong>Check</strong> examples config</a>
+          <span class="action-chip"><strong>Tip</strong> Open this file directly in any browser</span>
+        </div>
+      </article>
+      <aside class="status-card">
+        <h2>At a glance</h2>
+        <div class="stats">
+          <div class="stat">
+            <span class="stat-label">Auth + Setup</span>
+            <div class="stat-value">10</div>
+          </div>
+          <div class="stat">
+            <span class="stat-label">TWC REST</span>
+            <div class="stat-value">22</div>
+          </div>
+          <div class="stat">
+            <span class="stat-label">No Magic</span>
+            <div class="stat-value">19</div>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Total</span>
+            <div class="stat-value">51</div>
+          </div>
+        </div>
+        <div class="legend">
+          <div><strong>TWC commands</strong> take a <span class="inline-code">TwcExampleClient</span> as the first argument.</div>
+          <div><strong>Most REST IDs</strong> can be passed explicitly or resolved from <span class="inline-code">examples/config.json</span>.</div>
+          <div><strong>No Magic commands</strong> accept <span class="inline-code">config=MagicDrawJVMConfig(...)</span> or <span class="inline-code">api=existing_api</span>.</div>
+          <div><strong>This page focuses on callables</strong>, not every exported dataclass or exception type.</div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="toolbar">
+      <div class="toolbar-top">
+        <div class="search-wrap">
+          <label for="command-search">Search commands, modules, or descriptions</label>
+          <input id="command-search" type="search" placeholder="Try: get_element, list_models, stereotype, auth, contract">
+        </div>
+        <div class="toolbar-copy">
+          Start with <span class="inline-code">build_authenticated_client()</span> for TWC REST calls. For local
+          MagicDraw or Cameo usage, start with <span class="inline-code">MagicDrawJVMConfig.from_environment()</span>
+          and either pass <span class="inline-code">config=...</span> into the commands or reuse a bridge with
+          <span class="inline-code">api=get_magicdraw_api(config)</span>.
+        </div>
+      </div>
+      <div class="category-row" id="category-row"></div>
+      <div class="results-line">
+        <span id="results-summary">Showing all commands.</span>
+        <span>Public command definitions live in <span class="inline-code">examples/Modules/commands.py</span>.</span>
+      </div>
+    </section>
+
+    <section class="quick-start">
+      <article class="section">
+        <div class="section-header">
+          <h2>Quick Start: Teamwork Cloud REST</h2>
+        </div>
+        <p class="toolbar-copy">
+          Use the shared auth helper once, then pass the client into the REST commands. If a command needs IDs like
+          <span class="inline-code">resource_id</span> or <span class="inline-code">branch_id</span>, it can often
+          pull them from <span class="inline-code">examples/config.json</span> when you omit them.
+        </p>
+        <div class="code-label">Usage</div>
+        <pre>from Modules import build_authenticated_client
+from Modules.commands import list_workspaces, list_models
+
+client = build_authenticated_client()
+workspaces = list_workspaces(client)
+models = list_models(client, resource_id="RESOURCE_ID", branch_id="BRANCH_ID")</pre>
+      </article>
+      <article class="section">
+        <div class="section-header">
+          <h2>Quick Start: Local No Magic 2022x</h2>
+        </div>
+        <p class="toolbar-copy">
+          The No Magic commands work against a local MagicDraw or Cameo installation through JPype. Reuse the same
+          config or API object across calls when you are making several requests in one script.
+        </p>
+        <div class="code-label">Usage</div>
+        <pre>from Modules import MagicDrawJVMConfig
+from Modules.commands import get_active_project, get_project_summary, list_project_models
+
+config = MagicDrawJVMConfig.from_environment()
+project = get_active_project(config=config)
+summary = get_project_summary(project, config=config)
+models = list_project_models(project, config=config)</pre>
+      </article>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <h2>Command Reference</h2>
+        <p>Filter by category or search by name. Every card includes a signature, what it is for, and a minimal usage snippet.</p>
+      </div>
+      <div class="command-groups" id="command-groups"></div>
+    </section>
+
+    <section class="footer-note">
+      <strong>Lower-level bridge note:</strong> the No Magic command helpers are documented here because they are
+      part of the public Python command surface. If you need direct access to the Java bridge itself, use
+      <span class="inline-code">get_magicdraw_api()</span> or <span class="inline-code">build_magicdraw_openapi()</span>
+      from <span class="inline-code">Modules</span>.
+    </section>
+  </div>
+
+  <script>
+    const commands = [
+      {
+        name: "build_authenticated_client",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "build_authenticated_client(config_path=None)",
+        requires: "examples/config.json with base_url, auth.client_id, and auth.client_secret.",
+        returns: "TwcExampleClient",
+        summary: "Creates a signed-in Teamwork Cloud REST client using the shared AuthServer flow.",
+        usage: "from Modules import build_authenticated_client\n\nclient = build_authenticated_client()"
+      },
+      {
+        name: "load_example_config",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "load_example_config(config_path=None)",
+        requires: "Path to a config file only if you are not using examples/config.json.",
+        returns: "ExampleConfig",
+        summary: "Loads the example configuration without creating a client yet.",
+        usage: "from Modules import load_example_config\n\nconfig = load_example_config()"
+      },
+      {
+        name: "authorize_request_url",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "authorize_request_url(config_or_path=None, state=None)",
+        requires: "Auth settings in config.",
+        returns: "str",
+        summary: "Builds the browser URL for the TWC Authentication Server authorization request.",
+        usage: "from Modules import authorize_request_url\n\nurl = authorize_request_url()"
+      },
+      {
+        name: "token_endpoint",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "token_endpoint(config_or_path=None)",
+        requires: "Auth settings in config.",
+        returns: "str",
+        summary: "Resolves the token endpoint that exchanges or refreshes AuthServer tokens.",
+        usage: "from Modules import token_endpoint\n\nurl = token_endpoint()"
+      },
+      {
+        name: "exchange_code",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "exchange_code(code, config_path=None)",
+        requires: "Authorization code returned from the AuthServer callback.",
+        returns: "TokenBundle",
+        summary: "Trades an authorization code for tokens.",
+        usage: "from Modules import exchange_code\n\nbundle = exchange_code(code_from_callback)"
+      },
+      {
+        name: "refresh_token",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "refresh_token(refresh_token_value, config_path=None)",
+        requires: "A valid refresh token string.",
+        returns: "TokenBundle",
+        summary: "Refreshes an expired or near-expired token bundle.",
+        usage: "from Modules import refresh_token\n\nupdated = refresh_token(existing_refresh_token)"
+      },
+      {
+        name: "token_summary",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "token_summary(bundle)",
+        requires: "A TokenBundle.",
+        returns: "dict[str, Any]",
+        summary: "Returns a safe summary view of a token bundle without dumping the raw token values.",
+        usage: "from Modules import token_summary\n\nsummary = token_summary(bundle)"
+      },
+      {
+        name: "auth_summary",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "auth_summary(client)",
+        requires: "A TwcExampleClient.",
+        returns: "dict[str, Any]",
+        summary: "Shows the current auth-related URLs and token metadata for a client.",
+        usage: "from Modules import auth_summary, build_authenticated_client\n\nclient = build_authenticated_client()\nsummary = auth_summary(client)"
+      },
+      {
+        name: "build_magicdraw_openapi",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "build_magicdraw_openapi(config=None)",
+        requires: "JPype installed and a MagicDraw/Cameo 2022x classpath available.",
+        returns: "MagicDrawOpenAPI",
+        summary: "Builds and starts the local MagicDraw/Cameo Java bridge immediately.",
+        usage: "from Modules import MagicDrawJVMConfig, build_magicdraw_openapi\n\nconfig = MagicDrawJVMConfig.from_environment()\napi = build_magicdraw_openapi(config)"
+      },
+      {
+        name: "get_magicdraw_api",
+        module: "Modules",
+        category: "Auth and Setup",
+        signature: "get_magicdraw_api(config=None)",
+        requires: "JPype installed and a MagicDraw/Cameo 2022x classpath available when the bridge starts.",
+        returns: "MagicDrawOpenAPI",
+        summary: "Returns the shared bridge instance used by the No Magic command helpers.",
+        usage: "from Modules import MagicDrawJVMConfig, get_magicdraw_api\n\nconfig = MagicDrawJVMConfig.from_environment()\napi = get_magicdraw_api(config)"
+      },
+
+      {
+        name: "get_current_user",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_current_user(client, include_permission=True)",
+        requires: "Authenticated TwcExampleClient.",
+        returns: "Any",
+        summary: "Loads the current authenticated Teamwork Cloud user, optionally including permission details.",
+        usage: "from Modules import build_authenticated_client\nfrom Modules.commands import get_current_user\n\nclient = build_authenticated_client()\ncurrent_user = get_current_user(client)"
+      },
+      {
+        name: "get_version",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_version(client)",
+        requires: "Authenticated TwcExampleClient.",
+        returns: "Any",
+        summary: "Reads the Teamwork Cloud server version from /osmc/version.",
+        usage: "from Modules.commands import get_version\n\nversion = get_version(client)"
+      },
+      {
+        name: "list_workspaces",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "list_workspaces(client)",
+        requires: "Authenticated TwcExampleClient.",
+        returns: "Any",
+        summary: "Returns the visible TWC workspaces.",
+        usage: "from Modules.commands import list_workspaces\n\nworkspaces = list_workspaces(client)"
+      },
+      {
+        name: "list_resources",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "list_resources(client)",
+        requires: "Authenticated TwcExampleClient.",
+        returns: "Any",
+        summary: "Lists resources across the server, trying the supported endpoint variants in order.",
+        usage: "from Modules.commands import list_resources\n\nresources = list_resources(client)"
+      },
+      {
+        name: "list_workspace_resources",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "list_workspace_resources(client, workspace_id=None)",
+        requires: "workspace_id argument or context.workspace_id in examples/config.json.",
+        returns: "Any",
+        summary: "Lists the resources that belong to one workspace.",
+        usage: "from Modules.commands import list_workspace_resources\n\nresources = list_workspace_resources(client, workspace_id='WORKSPACE_ID')"
+      },
+      {
+        name: "get_resource",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_resource(client, resource_id=None, workspace_id=None)",
+        requires: "resource_id argument or context.resource_id in config.",
+        returns: "Any",
+        summary: "Gets one resource by ID, with or without a workspace-qualified path.",
+        usage: "from Modules.commands import get_resource\n\nresource = get_resource(client, resource_id='RESOURCE_ID')"
+      },
+      {
+        name: "list_branches",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "list_branches(client, resource_id=None, workspace_id=None)",
+        requires: "resource_id argument or config context.",
+        returns: "Any",
+        summary: "Lists branches for a resource.",
+        usage: "from Modules.commands import list_branches\n\nbranches = list_branches(client, resource_id='RESOURCE_ID')"
+      },
+      {
+        name: "get_branch",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_branch(client, resource_id=None, branch_id=None, workspace_id=None)",
+        requires: "resource_id and branch_id arguments or config context.",
+        returns: "Any",
+        summary: "Loads one branch from a resource.",
+        usage: "from Modules.commands import get_branch\n\nbranch = get_branch(client, resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "list_models",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "list_models(client, resource_id=None, branch_id=None, workspace_id=None)",
+        requires: "resource_id and branch_id arguments or config context.",
+        returns: "Any",
+        summary: "Lists models for a resource and branch.",
+        usage: "from Modules.commands import list_models\n\nmodels = list_models(client, resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "get_model",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_model(client, model_id=None, resource_id=None, branch_id=None, workspace_id=None)",
+        requires: "model_id, resource_id, and branch_id arguments or config context.",
+        returns: "Any",
+        summary: "Loads one model and tries the supported endpoint shapes in order.",
+        usage: "from Modules.commands import get_model\n\nmodel = get_model(client, model_id='MODEL_ID', resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "get_element",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_element(client, element_id=None, resource_id=None, branch_id=None, workspace_id=None)",
+        requires: "element_id, resource_id, and branch_id arguments or config context.",
+        returns: "Any",
+        summary: "Loads one model element from a branch.",
+        usage: "from Modules.commands import get_element\n\nelement = get_element(client, element_id='ELEMENT_ID', resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "get_elements_batch",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_elements_batch(client, element_ids=None, *, element_id=None, resource_id=None, branch_id=None, workspace_id=None)",
+        requires: "resource_id and branch_id plus either element_ids, element_id, or config context.",
+        returns: "Any",
+        summary: "Loads several elements in one POST request.",
+        usage: "from Modules.commands import get_elements_batch\n\nitems = get_elements_batch(client, element_ids=['ID_1', 'ID_2'], resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "patch_element",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "patch_element(client, payload=None, *, element_id=None, resource_id=None, branch_id=None)",
+        requires: "payload plus element_id, resource_id, and branch_id, either as arguments or config context.",
+        returns: "Any",
+        summary: "Partially updates an element using PATCH.",
+        usage: "from Modules.commands import patch_element\n\nresult = patch_element(client, payload={'name': 'Updated'}, element_id='ELEMENT_ID', resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "put_element",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "put_element(client, payload=None, *, element_id=None, resource_id=None, branch_id=None)",
+        requires: "payload plus element_id, resource_id, and branch_id, either as arguments or config context.",
+        returns: "Any",
+        summary: "Replaces or updates an element using PUT.",
+        usage: "from Modules.commands import put_element\n\nresult = put_element(client, payload=payload, element_id='ELEMENT_ID', resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "update_element",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "update_element(client, payload=None, *, element_id=None, resource_id=None, branch_id=None)",
+        requires: "Same inputs as patch_element or put_element.",
+        returns: "Any",
+        summary: "Tries PATCH first and falls back to PUT if needed.",
+        usage: "from Modules.commands import update_element\n\nresult = update_element(client, payload=payload, element_id='ELEMENT_ID', resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "get_revision_diff",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_revision_diff(client, resource_id=None, source_revision=None, target_revision=None)",
+        requires: "resource_id, source_revision, and target_revision, either as arguments or config context.",
+        returns: "Any",
+        summary: "Compares two resource revisions and returns the server diff payload.",
+        usage: "from Modules.commands import get_revision_diff\n\ndiff = get_revision_diff(client, resource_id='RESOURCE_ID', source_revision='REV_A', target_revision='REV_B')"
+      },
+      {
+        name: "list_branch_artifacts",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "list_branch_artifacts(client, workspace_id=None, resource_id=None, branch_id=None)",
+        requires: "workspace_id, resource_id, and branch_id, either as arguments or config context.",
+        returns: "Any",
+        summary: "Lists artifacts attached to a branch.",
+        usage: "from Modules.commands import list_branch_artifacts\n\nartifacts = list_branch_artifacts(client, workspace_id='WORKSPACE_ID', resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "get_branch_artifact",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_branch_artifact(client, artifact_id=None, *, workspace_id=None, resource_id=None, branch_id=None, download=False)",
+        requires: "workspace_id, resource_id, branch_id, and artifact_id, either as arguments or config context.",
+        returns: "Any",
+        summary: "Gets metadata for one branch artifact and can request download mode.",
+        usage: "from Modules.commands import get_branch_artifact\n\nartifact = get_branch_artifact(client, artifact_id='ARTIFACT_ID', workspace_id='WORKSPACE_ID', resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "discover_elements_from_models",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "discover_elements_from_models(client, resource_id=None, branch_id=None, workspace_id=None)",
+        requires: "resource_id and branch_id, either as arguments or config context.",
+        returns: "dict[str, Any]",
+        summary: "Walks model roots and containment links to build a flattened element discovery list.",
+        usage: "from Modules.commands import discover_elements_from_models\n\ndiscovery = discover_elements_from_models(client, resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "list_all_elements",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "list_all_elements(client, resource_id=None, branch_id=None, workspace_id=None)",
+        requires: "resource_id and branch_id, either as arguments or config context.",
+        returns: "list[dict[str, Any]]",
+        summary: "Returns the discovered element entries so callers can list all elements without supplying element IDs manually.",
+        usage: "from Modules.commands import list_all_elements\n\nentries = list_all_elements(client, resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "get_all_elements",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "get_all_elements(client, resource_id=None, branch_id=None, workspace_id=None)",
+        requires: "resource_id and branch_id, either as arguments or config context.",
+        returns: "dict[str, Any]",
+        summary: "Returns the full discovery result plus the hydrated element payloads keyed by element ID.",
+        usage: "from Modules.commands import get_all_elements\n\nresult = get_all_elements(client, resource_id='RESOURCE_ID', branch_id='BRANCH_ID')"
+      },
+      {
+        name: "run_contract_operation",
+        module: "Modules.commands",
+        category: "TWC REST",
+        signature: "run_contract_operation(client, contract=None)",
+        requires: "A contract dict or context.contract_example in examples/config.json.",
+        returns: "Any",
+        summary: "Runs one arbitrary REST operation by method, path, and optional body from config.",
+        usage: "from Modules.commands import run_contract_operation\n\nresult = run_contract_operation(client, contract={'method': 'GET', 'path': '/osmc/version'})"
+      },
+
+      {
+        name: "get_active_project",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "get_active_project(*, api=None, config=None)",
+        requires: "MagicDraw/Cameo 2022x installation and a currently open project.",
+        returns: "Any",
+        summary: "Returns the active local MagicDraw or Cameo project.",
+        usage: "from Modules import MagicDrawJVMConfig\nfrom Modules.commands import get_active_project\n\nconfig = MagicDrawJVMConfig.from_environment()\nproject = get_active_project(config=config)"
+      },
+      {
+        name: "list_open_projects",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "list_open_projects(*, api=None, config=None)",
+        requires: "MagicDraw/Cameo 2022x bridge availability.",
+        returns: "list[Any]",
+        summary: "Lists all locally open projects.",
+        usage: "from Modules.commands import list_open_projects\n\nprojects = list_open_projects(config=config)"
+      },
+      {
+        name: "get_project_summary",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "get_project_summary(project=None, *, api=None, config=None)",
+        requires: "Project argument or an active project.",
+        returns: "dict[str, Any]",
+        summary: "Builds a compact summary with project name, file name, remote flags, and counts.",
+        usage: "from Modules.commands import get_project_summary\n\nsummary = get_project_summary(project, config=config)"
+      },
+      {
+        name: "list_project_models",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "list_project_models(project=None, *, api=None, config=None)",
+        requires: "Project argument or an active project.",
+        returns: "list[Any]",
+        summary: "Lists the root models inside a local project.",
+        usage: "from Modules.commands import list_project_models\n\nmodels = list_project_models(project, config=config)"
+      },
+      {
+        name: "list_project_diagrams",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "list_project_diagrams(project=None, diagram_type=None, *, api=None, config=None)",
+        requires: "Project argument or an active project.",
+        returns: "list[Any]",
+        summary: "Lists project diagrams, optionally filtered by diagram type.",
+        usage: "from Modules.commands import list_project_diagrams\n\ndiagrams = list_project_diagrams(project, diagram_type='Class Diagram', config=config)"
+      },
+      {
+        name: "get_element_by_id",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "get_element_by_id(element_id, project=None, *, api=None, config=None)",
+        requires: "Element ID and a project or active project.",
+        returns: "Any",
+        summary: "Resolves a local model element by ID from a MagicDraw/Cameo project.",
+        usage: "from Modules.commands import get_element_by_id\n\nelement = get_element_by_id('ELEMENT_ID', project, config=config)"
+      },
+      {
+        name: "list_factory_methods",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "list_factory_methods(project=None, *, api=None, config=None)",
+        requires: "Project argument or an active project.",
+        returns: "list[str]",
+        summary: "Shows the available ElementsFactory create*Instance methods.",
+        usage: "from Modules.commands import list_factory_methods\n\nmethods = list_factory_methods(project, config=config)"
+      },
+      {
+        name: "create_class",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "create_class(parent, name, *, project=None, session_name=None, api=None, config=None)",
+        requires: "Parent package or namespace element and an editable local project.",
+        returns: "Any",
+        summary: "Creates a UML class under a parent element inside a managed session.",
+        usage: "from Modules.commands import create_class\n\nnew_class = create_class(parent_package, 'IntegrationService', config=config)"
+      },
+      {
+        name: "create_package",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "create_package(parent, name, *, project=None, session_name=None, api=None, config=None)",
+        requires: "Parent package or namespace element and an editable local project.",
+        returns: "Any",
+        summary: "Creates a UML package under a parent element inside a managed session.",
+        usage: "from Modules.commands import create_package\n\npackage = create_package(parent, 'Integration', config=config)"
+      },
+      {
+        name: "create_operation",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "create_operation(parent, name, *, project=None, session_name=None, api=None, config=None)",
+        requires: "Parent classifier element and an editable local project.",
+        returns: "Any",
+        summary: "Creates an operation under a class or interface.",
+        usage: "from Modules.commands import create_operation\n\noperation = create_operation(class_element, 'execute', config=config)"
+      },
+      {
+        name: "create_diagram",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "create_diagram(parent, diagram_type, *, open_diagram=False, open_in_active_tab=False, project=None, session_name=None, api=None, config=None)",
+        requires: "Parent element, diagram type, and an editable local project.",
+        returns: "Any",
+        summary: "Creates a new diagram under the given parent element.",
+        usage: "from Modules.commands import create_diagram\n\ndiagram = create_diagram(parent, 'Class Diagram', config=config)"
+      },
+      {
+        name: "get_profile",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "get_profile(profile_name, project=None, *, api=None, config=None)",
+        requires: "Profile name and a project or active project.",
+        returns: "Any",
+        summary: "Finds one applied profile in the local project.",
+        usage: "from Modules.commands import get_profile\n\nprofile = get_profile('SysML', project, config=config)"
+      },
+      {
+        name: "get_stereotype",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "get_stereotype(stereotype_name, *, profile_name=None, project=None, api=None, config=None)",
+        requires: "Stereotype name and a project or active project.",
+        returns: "Any",
+        summary: "Resolves one stereotype, optionally inside a specific profile.",
+        usage: "from Modules.commands import get_stereotype\n\nstereotype = get_stereotype('Block', profile_name='SysML', project=project, config=config)"
+      },
+      {
+        name: "list_element_stereotypes",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "list_element_stereotypes(element, *, api=None, config=None)",
+        requires: "A local model element.",
+        returns: "list[Any]",
+        summary: "Lists the stereotypes currently applied to an element.",
+        usage: "from Modules.commands import list_element_stereotypes\n\nstereotypes = list_element_stereotypes(element, config=config)"
+      },
+      {
+        name: "has_stereotype",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "has_stereotype(element, stereotype_name, *, profile_name=None, project=None, api=None, config=None)",
+        requires: "A local element and stereotype name.",
+        returns: "bool",
+        summary: "Checks whether a stereotype is already applied to an element.",
+        usage: "from Modules.commands import has_stereotype\n\nflag = has_stereotype(element, 'Block', profile_name='SysML', project=project, config=config)"
+      },
+      {
+        name: "apply_stereotype",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "apply_stereotype(element, stereotype_name, *, profile_name=None, project=None, session_name=None, api=None, config=None)",
+        requires: "Editable local project, target element, and stereotype name.",
+        returns: "Any",
+        summary: "Applies a stereotype inside a managed session if it is not already present.",
+        usage: "from Modules.commands import apply_stereotype\n\napply_stereotype(element, 'Block', profile_name='SysML', project=project, config=config)"
+      },
+      {
+        name: "remove_stereotype",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "remove_stereotype(element, stereotype_name, *, profile_name=None, project=None, session_name=None, api=None, config=None)",
+        requires: "Editable local project, target element, and stereotype name.",
+        returns: "bool",
+        summary: "Removes a stereotype from an element inside a managed session.",
+        usage: "from Modules.commands import remove_stereotype\n\nremoved = remove_stereotype(element, 'Block', profile_name='SysML', project=project, config=config)"
+      },
+      {
+        name: "get_stereotype_property",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "get_stereotype_property(element, stereotype_name, property_name, *, profile_name=None, project=None, api=None, config=None)",
+        requires: "Target element, stereotype name, and property name.",
+        returns: "Any",
+        summary: "Reads one stereotype property value and converts collections into Python values.",
+        usage: "from Modules.commands import get_stereotype_property\n\nvalue = get_stereotype_property(element, 'Block', 'documentation', profile_name='SysML', project=project, config=config)"
+      },
+      {
+        name: "set_stereotype_property",
+        module: "Modules.commands",
+        category: "No Magic 2022x",
+        signature: "set_stereotype_property(element, stereotype_name, property_name, value, *, profile_name=None, project=None, session_name=None, api=None, config=None)",
+        requires: "Editable local project, target element, stereotype name, property name, and new value.",
+        returns: "Any",
+        summary: "Updates one stereotype property in a managed session and returns the updated value.",
+        usage: "from Modules.commands import set_stereotype_property\n\nupdated = set_stereotype_property(element, 'Block', 'documentation', 'Updated', profile_name='SysML', project=project, config=config)"
+      }
+    ];
+
+    const categoryOrder = ["All", "Auth and Setup", "TWC REST", "No Magic 2022x"];
+    const commandGroups = document.getElementById("command-groups");
+    const categoryRow = document.getElementById("category-row");
+    const searchInput = document.getElementById("command-search");
+    const resultsSummary = document.getElementById("results-summary");
+    let activeCategory = "All";
+
+    function renderCategoryButtons() {
+      categoryRow.innerHTML = "";
+      categoryOrder.forEach((category) => {
+        const count = category === "All"
+          ? commands.length
+          : commands.filter((command) => command.category === category).length;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "category-button" + (category === activeCategory ? " active" : "");
+        button.dataset.category = category;
+        button.textContent = `${category} (${count})`;
+        button.addEventListener("click", () => {
+          activeCategory = category;
+          renderCategoryButtons();
+          renderCommands();
+        });
+        categoryRow.appendChild(button);
+      });
+    }
+
+    function matchesQuery(command, query) {
+      if (!query) {
+        return true;
+      }
+      const haystack = [
+        command.name,
+        command.module,
+        command.category,
+        command.signature,
+        command.requires,
+        command.returns,
+        command.summary,
+        command.usage,
+      ].join("\n").toLowerCase();
+      return haystack.includes(query);
+    }
+
+    function createMetaBlock(label, value) {
+      const block = document.createElement("div");
+      block.className = "meta-block";
+      const title = document.createElement("strong");
+      title.textContent = label;
+      const text = document.createElement("div");
+      text.textContent = value;
+      block.appendChild(title);
+      block.appendChild(text);
+      return block;
+    }
+
+    function createCard(command) {
+      const article = document.createElement("article");
+      article.className = "card";
+
+      const top = document.createElement("div");
+      top.className = "card-top";
+
+      const titleWrap = document.createElement("div");
+      titleWrap.className = "command-name";
+      const modulePath = document.createElement("div");
+      modulePath.className = "module-path";
+      modulePath.textContent = command.module;
+      const title = document.createElement("h3");
+      const titleCode = document.createElement("code");
+      titleCode.textContent = command.name;
+      title.appendChild(titleCode);
+      titleWrap.appendChild(modulePath);
+      titleWrap.appendChild(title);
+
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.dataset.category = command.category;
+      badge.textContent = command.category;
+
+      top.appendChild(titleWrap);
+      top.appendChild(badge);
+
+      const summary = document.createElement("p");
+      summary.className = "summary";
+      summary.textContent = command.summary;
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.appendChild(createMetaBlock("Signature", command.signature));
+      meta.appendChild(createMetaBlock("Returns", command.returns));
+      meta.appendChild(createMetaBlock("Requires", command.requires));
+      meta.appendChild(createMetaBlock("How to use it", `Import it from ${command.module} and call it like the example below.`));
+
+      const codeLabel = document.createElement("div");
+      codeLabel.className = "code-label";
+      codeLabel.textContent = "Example";
+
+      const pre = document.createElement("pre");
+      pre.textContent = command.usage;
+
+      article.appendChild(top);
+      article.appendChild(summary);
+      article.appendChild(meta);
+      article.appendChild(codeLabel);
+      article.appendChild(pre);
+      return article;
+    }
+
+    function renderCommands() {
+      const query = searchInput.value.trim().toLowerCase();
+      const filtered = commands.filter((command) => {
+        const categoryMatch = activeCategory === "All" || command.category === activeCategory;
+        return categoryMatch && matchesQuery(command, query);
+      });
+
+      resultsSummary.textContent = filtered.length
+        ? `Showing ${filtered.length} command${filtered.length === 1 ? "" : "s"}.`
+        : "No commands match the current search.";
+
+      commandGroups.innerHTML = "";
+      const groupsToShow = activeCategory === "All"
+        ? categoryOrder.slice(1)
+        : [activeCategory];
+
+      groupsToShow.forEach((groupName) => {
+        const groupCommands = filtered.filter((command) => command.category === groupName);
+        if (!groupCommands.length) {
+          return;
+        }
+
+        const group = document.createElement("section");
+        group.className = "group";
+
+        const heading = document.createElement("div");
+        heading.className = "group-heading";
+        const title = document.createElement("h3");
+        title.textContent = groupName;
+        const count = document.createElement("span");
+        count.textContent = `${groupCommands.length} item${groupCommands.length === 1 ? "" : "s"}`;
+        heading.appendChild(title);
+        heading.appendChild(count);
+
+        const cards = document.createElement("div");
+        cards.className = "cards";
+        groupCommands.forEach((command) => cards.appendChild(createCard(command)));
+
+        group.appendChild(heading);
+        group.appendChild(cards);
+        commandGroups.appendChild(group);
+      });
+    }
+
+    searchInput.addEventListener("input", renderCommands);
+    renderCategoryButtons();
+    renderCommands();
+  </script>
+</body>
+</html>

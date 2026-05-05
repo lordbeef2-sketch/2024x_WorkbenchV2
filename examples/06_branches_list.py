@@ -1,15 +1,10 @@
-from common import build_client, print_json, require_context_fields
+from Modules import build_authenticated_client, list_branches, print_json, require_context_fields
 
 
 def main() -> None:
-    client = build_client()
+    client = build_authenticated_client()
     require_context_fields(client.config, "resource_id")
-    candidates = []
-    if client.config.context.workspace_id.strip():
-        candidates.append("/osmc/workspaces/{workspace_id}/resources/{resource_id}/branches")
-    candidates.append("/osmc/resources/{resource_id}/branches")
-    payload = client.request_json("GET", client.render_candidates(candidates))
-    print_json(payload)
+    print_json(list_branches(client))
 
 
 if __name__ == "__main__":

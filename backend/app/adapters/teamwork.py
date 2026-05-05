@@ -320,6 +320,22 @@ def _container_member_ids(payload: Any) -> list[str]:
     return identifiers
 
 
+def _element_containment_ids(payload: Any) -> list[str]:
+    identifiers: list[str] = []
+
+    for item in _payload_dicts(payload):
+        for key in ("ldp:contains", "kerml:ownedElement", "kerml:packagedElement"):
+            for reference in _as_list(item.get(key)):
+                candidate = _reference_id(reference)
+                if candidate and candidate != "it" and candidate not in identifiers:
+                    identifiers.append(candidate)
+
+    if identifiers:
+        return identifiers
+
+    return _container_member_ids(payload)
+
+
 def map_projects(payload: Any) -> list[dict[str, Any]]:
     projects: list[dict[str, Any]] = []
 
@@ -2056,6 +2072,7 @@ class TeamworkAdapter:
             [
                 *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models",) if workspace_id else ()),
                 f"/osmc/resources/{project_id}/branches/{branch_id}/models",
+                f"/osmc/resources/{project_id}/models",
             ],
             timeout=30.0,
         )
@@ -2078,6 +2095,7 @@ class TeamworkAdapter:
                 [
                     *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models/{model_id}",) if workspace_id else ()),
                     f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
+                    f"/osmc/resources/{project_id}/models/{model_id}",
                 ],
                 timeout=30.0,
             )
@@ -2165,7 +2183,7 @@ class TeamworkAdapter:
                     payload = await fetch_element_payload(element_id)
                     payloads_by_id[element_id] = payload
                     visited_ids.add(element_id)
-                    for child_id in _container_member_ids(payload):
+                    for child_id in _element_containment_ids(payload):
                         if child_id in enqueued_ids:
                             continue
                         enqueued_ids.add(child_id)
@@ -2226,7 +2244,7 @@ class TeamworkAdapter:
                     id=element_id,
                     name=self._extract_display_name(payload) if payload is not None else element_id,
                     item_type=_humanize_type(raw_types[0]) if raw_types else "element",
-                    child_count=len(_container_member_ids(payload)) if payload is not None else 0,
+                    child_count=len(_element_containment_ids(payload)) if payload is not None else 0,
                 )
             )
 
