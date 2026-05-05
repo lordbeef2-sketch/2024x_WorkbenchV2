@@ -12,6 +12,7 @@ import {
   CircularProgress,
   Divider,
   IconButton,
+  LinearProgress,
   List,
   ListItemButton,
   ListItemText,
@@ -1271,6 +1272,11 @@ export default function WorkspacePage() {
   );
 
   const renderElementTesting = () => {
+    const elementDiscoveryLoading = elementDiscoveryQuery.isLoading || refreshElementDiscoveryMutation.isPending;
+    const elementDiscoveryLoadingMessage = elementDiscovery
+      ? "Refreshing the branch cache and applying changed elements only."
+      : "Building the branch element cache for the first load.";
+
     if (!selectedProjectId) {
       return (
         <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
@@ -1311,7 +1317,22 @@ export default function WorkspacePage() {
             Refresh Elements
           </Button>
         </Stack>
-        {elementDiscoveryQuery.isLoading ? <CircularProgress size={28} /> : null}
+        {elementDiscoveryLoading ? (
+          <Paper sx={{ p: 2.5, borderRadius: 2 }}>
+            <Stack spacing={1.25}>
+              <Stack direction="row" spacing={1.5} alignItems="center">
+                <CircularProgress size={20} />
+                <Box>
+                  <Typography variant="subtitle2">Loading element cache</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {elementDiscoveryLoadingMessage}
+                  </Typography>
+                </Box>
+              </Stack>
+              <LinearProgress />
+            </Stack>
+          </Paper>
+        ) : null}
         {elementDiscoveryQuery.error ? <Alert severity="error">{errorMessage(elementDiscoveryQuery.error)}</Alert> : null}
         {elementDiscovery ? (
           <>
@@ -1323,6 +1344,7 @@ export default function WorkspacePage() {
                   <Chip label={`${elementDiscovery.hydrated_elements} batch hydrated`} variant="outlined" />
                   <Chip label={`${elementDiscovery.batch_count} batches`} variant="outlined" />
                   <Chip label={elementDiscovery.seed_source || "model-roots"} variant="outlined" />
+                  {elementDiscovery.cache_status ? <Chip label={humanizeFieldLabel(elementDiscovery.cache_status)} variant="outlined" /> : null}
                 </Stack>
                 <Typography variant="body2" color="text.secondary">
                   This run stays inside the Swagger contract: seed roots come from the selected branch models, each discovered element is fetched through the branch element endpoint, and batch hydration uses the branch-level element POST in chunks of {elementDiscovery.batch_size}.
