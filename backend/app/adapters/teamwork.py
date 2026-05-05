@@ -50,6 +50,9 @@ logger = structlog.get_logger(__name__)
 UUID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+ELEMENT_DISCOVERY_MAX_WORKERS = 8
+ELEMENT_DISCOVERY_THROTTLE_EVERY = 100
+ELEMENT_DISCOVERY_THROTTLE_SECONDS = 2.0
 
 
 @dataclass
@@ -2124,6 +2127,10 @@ class TeamworkAdapter:
     ) -> ElementDiscoveryResult:
         seed_ids, seed_source, warnings = await self._element_seed_ids(project_id, branch_id, workspace_id)
         seed_ids = list(dict.fromkeys(seed_ids))
+        if ELEMENT_DISCOVERY_THROTTLE_EVERY > 0 and ELEMENT_DISCOVERY_THROTTLE_SECONDS > 0:
+            warnings.append(
+                f"Element discovery pauses for {ELEMENT_DISCOVERY_THROTTLE_SECONDS:g} seconds after every {ELEMENT_DISCOVERY_THROTTLE_EVERY} traversed elements to reduce upstream load."
+            )
         if not seed_ids:
             return ElementDiscoveryResult(
                 project_id=project_id,
@@ -2150,11 +2157,33 @@ class TeamworkAdapter:
         visited_ids: set[str] = set()
         payloads_by_id: dict[str, Any] = {}
         warnings_lock = asyncio.Lock()
+        throttle_lock = asyncio.Lock()
+        traversed_count = 0
+        pause_until = 0.0
 
         async def append_warning(message: str) -> None:
             async with warnings_lock:
                 if len(warnings) < 50:
                     warnings.append(message)
+
+        async def wait_for_throttle_window() -> None:
+            if ELEMENT_DISCOVERY_THROTTLE_EVERY <= 0 or ELEMENT_DISCOVERY_THROTTLE_SECONDS <= 0:
+                return
+            while True:
+                async with throttle_lock:
+                    remaining = pause_until - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return
+                await asyncio.sleep(remaining)
+
+        async def mark_traversal_progress() -> None:
+            nonlocal traversed_count, pause_until
+            if ELEMENT_DISCOVERY_THROTTLE_EVERY <= 0 or ELEMENT_DISCOVERY_THROTTLE_SECONDS <= 0:
+                return
+            async with throttle_lock:
+                traversed_count += 1
+                if traversed_count % ELEMENT_DISCOVERY_THROTTLE_EVERY == 0:
+                    pause_until = max(pause_until, asyncio.get_running_loop().time()) + ELEMENT_DISCOVERY_THROTTLE_SECONDS
 
         async def fetch_element_payload(element_id: str) -> Any:
             payload = await self._request_candidates_paged(
@@ -2180,7 +2209,9 @@ class TeamworkAdapter:
                 try:
                     if element_id in visited_ids:
                         continue
+                    await wait_for_throttle_window()
                     payload = await fetch_element_payload(element_id)
+                    await mark_traversal_progress()
                     payloads_by_id[element_id] = payload
                     visited_ids.add(element_id)
                     for child_id in _element_containment_ids(payload):
@@ -2196,7 +2227,7 @@ class TeamworkAdapter:
                 finally:
                     queue.task_done()
 
-        worker_count = min(8, max(1, len(seed_ids)))
+        worker_count = min(ELEMENT_DISCOVERY_MAX_WORKERS, max(1, len(seed_ids)))
         workers = [asyncio.create_task(worker()) for _ in range(worker_count)]
         await queue.join()
         for _ in workers:
