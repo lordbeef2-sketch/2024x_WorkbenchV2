@@ -310,7 +310,7 @@
       color: #174b49;
     }
 
-    .category-button.active[data-category="No Magic 2022x"] {
+    .category-button.active[data-category="No Magic 2024x"] {
       background: var(--violet-soft);
       color: #3e338d;
     }
@@ -449,7 +449,7 @@
       color: #174b49;
     }
 
-    .badge[data-category="No Magic 2022x"] {
+    .badge[data-category="No Magic 2024x"] {
       background: var(--violet-soft);
       color: #3e338d;
     }
@@ -556,7 +556,7 @@
         <p class="hero-copy">
           This page documents the public command helpers exposed by <span class="inline-code">Modules</span>
           and <span class="inline-code">Modules.commands</span>. It groups setup helpers, Teamwork Cloud REST
-          commands, and local MagicDraw or Cameo 2022x helpers with short descriptions, expected inputs, and
+          commands, and local MagicDraw or Cameo 2024x helpers with short descriptions, expected inputs, and
           copy-paste usage snippets.
         </p>
         <div class="hero-actions">
@@ -634,7 +634,7 @@ models = list_models(client, resource_id="RESOURCE_ID", branch_id="BRANCH_ID")</
       </article>
       <article class="section">
         <div class="section-header">
-          <h2>Quick Start: Local No Magic 2022x</h2>
+          <h2>Quick Start: Local No Magic 2024x</h2>
         </div>
         <p class="toolbar-copy">
           The No Magic commands work against a local MagicDraw or Cameo installation through JPype. Reuse the same
@@ -754,7 +754,7 @@ models = list_project_models(project, config=config)</pre>
         module: "Modules",
         category: "Auth and Setup",
         signature: "build_magicdraw_openapi(config=None)",
-        requires: "JPype installed and a MagicDraw/Cameo 2022x classpath available.",
+        requires: "JPype installed and a MagicDraw/Cameo 2024x classpath available.",
         returns: "MagicDrawOpenAPI",
         summary: "Builds and starts the local MagicDraw/Cameo Java bridge immediately.",
         usage: "from Modules import MagicDrawJVMConfig, build_magicdraw_openapi\n\nconfig = MagicDrawJVMConfig.from_environment()\napi = build_magicdraw_openapi(config)"
@@ -764,7 +764,7 @@ models = list_project_models(project, config=config)</pre>
         module: "Modules",
         category: "Auth and Setup",
         signature: "get_magicdraw_api(config=None)",
-        requires: "JPype installed and a MagicDraw/Cameo 2022x classpath available when the bridge starts.",
+        requires: "JPype installed and a MagicDraw/Cameo 2024x classpath available when the bridge starts.",
         returns: "MagicDrawOpenAPI",
         summary: "Returns the shared bridge instance used by the No Magic command helpers.",
         usage: "from Modules import MagicDrawJVMConfig, get_magicdraw_api\n\nconfig = MagicDrawJVMConfig.from_environment()\napi = get_magicdraw_api(config)"
@@ -994,9 +994,9 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "get_active_project",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "get_active_project(*, api=None, config=None)",
-        requires: "MagicDraw/Cameo 2022x installation and a currently open project.",
+        requires: "MagicDraw/Cameo 2024x installation and a currently open project.",
         returns: "Any",
         summary: "Returns the active local MagicDraw or Cameo project.",
         usage: "from Modules import MagicDrawJVMConfig\nfrom Modules.commands import get_active_project\n\nconfig = MagicDrawJVMConfig.from_environment()\nproject = get_active_project(config=config)"
@@ -1004,9 +1004,9 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "list_open_projects",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "list_open_projects(*, api=None, config=None)",
-        requires: "MagicDraw/Cameo 2022x bridge availability.",
+        requires: "MagicDraw/Cameo 2024x bridge availability.",
         returns: "list[Any]",
         summary: "Lists all locally open projects.",
         usage: "from Modules.commands import list_open_projects\n\nprojects = list_open_projects(config=config)"
@@ -1014,7 +1014,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "get_project_summary",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "get_project_summary(project=None, *, api=None, config=None)",
         requires: "Project argument or an active project.",
         returns: "dict[str, Any]",
@@ -1024,7 +1024,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "list_project_models",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "list_project_models(project=None, *, api=None, config=None)",
         requires: "Project argument or an active project.",
         returns: "list[Any]",
@@ -1034,7 +1034,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "list_project_diagrams",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "list_project_diagrams(project=None, diagram_type=None, *, api=None, config=None)",
         requires: "Project argument or an active project.",
         returns: "list[Any]",
@@ -1044,7 +1044,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "get_element_by_id",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "get_element_by_id(element_id, project=None, *, api=None, config=None)",
         requires: "Element ID and a project or active project.",
         returns: "Any",
@@ -1054,7 +1054,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "list_factory_methods",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "list_factory_methods(project=None, *, api=None, config=None)",
         requires: "Project argument or an active project.",
         returns: "list[str]",
@@ -1064,7 +1064,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "create_class",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "create_class(parent, name, *, project=None, session_name=None, api=None, config=None)",
         requires: "Parent package or namespace element and an editable local project.",
         returns: "Any",
@@ -1074,7 +1074,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "create_package",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "create_package(parent, name, *, project=None, session_name=None, api=None, config=None)",
         requires: "Parent package or namespace element and an editable local project.",
         returns: "Any",
@@ -1084,7 +1084,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "create_operation",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "create_operation(parent, name, *, project=None, session_name=None, api=None, config=None)",
         requires: "Parent classifier element and an editable local project.",
         returns: "Any",
@@ -1094,7 +1094,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "create_diagram",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "create_diagram(parent, diagram_type, *, open_diagram=False, open_in_active_tab=False, project=None, session_name=None, api=None, config=None)",
         requires: "Parent element, diagram type, and an editable local project.",
         returns: "Any",
@@ -1104,7 +1104,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "get_profile",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "get_profile(profile_name, project=None, *, api=None, config=None)",
         requires: "Profile name and a project or active project.",
         returns: "Any",
@@ -1114,7 +1114,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "get_stereotype",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "get_stereotype(stereotype_name, *, profile_name=None, project=None, api=None, config=None)",
         requires: "Stereotype name and a project or active project.",
         returns: "Any",
@@ -1124,7 +1124,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "list_element_stereotypes",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "list_element_stereotypes(element, *, api=None, config=None)",
         requires: "A local model element.",
         returns: "list[Any]",
@@ -1134,7 +1134,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "has_stereotype",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "has_stereotype(element, stereotype_name, *, profile_name=None, project=None, api=None, config=None)",
         requires: "A local element and stereotype name.",
         returns: "bool",
@@ -1144,7 +1144,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "apply_stereotype",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "apply_stereotype(element, stereotype_name, *, profile_name=None, project=None, session_name=None, api=None, config=None)",
         requires: "Editable local project, target element, and stereotype name.",
         returns: "Any",
@@ -1154,7 +1154,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "remove_stereotype",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "remove_stereotype(element, stereotype_name, *, profile_name=None, project=None, session_name=None, api=None, config=None)",
         requires: "Editable local project, target element, and stereotype name.",
         returns: "bool",
@@ -1164,7 +1164,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "get_stereotype_property",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "get_stereotype_property(element, stereotype_name, property_name, *, profile_name=None, project=None, api=None, config=None)",
         requires: "Target element, stereotype name, and property name.",
         returns: "Any",
@@ -1174,7 +1174,7 @@ models = list_project_models(project, config=config)</pre>
       {
         name: "set_stereotype_property",
         module: "Modules.commands",
-        category: "No Magic 2022x",
+        category: "No Magic 2024x",
         signature: "set_stereotype_property(element, stereotype_name, property_name, value, *, profile_name=None, project=None, session_name=None, api=None, config=None)",
         requires: "Editable local project, target element, stereotype name, property name, and new value.",
         returns: "Any",
@@ -1183,7 +1183,7 @@ models = list_project_models(project, config=config)</pre>
       }
     ];
 
-    const categoryOrder = ["All", "Auth and Setup", "TWC REST", "No Magic 2022x"];
+    const categoryOrder = ["All", "Auth and Setup", "TWC REST", "No Magic 2024x"];
     const commandGroups = document.getElementById("command-groups");
     const categoryRow = document.getElementById("category-row");
     const searchInput = document.getElementById("command-search");

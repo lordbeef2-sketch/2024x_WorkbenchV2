@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 
 from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
 from app.models.domain import (
+    BranchCacheSyncRequest,
     OSLCExecuteRequest,
     OSLCGenerateConsumerRequest,
     OSLCSharedConsumerRequest,
@@ -247,6 +248,139 @@ async def discover_elements(
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.get("/jobs")
+def jobs(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+    return container.platform.list_jobs(session)
+
+
+@router.get("/jobs/{job_id}")
+def job(job_id: str, session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+    record = container.platform.get_job(session, job_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return record
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, session=Depends(require_csrf), container: ApplicationContainer = Depends(get_container)):
+    record = container.platform.cancel_job(session, job_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return record
+
+
+@router.post("/model-cache/sync")
+async def start_model_cache_sync(
+    payload: BranchCacheSyncRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.submit_branch_cache_sync(session, payload)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post("/model-cache/webhooks/{registration_id}", status_code=status.HTTP_202_ACCEPTED)
+async def model_cache_webhook(
+    registration_id: str,
+    request: Request,
+    container: ApplicationContainer = Depends(get_container),
+):
+    raw_body = await request.body()
+    try:
+        payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+    except Exception:
+        payload = raw_body.decode("utf-8", errors="replace") if raw_body else ""
+    try:
+        return await container.platform.handle_model_cache_webhook(
+            registration_id,
+            request.headers.get("authorization"),
+            payload,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook registration not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+
+@router.get("/model-cache/summary")
+def model_cache_summary(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.get_branch_cache_summary(session, projectId, branchId)
+
+
+@router.get("/model-cache/snapshot")
+def model_cache_snapshot(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.get_branch_cache_snapshot(session, projectId, branchId)
+
+
+@router.get("/model-cache/models/{model_id}")
+def cached_model(
+    model_id: str,
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    record = container.platform.get_cached_branch_model(session, projectId, branchId, model_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cached model not found")
+    return record
+
+
+@router.get("/model-cache/elements")
+def cached_elements(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    modelId: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.list_cached_branch_elements(
+        session,
+        projectId,
+        branchId,
+        model_id=modelId,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/model-cache/elements/{element_id}")
+def cached_element(
+    element_id: str,
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    modelId: str | None = Query(default=None),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    record = container.platform.get_cached_branch_element(
+        session,
+        projectId,
+        branchId,
+        element_id,
+        model_id=modelId,
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cached element not found")
+    return record
 
 
 @router.get("/items/{item_id}")

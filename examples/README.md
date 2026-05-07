@@ -94,7 +94,7 @@ Auth and client helpers in `Modules`:
 - `token_summary`
 - `auth_summary`
 
-Optional No Magic 2022x helpers in `Modules`:
+Optional No Magic 2024x helpers in `Modules`:
 
 - `MagicDrawJVMConfig`
 - `MagicDrawOpenAPI`
@@ -103,10 +103,10 @@ Optional No Magic 2022x helpers in `Modules`:
 - `get_magicdraw_api`
 
 Those helpers bridge the local MagicDraw or Cameo Java OpenAPI from
-`https://jdocs.nomagic.com/2022x/` into Python by using `jpype1`.
+`https://jdocs.nomagic.com/2024x/` into Python by using `jpype1`.
 They are separate from the TWC REST examples in this folder.
 
-See [NOMAGIC_2022X_PYTHON.md](/C:/sand/fresh/New%20Project/examples/NOMAGIC_2022X_PYTHON.md)
+See [NOMAGIC_2024X_PYTHON.md](/C:/sand/fresh/New%20Project/examples/NOMAGIC_2024X_PYTHON.md)
 and run:
 
 ```powershell
@@ -151,3 +151,4 @@ and `21_all_elements_payloads.py` cover the no-element-id discovery wrappers.
   `RealSwagger.json`; the closest example here is
   [17_contract_operation.py](/C:/sand/fresh/New%20Project/examples/17_contract_operation.py),
   which lets you run one arbitrary REST operation from `config.json`.
+

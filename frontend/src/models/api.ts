@@ -2,7 +2,7 @@ export type TWCVersion = "auto" | "2022x" | "2024x";
 export type ThemeMode = "light" | "dark" | "system";
 export type CapabilityState = "ready" | "restricted" | "not_available" | "unknown";
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
-export type JobType = "simulation" | "publish" | "export";
+export type JobType = "simulation" | "publish" | "export" | "model_cache";
 export type ExportFormat = "json" | "csv" | "markdown" | "html" | "pdf";
 
 export interface ServerProfile {

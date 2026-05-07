@@ -416,6 +416,7 @@
           "ID" : "4c1f5682-9333-47c6-8c79-eb3d9f7d3d3e",
           "IP" : "127.0.0.1",
           "authen" : "simple",
+          "domain" : "LDAP domain name",
           "environment" : {
             "anoymousbind" : "false",
             "authen_dntype" : "template/query",
@@ -437,7 +438,6 @@
           "password" : "password",
           "port" : "10389",
           "protocol" : "ldap",
-          "domain" : "LDAP domain name",
           "url" : "ldap://127.0.0.1:10389",
           "userName" : "uid=admin,ou=system"
         },
@@ -450,6 +450,9 @@
             "type" : "string"
           },
           "authen" : {
+            "type" : "string"
+          },
+          "domain" : {
             "type" : "string"
           },
           "environment" : {
@@ -467,9 +470,6 @@
             "type" : "string"
           },
           "url" : {
-            "type" : "string"
-          },
-          "domain" : {
             "type" : "string"
           },
           "userName" : {
@@ -860,6 +860,9 @@
             "format" : "int64",
             "type" : "integer"
           },
+          "creator" : {
+            "type" : "string"
+          },
           "description" : {
             "type" : "string"
           },
@@ -991,6 +994,10 @@
         "example" : "username1,username2,username3",
         "type" : "string"
       },
+      "jsonArrayOfString" : {
+        "example" : [ "unit1", "unit2", "unit3" ],
+        "type" : "array"
+      },
       "arrayOfTags" : {
         "items" : {
           "$ref" : "#/components/schemas/Tag"
@@ -1023,6 +1030,10 @@
         "arrayOfString" : {
           "example" : "name1,name2,name3",
           "type" : "string"
+        },
+        "jsonArrayOfString" : {
+          "example" : [ "unit1", "unit2", "unit3" ],
+          "type" : "array"
         },
         "arrayOfUsername" : {
           "example" : [ "name1", "name2", "name3" ],
@@ -1104,7 +1115,7 @@
                   "cassandraLiveNodes" : [ "192.168.228.67" ],
                   "cassandraUnreachableNodes" : [ ],
                   "clusterSize" : 1,
-                  "keyspaceName" : "esi2022x0",
+                  "keyspaceName" : "esi2024x0",
                   "replication" : {
                     "class" : "org.apache.cassandra.locator.SimpleStrategy",
                     "replication_factor" : "1"
@@ -1227,18 +1238,14 @@
             "apply" : {
               "put" : {
                 "example" : {
-                  "address" : "127.0.0.1",
-                  "edition" : "Business Pro",
-                  "port" : "1101"
+                  "address" : "127.0.0.1:1101",
+                  "edition" : "Business Pro"
                 },
                 "properties" : {
                   "address" : {
                     "type" : "string"
                   },
                   "edition" : {
-                    "type" : "string"
-                  },
-                  "port" : {
                     "type" : "string"
                   }
                 },
@@ -1251,20 +1258,20 @@
                 "edition" : "Business Pro",
                 "licenseInfoMap" : {
                   "edition" : "Business Pro",
-                  "expireDate" : "December 31, 2022",
+                  "expireDate" : "December 31, 2024",
                   "keyID" : "000000",
                   "licenseType" : "Floating",
                   "profile" : "000000",
                   "user" : "boyd",
                   "userLimit" : "0",
                   "version" : "Evaluation",
-                  "versionNumber" : "2022x"
+                  "versionNumber" : "2024x"
                 },
                 "licenseServer" : "127.0.0.1:1101",
                 "licenseType" : "Floating",
                 "profile" : "000000",
                 "userName" : "boyd",
-                "version" : "2022x"
+                "version" : "2024x"
               }
             },
             "query" : {
@@ -1274,8 +1281,8 @@
                     "count" : 15,
                     "countAvailable" : 15,
                     "editionName" : "TeamworkCloudBusinessPro",
-                    "editionVersion" : "2022x.0001",
-                    "expirationDate" : "Mon Dec 31 00:00:00 ICT 2022",
+                    "editionVersion" : "2024x.0001",
+                    "expirationDate" : "Mon Dec 31 00:00:00 ICT 2024",
                     "product" : "Business Pro",
                     "productName" : "Business Pro",
                     "properties" : {
@@ -1290,7 +1297,7 @@
                       "user" : "boyd",
                       "userLimit" : "0",
                       "version" : "Evaluation",
-                      "versionNumber" : "2022x"
+                      "versionNumber" : "2024x"
                     }
                   } ]
                 }
@@ -1880,6 +1887,369 @@
           "get" : { }
         }
       },
+      "WebhookAuthentication" : {
+        "oneOf" : [ {
+          "$ref" : "#/components/schemas/WebhookAuthenticationBasic"
+        }, {
+          "$ref" : "#/components/schemas/WebhookAuthenticationNone"
+        } ]
+      },
+      "WebhookUpdate" : {
+        "properties" : {
+          "trigger" : {
+            "oneOf" : [ {
+              "$ref" : "#/components/schemas/WebhookTrigger"
+            }, {
+              "$ref" : "#/components/schemas/SetOfWebhookTrigger"
+            } ],
+            "type" : "object"
+          },
+          "scope" : {
+            "$ref" : "#/components/schemas/WebhookScope"
+          },
+          "type" : {
+            "enum" : [ "http" ],
+            "type" : "string"
+          },
+          "title" : {
+            "example" : "Title",
+            "type" : "string"
+          },
+          "endpoint" : {
+            "example" : "http://localhost/endpoint",
+            "type" : "string"
+          },
+          "authentication" : {
+            "$ref" : "#/components/schemas/WebhookAuthentication"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookCreateResult" : {
+        "example" : {
+          "webhookId" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
+        },
+        "properties" : {
+          "webhookId" : {
+            "format" : "uuid",
+            "type" : "string"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookScopeAll" : {
+        "example" : {
+          "type" : "all"
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "all" ],
+            "type" : "string"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookScope" : {
+        "oneOf" : [ {
+          "$ref" : "#/components/schemas/WebhookScopeAll"
+        }, {
+          "$ref" : "#/components/schemas/WebhookScopeResource"
+        }, {
+          "$ref" : "#/components/schemas/WebhookScopeResourcesInCategory"
+        }, {
+          "$ref" : "#/components/schemas/WebhookScopeBranch"
+        }, {
+          "$ref" : "#/components/schemas/WebhookScopeEObject"
+        }, {
+          "$ref" : "#/components/schemas/WebhookScopeBranchedEObject"
+        }, {
+          "$ref" : "#/components/schemas/SetOfWebhookScope"
+        } ]
+      },
+      "WebhookAuthenticationNone" : {
+        "properties" : {
+          "type" : {
+            "enum" : [ "none" ],
+            "type" : "string"
+          }
+        },
+        "type" : "object"
+      },
+      "SetOfWebhookTrigger" : {
+        "example" : {
+          "type" : "list",
+          "value" : [ {
+            "type" : "commit"
+          }, {
+            "type" : "any_tag"
+          } ]
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "list" ],
+            "type" : "string"
+          },
+          "value" : {
+            "items" : {
+              "$ref" : "#/components/schemas/WebhookTrigger"
+            },
+            "type" : "array"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookAuthenticationBasic" : {
+        "example" : {
+          "type" : "basic",
+          "authentication_username" : "usr",
+          "authentication_password" : "pwd"
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "basic" ],
+            "type" : "string"
+          },
+          "authentication_username" : {
+            "type" : "string"
+          },
+          "authentication_password" : {
+            "type" : "string"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookScopeEObject" : {
+        "example" : {
+          "type" : "eobject",
+          "resourceId" : "1539b3d1-fbd5-430a-a6d5-4667b222d211",
+          "eobjectId" : "f5d5ad93-1e38-4f56-a741-f08e877f611f",
+          "effective_recursively" : true
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "eobject" ],
+            "type" : "string"
+          },
+          "resourceId" : {
+            "format" : "uuid",
+            "type" : "string"
+          },
+          "eobjectId" : {
+            "format" : "uuid",
+            "type" : "string"
+          },
+          "effective_recursively" : {
+            "type" : "boolean"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookTriggerResourceTags" : {
+        "example" : {
+          "type" : "tags",
+          "value" : [ "tag1", "tag2" ]
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "tags" ],
+            "type" : "string"
+          },
+          "value" : {
+            "items" : {
+              "type" : "string"
+            },
+            "type" : "array"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookScopeBranchedEObject" : {
+        "example" : {
+          "type" : "branched_eobject",
+          "resourceId" : "08fbe1b2-82df-45e9-be44-5a39569bbdb5",
+          "eobjectId" : "b6d0bf31-fecf-4696-856d-2742fca794da",
+          "branchIds" : [ "53d038ed-e589-4d7f-9347-c02edebc246c", "b4e5a89d-c91c-43a2-a75c-da6e4a99f474" ],
+          "effective_recursively" : true
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "branched_eobject" ],
+            "type" : "string"
+          },
+          "resourceId" : {
+            "format" : "uuid",
+            "type" : "string"
+          },
+          "eobjectId" : {
+            "format" : "uuid",
+            "type" : "string"
+          },
+          "branchIds" : {
+            "items" : {
+              "format" : "uuid",
+              "type" : "string"
+            },
+            "type" : "array"
+          },
+          "effective_recursively" : {
+            "type" : "boolean"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookScopeBranch" : {
+        "example" : {
+          "type" : "branch",
+          "branchId" : "1539b3d1-fbd5-430a-a6d5-4667b222d211",
+          "resourceId" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "branch" ],
+            "type" : "string"
+          },
+          "branchId" : {
+            "format" : "uuid",
+            "type" : "string"
+          },
+          "resourceId" : {
+            "format" : "uuid",
+            "type" : "string"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookScopeResourcesInCategory" : {
+        "example" : {
+          "type" : "resource_in_category",
+          "value" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "resource_in_category" ],
+            "type" : "string"
+          },
+          "value" : {
+            "format" : "uuid",
+            "type" : "string"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookScopeResource" : {
+        "example" : {
+          "type" : "resource",
+          "value" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "resource" ],
+            "type" : "string"
+          },
+          "value" : {
+            "format" : "uuid",
+            "type" : "string"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookStatus" : {
+        "properties" : {
+          "enabled" : {
+            "type" : "boolean"
+          }
+        },
+        "type" : "object"
+      },
+      "SetOfWebhookScope" : {
+        "example" : {
+          "type" : "list",
+          "value" : [ {
+            "type" : "resource",
+            "value" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
+          }, {
+            "type" : "resource_in_category",
+            "value" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
+          } ]
+        },
+        "properties" : {
+          "type" : {
+            "enum" : [ "list" ],
+            "type" : "string"
+          },
+          "value" : {
+            "items" : {
+              "$ref" : "#/components/schemas/WebhookScope"
+            },
+            "type" : "array"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookTrigger" : {
+        "example" : {
+          "type" : "all"
+        },
+        "oneOf" : [ {
+          "$ref" : "#/components/schemas/WebhookTriggerSimple"
+        }, {
+          "$ref" : "#/components/schemas/WebhookTriggerResourceTags"
+        } ],
+        "type" : "object"
+      },
+      "Webhook" : {
+        "properties" : {
+          "webhookId" : {
+            "example" : "1539b3d1-fbd5-430a-a6d5-4667b222d211",
+            "format" : "uuid",
+            "type" : "string"
+          },
+          "trigger" : {
+            "oneOf" : [ {
+              "$ref" : "#/components/schemas/WebhookTrigger"
+            }, {
+              "$ref" : "#/components/schemas/SetOfWebhookTrigger"
+            } ]
+          },
+          "scope" : {
+            "$ref" : "#/components/schemas/WebhookScope"
+          },
+          "enabled" : {
+            "type" : "boolean"
+          },
+          "type" : {
+            "enum" : [ "http" ],
+            "type" : "string"
+          },
+          "title" : {
+            "example" : "Title",
+            "type" : "string"
+          },
+          "endpoint" : {
+            "example" : "http://localhost/endpoint",
+            "type" : "string"
+          },
+          "authentication" : {
+            "$ref" : "#/components/schemas/WebhookAuthentication"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookTriggerSimple" : {
+        "example" : {
+          "type" : "all"
+        },
+        "properties" : {
+          "type" : {
+            "$ref" : "#/components/schemas/WebhookTriggerTypeSimple"
+          }
+        },
+        "type" : "object"
+      },
+      "WebhookTriggerTypeSimple" : {
+        "enum" : [ "all", "list", "commit", "any_tag" ],
+        "type" : "string"
+      },
       "OneOfModels" : {
         "type" : "object",
         "oneOf" : [ {
@@ -2463,334 +2833,7 @@
         },
         "required" : true
       },
-      "SummaryGetStereotypeLatestBranch" : "Get information about stereotype applied to element of the specified branch latest revision in MD Resource.",
-      "WebhookAuthentication" : {
-        "oneOf" : [ {
-          "$ref" : "#/components/schemas/WebhookAuthenticationBasic"
-        }, {
-          "$ref" : "#/components/schemas/WebhookAuthenticationNone"
-        } ]
-      },
-      "WebhookUpdate" : {
-        "properties" : {
-          "trigger" : {
-            "oneOf" : [ {
-              "$ref" : "#/components/schemas/WebhookTrigger"
-            }, {
-              "$ref" : "#/components/schemas/SetOfWebhookTrigger"
-            } ],
-            "type" : "object"
-          },
-          "scope" : {
-            "$ref" : "#/components/schemas/WebhookScope"
-          },
-          "type" : {
-            "enum" : [ "http" ],
-            "type" : "string"
-          },
-          "title" : {
-            "example" : "Title",
-            "type" : "string"
-          },
-          "endpoint" : {
-            "example" : "http://localhost/endpoint",
-            "type" : "string"
-          },
-          "authentication" : {
-            "$ref" : "#/components/schemas/WebhookAuthentication"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookCreateResult" : {
-        "example" : {
-          "webhookId" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
-        },
-        "properties" : {
-          "webhookId" : {
-            "format" : "uuid",
-            "type" : "string"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookScopeAll" : {
-        "example" : {
-          "type" : "all"
-        },
-        "properties" : {
-          "type" : {
-            "enum" : [ "all" ],
-            "type" : "string"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookAuthenticationNone" : {
-        "properties" : {
-          "type" : {
-            "enum" : [ "none" ],
-            "type" : "string"
-          }
-        },
-        "type" : "object"
-      },
-      "SetOfWebhookTrigger" : {
-        "example" : {
-          "type" : "list",
-          "value" : [ {
-            "type" : "commit"
-          }, {
-            "type" : "any_tag"
-          } ]
-        },
-        "properties" : {
-          "type" : {
-            "enum" : [ "list" ],
-            "type" : "string"
-          },
-          "value" : {
-            "items" : {
-              "$ref" : "#/components/schemas/WebhookTrigger"
-            },
-            "type" : "array"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookAuthenticationBasic" : {
-        "example" : {
-          "type" : "basic",
-          "authentication_username" : "usr",
-          "authentication_password" : "pwd"
-        },
-        "properties" : {
-          "type" : {
-            "enum" : [ "basic" ],
-            "type" : "string"
-          },
-          "authentication_username" : {
-            "type" : "string"
-          },
-          "authentication_password" : {
-            "type" : "string"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookScopeEObject" : {
-        "example" : {
-          "type" : "eobject",
-          "resourceId" : "1539b3d1-fbd5-430a-a6d5-4667b222d211",
-          "eobjectId" : "f5d5ad93-1e38-4f56-a741-f08e877f611f",
-          "effective_recursively" : true
-        },
-        "properties" : {
-          "type" : {
-            "enum" : [ "eobject" ],
-            "type" : "string"
-          },
-          "resourceId" : {
-            "format" : "uuid",
-            "type" : "string"
-          },
-          "eobjectId" : {
-            "format" : "uuid",
-            "type" : "string"
-          },
-          "effective_recursively" : {
-            "type" : "boolean"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookTriggerResourceTags" : {
-        "example" : {
-          "type" : "tags",
-          "value" : [ "tag1", "tag2" ]
-        },
-        "properties" : {
-          "type" : {
-            "enum" : [ "tags" ],
-            "type" : "string"
-          },
-          "value" : {
-            "items" : {
-              "type" : "string"
-            },
-            "type" : "array"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookScopeBranch" : {
-        "example" : {
-          "type" : "branch",
-          "branchId" : "1539b3d1-fbd5-430a-a6d5-4667b222d211",
-          "resourceId" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
-        },
-        "properties" : {
-          "type" : {
-            "enum" : [ "branch" ],
-            "type" : "string"
-          },
-          "branchId" : {
-            "format" : "uuid",
-            "type" : "string"
-          },
-          "resourceId" : {
-            "format" : "uuid",
-            "type" : "string"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookScopeResourcesInCategory" : {
-        "example" : {
-          "type" : "resource_in_category",
-          "value" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
-        },
-        "properties" : {
-          "type" : {
-            "enum" : [ "resource_in_category" ],
-            "type" : "string"
-          },
-          "value" : {
-            "format" : "uuid",
-            "type" : "string"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookScopeResource" : {
-        "example" : {
-          "type" : "resource",
-          "value" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
-        },
-        "properties" : {
-          "type" : {
-            "enum" : [ "resource" ],
-            "type" : "string"
-          },
-          "value" : {
-            "format" : "uuid",
-            "type" : "string"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookScope" : {
-        "oneOf" : [ {
-          "$ref" : "#/components/schemas/WebhookScopeAll"
-        }, {
-          "$ref" : "#/components/schemas/WebhookScopeResource"
-        }, {
-          "$ref" : "#/components/schemas/WebhookScopeResourcesInCategory"
-        }, {
-          "$ref" : "#/components/schemas/WebhookScopeBranch"
-        }, {
-          "$ref" : "#/components/schemas/WebhookScopeEObject"
-        }, {
-          "$ref" : "#/components/schemas/SetOfWebhookScope"
-        } ]
-      },
-      "WebhookStatus" : {
-        "properties" : {
-          "enabled" : {
-            "type" : "boolean"
-          }
-        },
-        "type" : "object"
-      },
-      "SetOfWebhookScope" : {
-        "example" : {
-          "type" : "list",
-          "value" : [ {
-            "type" : "resource",
-            "value" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
-          }, {
-            "type" : "resource_in_category",
-            "value" : "1539b3d1-fbd5-430a-a6d5-4667b222d211"
-          } ]
-        },
-        "properties" : {
-          "type" : {
-            "enum" : [ "list" ],
-            "type" : "string"
-          },
-          "value" : {
-            "items" : {
-              "$ref" : "#/components/schemas/WebhookScope"
-            },
-            "type" : "array"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookTrigger" : {
-        "example" : {
-          "type" : "all"
-        },
-        "oneOf" : [ {
-          "$ref" : "#/components/schemas/WebhookTriggerSimple"
-        }, {
-          "$ref" : "#/components/schemas/WebhookTriggerResourceTags"
-        } ],
-        "type" : "object"
-      },
-      "Webhook" : {
-        "properties" : {
-          "webhookId" : {
-            "example" : "1539b3d1-fbd5-430a-a6d5-4667b222d211",
-            "format" : "uuid",
-            "type" : "string"
-          },
-          "trigger" : {
-            "oneOf" : [ {
-              "$ref" : "#/components/schemas/WebhookTrigger"
-            }, {
-              "$ref" : "#/components/schemas/SetOfWebhookTrigger"
-            } ]
-          },
-          "scope" : {
-            "$ref" : "#/components/schemas/WebhookScope"
-          },
-          "enabled" : {
-            "type" : "boolean"
-          },
-          "type" : {
-            "enum" : [ "http" ],
-            "type" : "string"
-          },
-          "title" : {
-            "example" : "Title",
-            "type" : "string"
-          },
-          "endpoint" : {
-            "example" : "http://localhost/endpoint",
-            "type" : "string"
-          },
-          "authentication" : {
-            "$ref" : "#/components/schemas/WebhookAuthentication"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookTriggerSimple" : {
-        "example" : {
-          "type" : "all"
-        },
-        "properties" : {
-          "type" : {
-            "$ref" : "#/components/schemas/WebhookTriggerTypeSimple"
-          }
-        },
-        "type" : "object"
-      },
-      "WebhookTriggerTypeSimple" : {
-        "enum" : [ "all", "list", "commit", "any_tag" ],
-        "type" : "string"
-      }
+      "SummaryGetStereotypeLatestBranch" : "Get information about stereotype applied to element of the specified branch latest revision in MD Resource."
     },
     "securitySchemes" : {
       "osmcHttpBasic" : {
@@ -2803,7 +2846,7 @@
   "info" : {
     "description" : "Teamwork Cloud REST API",
     "title" : "Teamwork Cloud REST API",
-    "version" : "2022x Refresh2"
+    "version" : "2024x Refresh3"
   },
   "openapi" : "3.0.0",
   "paths" : {
@@ -2840,7 +2883,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/osmc/admin/config/put"
               }
@@ -3048,7 +3091,7 @@
         }
       } ],
       "post" : {
-        "description" : "Import a user from LDAP.\n\n <h3>Note</h3>\n This deprecates /osmc/admin/ldaps/{ldapId}/import/{username}. The old URL is still available but it may be removed in a future release.",
+        "description" : "Import a user or usergroup from LDAP.\n\n <h3>Note</h3>\n This deprecates /osmc/admin/ldaps/{ldapId}/import/{username}. The old URL is still available but it may be removed in a future release.",
         "parameters" : [ {
           "description" : "true or false whether to import group as default in case found both user and usergroup has the same name.",
           "in" : "query",
@@ -3079,7 +3122,7 @@
             "description" : "A imported user."
           }
         },
-        "summary" : "Import a user from LDAP.",
+        "summary" : "Import a user or usergroup from LDAP.",
         "tags" : [ "Administrator" ]
       }
     },
@@ -3270,9 +3313,9 @@
         } ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
-                "$ref" : "#/components/schemas/data/arrayOfString"
+                "$ref" : "#/components/schemas/data/jsonArrayOfUuid"
               }
             }
           },
@@ -3326,9 +3369,9 @@
         } ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
-                "$ref" : "#/components/schemas/data/arrayOfString"
+                "$ref" : "#/components/schemas/data/jsonArrayOfUuid"
               }
             }
           },
@@ -3519,10 +3562,26 @@
         "tags" : [ "Administrator" ]
       },
       "parameters" : [ {
-        "description" : "string the license server address and port.",
+        "description" : "the license server address and port. (Does not apply for DSLS Organization defined mode)",
         "in" : "path",
         "name" : "licenseServer",
         "required" : true,
+        "schema" : {
+          "type" : "string"
+        }
+      }, {
+        "description" : "the licensing framework (DSLS or FlexNet)",
+        "in" : "query",
+        "name" : "licenseFramework",
+        "required" : true,
+        "schema" : {
+          "type" : "string"
+        }
+      }, {
+        "description" : "the licensing mode (ORGANIZATION_DEFINED or CUSTOM, for DSLS only)",
+        "in" : "query",
+        "name" : "licensingMode",
+        "required" : false,
         "schema" : {
           "type" : "string"
         }
@@ -3825,7 +3884,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/osmc/admin/roles/roleID/userGroups/post"
               }
@@ -3923,7 +3982,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/osmc/admin/roles/roleID/users/post"
               }
@@ -4523,7 +4582,7 @@
         } ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -5720,7 +5779,32 @@
         "schema" : {
           "type" : "string"
         }
-      } ]
+      } ],
+      "patch" : {
+        "description" : "Rename the branch and/or update the metadata",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/ld+json" : { }
+            },
+            "info" : "{@link BranchInfo} object with the modified branch info"
+          },
+          "404" : {
+            "content" : {
+              "application/ld+json" : { }
+            },
+            "message" : "Branch not found"
+          },
+          "422" : {
+            "content" : {
+              "application/ld+json" : { }
+            },
+            "message" : "Branch name is empty or blank"
+          }
+        },
+        "summary" : "Rename the branch and/or update the metadata",
+        "tags" : [ "Repository Management" ]
+      }
     },
     "/osmc/resources/{resourceId}/branches/{branchId}/artifacts" : {
       "get" : {
@@ -5919,7 +6003,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -6629,7 +6713,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -7003,7 +7087,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -7748,7 +7832,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -8170,7 +8254,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/osmc/admin/roles/roleID/userGroups/post"
               }
@@ -8282,9 +8366,9 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
-                "$ref" : "#/components/schemas/arrayOfString"
+                "$ref" : "#/components/schemas/jsonArrayOfString"
               }
             }
           },
@@ -8337,7 +8421,7 @@
                 "$ref" : "#/components/schemas/Tag"
               }
             },
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -8548,7 +8632,7 @@
         } ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -9146,7 +9230,32 @@
         "schema" : {
           "type" : "string"
         }
-      } ]
+      } ],
+      "patch" : {
+        "description" : "Rename the branch and/or update the metadata",
+        "responses" : {
+          "200" : {
+            "content" : {
+              "application/ld+json" : { }
+            },
+            "info" : "{@link BranchInfo} object with the modified branch info"
+          },
+          "404" : {
+            "content" : {
+              "application/ld+json" : { }
+            },
+            "message" : "Branch not found"
+          },
+          "422" : {
+            "content" : {
+              "application/ld+json" : { }
+            },
+            "message" : "Branch name is empty or blank"
+          }
+        },
+        "summary" : "Rename the branch and/or update the metadata",
+        "tags" : [ "Repository Management" ]
+      }
     },
     "/osmc/workspaces/{workspaceId}/resources/{resourceId}/branches/{branchId}/artifacts" : {
       "get" : {
@@ -9369,7 +9478,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -10135,7 +10244,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -10525,7 +10634,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -11334,7 +11443,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -11788,7 +11897,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/osmc/admin/roles/roleID/userGroups/post"
               }
@@ -11916,9 +12025,9 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
-                "$ref" : "#/components/schemas/arrayOfString"
+                "$ref" : "#/components/schemas/jsonArrayOfString"
               }
             }
           },
@@ -11979,7 +12088,7 @@
                 "$ref" : "#/components/schemas/Tag"
               }
             },
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/arrayOfUuid"
               }
@@ -12233,7 +12342,7 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
                 "$ref" : "#/components/schemas/osmc/admin/roles/roleID/userGroups/post"
               }
@@ -12345,9 +12454,9 @@
         "parameters" : [ ],
         "requestBody" : {
           "content" : {
-            "text/plain" : {
+            "application/json" : {
               "schema" : {
-                "$ref" : "#/components/schemas/arrayOfString"
+                "$ref" : "#/components/schemas/jsonArrayOfString"
               }
             }
           },

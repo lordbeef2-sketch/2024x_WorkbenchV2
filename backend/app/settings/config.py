@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     twc_authentication_client_ids: str | None = None
     twc_authentication_client_secret: str | None = None
     twc_auth_callback_path: str | None = None
+    twc_webhook_callback_path: str | None = None
     twc_auth_scope: str = "openid"
     twc_auth_state_ttl_minutes: int = 15
     twc_auth_server_overrides: dict[str, TWCAuthServerOverride] = Field(default_factory=dict)
@@ -211,6 +212,7 @@ class Settings(BaseSettings):
         "twc_authentication_client_ids",
         "twc_authentication_client_secret",
         "twc_auth_callback_path",
+        "twc_webhook_callback_path",
         "twc_saml_authorize_url",
         "twc_saml_token_url",
         "twc_oslc_rootservices_url",
@@ -366,6 +368,18 @@ class Settings(BaseSettings):
     @property
     def resolved_twc_auth_callback_url(self) -> str:
         return f"{self.resolved_app_origin}{self.resolved_twc_auth_callback_path}"
+
+    @property
+    def resolved_twc_webhook_callback_path(self) -> str:
+        path = self.twc_webhook_callback_path or f"{self.api_prefix.rstrip('/')}/workspace/model-cache/webhooks"
+        normalized = path.strip()
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+        return normalized
+
+    @property
+    def resolved_twc_webhook_callback_url(self) -> str:
+        return f"{self.resolved_app_origin}{self.resolved_twc_webhook_callback_path}"
 
     @property
     def resolved_twc_oslc_callback_path(self) -> str:

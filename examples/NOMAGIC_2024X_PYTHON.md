@@ -1,6 +1,6 @@
-# No Magic 2022x Java To Python
+# No Magic 2024x Java To Python
 
-This is a Python bridge for the local MagicDraw or Cameo 2022x OpenAPI documented at `https://jdocs.nomagic.com/2022x/`.
+This is a Python bridge for the local MagicDraw or Cameo 2024x OpenAPI documented at `https://jdocs.nomagic.com/2024x/`.
 
 It is separate from the Teamwork Cloud REST examples in this repo:
 
@@ -10,14 +10,14 @@ It is separate from the Teamwork Cloud REST examples in this repo:
 ## Install
 
 1. Install `jpype1` in the same Python environment.
-2. Set `MAGICDRAW_HOME` or `CAMEO_HOME` to your local 2022x installation root.
+2. Set `MAGICDRAW_HOME` or `CAMEO_HOME` to your local 2024x installation root.
 3. Start MagicDraw or Cameo and open a project.
 
 Example:
 
 ```powershell
 pip install jpype1
-$env:MAGICDRAW_HOME = 'C:\Program Files\No Magic\MagicDraw 2022x'
+$env:MAGICDRAW_HOME = 'C:\Program Files\No Magic\MagicDraw 2024x'
 python .\19_nomagic_openapi_project_summary.py
 ```
 
@@ -208,7 +208,7 @@ updated = api.set_stereotype_property(element, "Block", "documentation", "Update
 
 ## Scope
 
-This layer is intentionally focused on the most common 2022x OpenAPI entry points verified from JDocs:
+This layer is intentionally focused on the most common 2024x OpenAPI entry points verified from JDocs:
 
 - `Application`
 - `ProjectsManager`
@@ -219,3 +219,4 @@ This layer is intentionally focused on the most common 2022x OpenAPI entry point
 - `StereotypesHelper`
 
 The full Javadoc surface is much larger than what belongs in a reusable project helper. For anything more specialized, use `api.jclass("...")` for direct access to the underlying Java class.
+

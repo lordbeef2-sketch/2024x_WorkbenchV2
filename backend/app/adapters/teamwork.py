@@ -14,6 +14,9 @@ import httpx
 import structlog
 
 from app.models.domain import (
+    BranchWebhookRegistration,
+    CachedElementRecord,
+    CachedModelRecord,
     AttachmentInfo,
     Capability,
     CapabilityState,
@@ -27,6 +30,7 @@ from app.models.domain import (
     DocumentVersion,
     ItemReference,
     ItemDetails,
+    ModelPermissionSnapshot,
     ProjectSummary,
     PublishPreset,
     SearchResponse,
@@ -37,6 +41,7 @@ from app.models.domain import (
     SimulationRunRequest,
     TreeNode,
     TWCVersion,
+    WebhookRegistrationStatus,
     utcnow,
 )
 from app.models.domain import BranchSummary, TokenBundle
@@ -50,9 +55,13 @@ logger = structlog.get_logger(__name__)
 UUID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
-ELEMENT_DISCOVERY_MAX_WORKERS = 8
+ELEMENT_DISCOVERY_MAX_WORKERS = 2
 ELEMENT_DISCOVERY_THROTTLE_EVERY = 50
 ELEMENT_DISCOVERY_THROTTLE_SECONDS = 1.0
+ELEMENT_DISCOVERY_BATCH_SIZE = 50
+MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS = 0.5
+MODEL_CACHE_SYNC_THROTTLE_EVERY = 25
+MODEL_CACHE_SYNC_THROTTLE_SECONDS = 1.0
 
 
 @dataclass
@@ -1258,7 +1267,7 @@ class TeamworkAdapter:
                 if "2022x" in value:
                     self._detected_version = "2022x"
                     return self._detected_version
-        self._detected_version = "2022x"
+            self._detected_version = "2024x"
         return self._detected_version
 
     async def discover_capabilities(self) -> CapabilitySummary:
@@ -1495,6 +1504,52 @@ class TeamworkAdapter:
                 return [value]
         return []
 
+    def reference_resolution_ids(self, payload: dict[str, Any]) -> list[str]:
+        entity = _payload_entity(payload) or {}
+        ignored_keys = {
+            "@context",
+            "@base",
+            "@id",
+            "@type",
+            "id",
+            "ID",
+            "name",
+            "label",
+            "title",
+            "dcterms:title",
+            "dcterms:description",
+            "description",
+            "summary",
+            "kerml:name",
+            "kerml:comment",
+            "kerml:esiData",
+            "ldp:hasMemberRelation",
+            "ldp:membershipResource",
+            "createdDate",
+            "modifiedDate",
+            "creator",
+            "author",
+            "commitID",
+            "branchID",
+            "resourceId",
+            "resourceID",
+            "removed",
+            "uml:stereotypeName",
+            "uml:stereotypeId",
+            "stereotypeName",
+            "stereotypes",
+        }
+
+        resolution_ids: list[str] = []
+        for key, value in entity.items():
+            if key in ignored_keys:
+                continue
+            for reference in self._reference_values_for_field(value):
+                reference_id = _reference_id(reference)
+                if reference_id and reference_id not in resolution_ids:
+                    resolution_ids.append(reference_id)
+        return resolution_ids
+
     def _extract_stereotypes(self, payload: dict[str, Any]) -> list[str]:
         entity = _payload_entity(payload) or {}
         stereotypes: list[str] = []
@@ -1640,16 +1695,70 @@ class TeamworkAdapter:
             "stereotypes",
         }
 
-        resolution_ids: list[str] = []
-        for key, value in entity.items():
-            if key in ignored_keys:
-                continue
-            for reference in self._reference_values_for_field(value):
-                reference_id = _reference_id(reference)
-                if reference_id and reference_id not in resolution_ids:
-                    resolution_ids.append(reference_id)
-
+        resolution_ids = self.reference_resolution_ids(payload)
         resolved_entities = await self._batch_resolve_element_entities(project_id, branch_id, resolution_ids)
+
+        return self._resolved_item_references(
+            entity,
+            project_id=project_id,
+            branch_id=branch_id,
+            item_path=item_path,
+            resolved_entities=resolved_entities,
+        )
+
+    def _resolved_item_references(
+        self,
+        entity: dict[str, Any],
+        *,
+        project_id: str,
+        branch_id: str,
+        item_path: str,
+        resolved_entities: dict[str, dict[str, Any]],
+    ) -> tuple[ItemReference | None, list[ItemReference], list[ItemReference], list[ItemReference]]:
+        containment_keys = {
+            "ldp:contains": "contains",
+            "kerml:ownedElement": "ownedElement",
+            "kerml:packagedElement": "packagedElement",
+        }
+        type_keys = {
+            "kerml:type": "type",
+            "type": "type",
+            "kerml:classifier": "classifier",
+            "classifier": "classifier",
+        }
+        ignored_keys = {
+            "@context",
+            "@base",
+            "@id",
+            "@type",
+            "id",
+            "ID",
+            "name",
+            "label",
+            "title",
+            "dcterms:title",
+            "dcterms:description",
+            "description",
+            "summary",
+            "kerml:name",
+            "kerml:comment",
+            "kerml:esiData",
+            "ldp:hasMemberRelation",
+            "ldp:membershipResource",
+            "createdDate",
+            "modifiedDate",
+            "creator",
+            "author",
+            "commitID",
+            "branchID",
+            "resourceId",
+            "resourceID",
+            "removed",
+            "uml:stereotypeName",
+            "uml:stereotypeId",
+            "stereotypeName",
+            "stereotypes",
+        }
 
         owner: ItemReference | None = None
         for reference in self._reference_values_for_field(entity.get("kerml:owner")):
@@ -1698,6 +1807,71 @@ class TeamworkAdapter:
             self._dedupe_item_references(type_references),
             self._dedupe_item_references(contained_elements),
             self._dedupe_item_references(related_items),
+        )
+
+    def build_item_details_from_payload(
+        self,
+        payload: dict[str, Any],
+        item_id: str,
+        project_id: str,
+        branch_id: str,
+        *,
+        resolved_payloads: dict[str, Any] | None = None,
+        editable: bool | None = None,
+        version: str | None = None,
+    ) -> ItemDetails:
+        entity = _payload_entity(payload) or {}
+        resolved_entities: dict[str, dict[str, Any]] = {}
+        for reference_id, reference_payload in (resolved_payloads or {}).items():
+            resolved_entity = _payload_entity(reference_payload)
+            if isinstance(resolved_entity, dict):
+                resolved_entities[reference_id] = resolved_entity
+
+        raw_types = _normalize_types(entity.get("@type"))
+        metadata = self._extract_item_metadata(entity)
+        name = self._extract_display_name(entity) or item_id
+        description = self._extract_description(entity)
+        item_type = _humanize_type(raw_types[0]) if raw_types else "item"
+        item_path = self._item_path(project_id, branch_id, name, entity)
+        owner, type_references, contained_elements, related_items = self._resolved_item_references(
+            entity,
+            project_id=project_id,
+            branch_id=branch_id,
+            item_path=item_path,
+            resolved_entities=resolved_entities,
+        )
+        relationships = [
+            {
+                "type": reference.relationship_type,
+                "target": reference.id,
+                "target_name": reference.name,
+                "item_type": reference.item_type,
+                "path": reference.path,
+            }
+            for reference in [*contained_elements, *type_references, *related_items, *([owner] if owner else [])]
+        ]
+        return ItemDetails(
+            id=item_id,
+            name=name,
+            item_type=item_type,
+            path=item_path,
+            project_id=project_id,
+            branch_id=branch_id,
+            description=description,
+            documentation_markdown=self._build_item_markdown(name, description, raw_types, metadata),
+            raw_types=raw_types,
+            stereotypes=self._extract_stereotypes(entity),
+            owner=owner,
+            type_references=type_references,
+            contained_elements=contained_elements,
+            related_items=related_items,
+            metadata=metadata,
+            relationships=relationships or self._extract_relationships(entity),
+            version=version or metadata.get("modifiedDate") or metadata.get("commitID") or "cached",
+            editable=bool(entity.get("editable", editable if editable is not None else False)),
+            attachment_supported=False,
+            collaborators=[],
+            source_payload=entity,
         )
 
     def _extract_relationships(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2194,13 +2368,343 @@ class TeamworkAdapter:
         seed_source = "workspace-model-roots" if workspace_id else "resource-model-roots"
         return seed_ids, seed_source, warnings
 
+    async def list_branch_models(
+        self,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None = None,
+        *,
+        request_pacer: Callable[[], Awaitable[None]] | None = None,
+    ) -> tuple[str | None, list[tuple[str, Any]], list[str]]:
+        latest_revision = await self.get_latest_branch_revision(project_id, branch_id, workspace_id)
+        warnings: list[str] = []
+        if request_pacer is not None:
+            await request_pacer()
+        model_payload = await self._request_candidates_paged(
+            "GET",
+            [
+                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models",) if workspace_id else ()),
+                f"/osmc/resources/{project_id}/branches/{branch_id}/models",
+                f"/osmc/resources/{project_id}/models",
+            ],
+            timeout=30.0,
+        )
+        if model_payload is None:
+            warnings.append("Model discovery returned no response.")
+            return latest_revision, [], warnings
+        if isinstance(model_payload, dict) and model_payload.get("restricted"):
+            warnings.append("Model discovery is restricted for the current Teamwork Cloud session.")
+            return latest_revision, [], warnings
+
+        models: list[tuple[str, Any]] = []
+        for model_id in dict.fromkeys(_container_member_ids(model_payload)):
+            if request_pacer is not None:
+                await request_pacer()
+            detail = await self._request_candidates_paged(
+                "GET",
+                [
+                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models/{model_id}",) if workspace_id else ()),
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
+                    f"/osmc/resources/{project_id}/models/{model_id}",
+                ],
+                timeout=30.0,
+            )
+            models.append((model_id, detail))
+        return latest_revision, models, warnings
+
+    def _model_root_ids(self, payload: Any) -> list[str]:
+        entity = _payload_entity(payload)
+        if not isinstance(entity, dict):
+            return []
+        root_ids: list[str] = []
+        for root in _as_list(entity.get("models:roots")):
+            if not isinstance(root, dict):
+                continue
+            root_id = _reference_id(root.get("models:root") or root.get("@id"))
+            if root_id and root_id not in root_ids:
+                root_ids.append(root_id)
+        return root_ids
+
+    def build_model_permission_snapshot(
+        self,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        payload: Any,
+        *,
+        latest_revision: str | None = None,
+        workspace_id: str | None = None,
+    ) -> ModelPermissionSnapshot:
+        entity = _payload_entity(payload)
+        restricted = bool(isinstance(payload, dict) and payload.get("restricted"))
+        accessible = isinstance(entity, dict) and not restricted
+        editable = bool(entity.get("editable", False)) if isinstance(entity, dict) else False
+        permission_payload: dict[str, Any] = {}
+        for source in (entity if isinstance(entity, dict) else {}, payload if isinstance(payload, dict) else {}):
+            for key in (
+                "editable",
+                "permission",
+                "permissions",
+                "allowedActions",
+                "allowedOperations",
+                "kerml:permission",
+                "kerml:permissions",
+            ):
+                if key in source and key not in permission_payload:
+                    permission_payload[key] = source.get(key)
+        if restricted and isinstance(payload, dict):
+            for key in ("status_code", "message"):
+                if key in payload:
+                    permission_payload[key] = payload.get(key)
+        return ModelPermissionSnapshot(
+            user_id=preferred_username,
+            server_id=self.context.server.id,
+            project_id=project_id,
+            branch_id=branch_id,
+            model_id=model_id,
+            workspace_id=workspace_id,
+            latest_revision=latest_revision,
+            accessible=accessible,
+            restricted=restricted,
+            editable=editable,
+            payload=permission_payload,
+        )
+
+    async def materialize_model_snapshot(
+        self,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        model_payload: Any | None = None,
+        *,
+        latest_revision: str | None = None,
+        workspace_id: str | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+        request_pacer: Callable[[], Awaitable[None]] | None = None,
+    ) -> tuple[CachedModelRecord, ModelPermissionSnapshot, list[CachedElementRecord], list[str]]:
+        warnings: list[str] = []
+        resolved_payload = model_payload
+        if resolved_payload is None:
+            if request_pacer is not None:
+                await request_pacer()
+            resolved_payload = await self._request_candidates_paged(
+                "GET",
+                [
+                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models/{model_id}",) if workspace_id else ()),
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
+                    f"/osmc/resources/{project_id}/models/{model_id}",
+                ],
+                timeout=30.0,
+            )
+
+        permission = self.build_model_permission_snapshot(
+            preferred_username,
+            project_id,
+            branch_id,
+            model_id,
+            resolved_payload,
+            latest_revision=latest_revision,
+            workspace_id=workspace_id,
+        )
+        entity = _payload_entity(resolved_payload)
+        roots = self._model_root_ids(resolved_payload)
+        model_name = self._extract_display_name(entity) if isinstance(entity, dict) else model_id
+
+        payloads_by_id: dict[str, Any] = {}
+        discovered_ids = list(roots)
+        enqueued_ids = set(roots)
+        visited_ids: set[str] = set()
+        cursor = 0
+        traversed_count = 0
+
+        while cursor < len(discovered_ids):
+            if cancel_requested and cancel_requested():
+                warnings.append(f"Model cache sync cancelled while traversing {model_id}.")
+                break
+            element_id = discovered_ids[cursor]
+            cursor += 1
+            if element_id in visited_ids:
+                continue
+            if (
+                MODEL_CACHE_SYNC_THROTTLE_EVERY > 0
+                and MODEL_CACHE_SYNC_THROTTLE_SECONDS > 0
+                and traversed_count > 0
+                and traversed_count % MODEL_CACHE_SYNC_THROTTLE_EVERY == 0
+            ):
+                await asyncio.sleep(MODEL_CACHE_SYNC_THROTTLE_SECONDS)
+
+            if request_pacer is not None:
+                await request_pacer()
+            payload = await self._request_candidates_paged(
+                "GET",
+                [
+                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/elements/{element_id}",) if workspace_id else ()),
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/elements/{element_id}",
+                ],
+                timeout=30.0,
+            )
+            if isinstance(payload, dict) and payload.get("restricted"):
+                warnings.append(f"Access to element {element_id} is restricted for the current Teamwork Cloud session.")
+                visited_ids.add(element_id)
+                continue
+            if payload is None:
+                warnings.append(f"No response was returned for element {element_id}.")
+                visited_ids.add(element_id)
+                continue
+
+            payloads_by_id[element_id] = payload
+            visited_ids.add(element_id)
+            traversed_count += 1
+            for child_id in _element_containment_ids(payload):
+                if child_id in enqueued_ids:
+                    continue
+                enqueued_ids.add(child_id)
+                discovered_ids.append(child_id)
+
+        synced_at = utcnow()
+        records: list[CachedElementRecord] = []
+        for element_id in discovered_ids:
+            payload = payloads_by_id.get(element_id)
+            entity = _payload_entity(payload) if payload is not None else None
+            if not isinstance(entity, dict):
+                continue
+            name = self._extract_display_name(entity) or element_id
+            raw_types = _normalize_types(entity.get("@type"))
+            item_type = _humanize_type(raw_types[0]) if raw_types else "element"
+            records.append(
+                CachedElementRecord(
+                    server_id=self.context.server.id,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    model_id=model_id,
+                    element_id=element_id,
+                    workspace_id=workspace_id,
+                    latest_revision=latest_revision,
+                    name=name,
+                    item_type=item_type,
+                    path=self._item_path(project_id, branch_id, name, entity),
+                    child_count=len(_element_containment_ids(payload)),
+                    payload=payload if isinstance(payload, dict) else {},
+                    synced_at=synced_at,
+                )
+            )
+
+        model_record = CachedModelRecord(
+            server_id=self.context.server.id,
+            project_id=project_id,
+            branch_id=branch_id,
+            model_id=model_id,
+            workspace_id=workspace_id,
+            latest_revision=latest_revision,
+            name=model_name,
+            root_ids=roots,
+            payload=resolved_payload if isinstance(resolved_payload, dict) else {},
+            element_count=len(records),
+            synced_at=synced_at,
+        )
+        if request_pacer is not None and warnings is not None:
+            warnings.append(
+                f"Model cache sync keeps at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests and pauses every {MODEL_CACHE_SYNC_THROTTLE_EVERY} traversed elements."
+            )
+        return model_record, permission, records, warnings
+
+    async def ensure_branch_webhook(
+        self,
+        registration: BranchWebhookRegistration,
+        *,
+        callback_url: str,
+    ) -> BranchWebhookRegistration:
+        version = await self.detect_version()
+        if version != "2024x":
+            return registration.model_copy(
+                update={
+                    "endpoint_url": callback_url,
+                    "status": WebhookRegistrationStatus.FAILED,
+                    "enabled": False,
+                    "status_message": "Automatic Teamwork Cloud webhook registration is only supported for 2024x servers.",
+                    "updated_at": utcnow(),
+                }
+            )
+
+        if not registration.auth_username or not registration.auth_password:
+            raise ValueError("Webhook basic-auth credentials are required.")
+
+        payload = {
+            "trigger": {"type": "commit"},
+            "scope": {
+                "type": "branch",
+                "resourceId": registration.project_id,
+                "branchId": registration.branch_id,
+            },
+            "type": "http",
+            "title": f"TWC Workbench cache {registration.server_id}/{registration.project_id}/{registration.branch_id}",
+            "endpoint": callback_url,
+            "authentication": {
+                "type": "basic",
+                "authentication_username": registration.auth_username,
+                "authentication_password": registration.auth_password,
+            },
+        }
+
+        webhook_id = registration.webhook_id
+        if webhook_id:
+            current_payload = await self._request_candidates("GET", self.webhook_item_candidates(webhook_id), timeout=20.0)
+            if isinstance(current_payload, dict) and current_payload.get("restricted"):
+                raise PermissionError("The active Teamwork Cloud session is not allowed to read webhook configuration.")
+            if not isinstance(current_payload, dict) or not current_payload.get("webhookId"):
+                webhook_id = None
+
+        if webhook_id:
+            update_result = await self._request_candidates(
+                "PUT",
+                self.webhook_item_candidates(webhook_id),
+                json_payload=payload,
+                timeout=20.0,
+            )
+            if isinstance(update_result, dict) and update_result.get("restricted"):
+                raise PermissionError("The active Teamwork Cloud session is not allowed to update webhook configuration.")
+        else:
+            create_result = await self._request_candidates(
+                "POST",
+                self.webhook_candidates(),
+                json_payload=payload,
+                timeout=20.0,
+            )
+            if isinstance(create_result, dict) and create_result.get("restricted"):
+                raise PermissionError("The active Teamwork Cloud session is not allowed to create Teamwork Cloud webhooks.")
+            webhook_id = str((create_result or {}).get("webhookId") or "").strip() or None
+            if not webhook_id:
+                raise RuntimeError("Teamwork Cloud did not return a webhook ID after creating the branch webhook.")
+
+        status_result = await self._request_candidates(
+            "PUT",
+            self.webhook_status_candidates(webhook_id),
+            json_payload={"enabled": True},
+            timeout=20.0,
+        )
+        if isinstance(status_result, dict) and status_result.get("restricted"):
+            raise PermissionError("The active Teamwork Cloud session is not allowed to enable Teamwork Cloud webhooks.")
+
+        return registration.model_copy(
+            update={
+                "webhook_id": webhook_id,
+                "endpoint_url": callback_url,
+                "status": WebhookRegistrationStatus.READY,
+                "enabled": True,
+                "status_message": "Branch cache webhook is registered and enabled.",
+                "updated_at": utcnow(),
+            }
+        )
+
     async def discover_elements(
         self,
         project_id: str,
         branch_id: str,
         workspace_id: str | None = None,
         *,
-        batch_size: int = 200,
+        batch_size: int = ELEMENT_DISCOVERY_BATCH_SIZE,
     ) -> ElementDiscoveryResult:
         latest_revision = await self.get_latest_branch_revision(project_id, branch_id, workspace_id)
         seed_ids, seed_source, warnings = await self._element_seed_ids(project_id, branch_id, workspace_id)
@@ -2209,6 +2713,9 @@ class TeamworkAdapter:
             warnings.append(
                 f"Element discovery pauses for {ELEMENT_DISCOVERY_THROTTLE_SECONDS:g} seconds after every {ELEMENT_DISCOVERY_THROTTLE_EVERY} traversed elements to reduce upstream load."
             )
+        warnings.append(
+            "Element discovery reuses the traversal payloads and only gap-fills missing element payloads in smaller batches to reduce upstream Teamwork Cloud load."
+        )
         if not seed_ids:
             return ElementDiscoveryResult(
                 project_id=project_id,
@@ -2315,9 +2822,10 @@ class TeamworkAdapter:
         await asyncio.gather(*workers)
 
         batch_count = 0
-        hydrated_ids: set[str] = set()
-        for chunk_start in range(0, len(discovered_ids), batch_size):
-            chunk = discovered_ids[chunk_start : chunk_start + batch_size]
+        hydrated_ids: set[str] = {element_id for element_id in discovered_ids if element_id in payloads_by_id}
+        missing_payload_ids = [element_id for element_id in discovered_ids if element_id not in payloads_by_id]
+        for chunk_start in range(0, len(missing_payload_ids), batch_size):
+            chunk = missing_payload_ids[chunk_start : chunk_start + batch_size]
             batch_payload = await self._request_candidates(
                 "POST",
                 [
@@ -2328,13 +2836,13 @@ class TeamworkAdapter:
                 timeout=60.0,
             )
             if batch_payload is None:
-                await append_warning(f"Element batch request returned no response for chunk starting at {chunk_start + 1}.")
+                await append_warning(f"Element gap-fill request returned no response for chunk starting at {chunk_start + 1}.")
                 continue
             if isinstance(batch_payload, dict) and batch_payload.get("restricted"):
-                await append_warning("Element batch retrieval is restricted for the current Teamwork Cloud session.")
+                await append_warning("Element gap-fill retrieval is restricted for the current Teamwork Cloud session.")
                 continue
             if not isinstance(batch_payload, dict):
-                await append_warning(f"Unexpected element batch payload type: {type(batch_payload).__name__}.")
+                await append_warning(f"Unexpected element gap-fill payload type: {type(batch_payload).__name__}.")
                 continue
 
             batch_count += 1
@@ -2421,23 +2929,29 @@ class TeamworkAdapter:
         branch_id: str,
         element_ids: list[str],
         workspace_id: str | None = None,
+        *,
+        batch_size: int = ELEMENT_DISCOVERY_BATCH_SIZE,
     ) -> dict[str, dict[str, Any]]:
         resolved_ids = [element_id for element_id in dict.fromkeys(element_ids) if element_id]
         if not resolved_ids:
             return {}
 
-        payload = await self._request_candidates(
-            "POST",
-            [
-                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/elements",) if workspace_id else ()),
-                f"/osmc/resources/{project_id}/branches/{branch_id}/elements",
-            ],
-            json_payload=resolved_ids,
-            timeout=60.0,
-        )
-        if not isinstance(payload, dict) or payload.get("restricted"):
-            return {}
-        return {str(key): value for key, value in payload.items() if isinstance(value, dict)}
+        payloads_by_id: dict[str, dict[str, Any]] = {}
+        for chunk_start in range(0, len(resolved_ids), batch_size):
+            chunk = resolved_ids[chunk_start : chunk_start + batch_size]
+            payload = await self._request_candidates(
+                "POST",
+                [
+                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/elements",) if workspace_id else ()),
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/elements",
+                ],
+                json_payload=chunk,
+                timeout=60.0,
+            )
+            if not isinstance(payload, dict) or payload.get("restricted"):
+                continue
+            payloads_by_id.update({str(key): value for key, value in payload.items() if isinstance(value, dict)})
+        return payloads_by_id
 
     async def _remote_item_payload(self, project_id: str, branch_id: str, item_id: str) -> Any | None:
         payload = await self._request_candidates(
@@ -3180,6 +3694,15 @@ class TeamworkAdapter:
 
     def current_user_candidates(self) -> list[str]:
         return ["/osmc/admin/currentUser"]
+
+    def webhook_candidates(self) -> list[str]:
+        return ["/osmc/admin/webhooks"]
+
+    def webhook_item_candidates(self, webhook_id: str) -> list[str]:
+        return [f"/osmc/admin/webhooks/{webhook_id}"]
+
+    def webhook_status_candidates(self, webhook_id: str) -> list[str]:
+        return [f"/osmc/admin/webhooks/{webhook_id}/status"]
 
     def version_candidates(self) -> list[str]:
         return ["/osmc/version"]

@@ -29,6 +29,7 @@ class JobType(str, Enum):
     SIMULATION = "simulation"
     PUBLISH = "publish"
     EXPORT = "export"
+    MODEL_CACHE = "model_cache"
 
 
 class JobStatus(str, Enum):
@@ -48,7 +49,7 @@ class ThemeMode(str, Enum):
 class ServerProfileBase(BaseModel):
     name: str
     base_url: str
-    version: TWCVersion = TWCVersion.V2022X
+    version: TWCVersion = TWCVersion.V2024X
     verify_tls: bool = True
     ca_bundle_path: str | None = None
     enabled: bool = True
@@ -499,6 +500,121 @@ class JobRecord(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     cancel_requested: bool = False
+
+
+class MaterializedCacheStatus(str, Enum):
+    EMPTY = "empty"
+    SYNCING = "syncing"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class WebhookRegistrationStatus(str, Enum):
+    PENDING = "pending"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class BranchCacheSyncRequest(BaseModel):
+    project_id: str
+    branch_id: str
+    workspace_id: str | None = None
+    force_full_refresh: bool = False
+
+
+class BranchCacheSummary(BaseModel):
+    server_id: str
+    project_id: str
+    branch_id: str
+    workspace_id: str | None = None
+    latest_revision: str | None = None
+    status: MaterializedCacheStatus = MaterializedCacheStatus.EMPTY
+    message: str = ""
+    model_count: int = 0
+    element_count: int = 0
+    last_job_id: str | None = None
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class BranchWebhookRegistration(BaseModel):
+    registration_id: str = Field(default_factory=lambda: uuid4().hex)
+    server_id: str
+    project_id: str
+    branch_id: str
+    workspace_id: str | None = None
+    webhook_id: str | None = None
+    endpoint_url: str = ""
+    auth_username: str = ""
+    auth_password: str = ""
+    encrypted_service_credentials: str | None = None
+    status: WebhookRegistrationStatus = WebhookRegistrationStatus.PENDING
+    enabled: bool = False
+    status_message: str = ""
+    last_event_at: datetime | None = None
+    last_event_summary: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class CachedModelRecord(BaseModel):
+    server_id: str
+    project_id: str
+    branch_id: str
+    model_id: str
+    workspace_id: str | None = None
+    latest_revision: str | None = None
+    name: str = ""
+    root_ids: list[str] = Field(default_factory=list)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    element_count: int = 0
+    synced_at: datetime = Field(default_factory=utcnow)
+
+
+class ModelPermissionSnapshot(BaseModel):
+    user_id: str
+    server_id: str
+    project_id: str
+    branch_id: str
+    model_id: str
+    workspace_id: str | None = None
+    latest_revision: str | None = None
+    accessible: bool = False
+    restricted: bool = False
+    editable: bool = False
+    source: str = "twc-session-probe"
+    payload: dict[str, Any] = Field(default_factory=dict)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class CachedModelView(BaseModel):
+    model: CachedModelRecord
+    permissions: ModelPermissionSnapshot | None = None
+
+
+class CachedElementRecord(BaseModel):
+    server_id: str
+    project_id: str
+    branch_id: str
+    model_id: str
+    element_id: str
+    workspace_id: str | None = None
+    latest_revision: str | None = None
+    name: str = ""
+    item_type: str = "element"
+    path: str = ""
+    child_count: int = 0
+    payload: dict[str, Any] = Field(default_factory=dict)
+    synced_at: datetime = Field(default_factory=utcnow)
+
+
+class CachedElementQueryResponse(BaseModel):
+    total: int = 0
+    items: list[CachedElementRecord] = Field(default_factory=list)
+
+
+class BranchCacheSnapshot(BaseModel):
+    summary: BranchCacheSummary
+    models: list[CachedModelView] = Field(default_factory=list)
 
 
 class DashboardPayload(BaseModel):

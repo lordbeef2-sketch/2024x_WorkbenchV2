@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import csv
 import json
+import secrets
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from io import StringIO
@@ -13,7 +15,7 @@ import httpx
 import structlog
 
 from app.auth.twc import infer_token_expiry, refresh_twc_auth_token
-from app.adapters.teamwork import TeamworkAdapter, create_adapter
+from app.adapters.teamwork import MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS, TeamworkAdapter, _dict_diff, create_adapter
 from app.core.pdf import render_pdf_document
 from app.core.storage import SqliteRepository
 from app.integrations.publisher import PublisherAdapter, build_publisher
@@ -21,17 +23,29 @@ from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
     AuthorizationContext,
     Bookmark,
+    BranchWebhookRegistration,
+    BranchCacheSnapshot,
+    BranchCacheSummary,
+    BranchCacheSyncRequest,
     BranchSummary,
     BranchUpdateRequest,
     CapabilityState,
+    CachedElementQueryResponse,
+    CachedElementRecord,
+    CachedModelRecord,
+    CachedModelView,
     CommentEntry,
+    CompareDifference,
     CompareResult,
     DashboardPayload,
+    ElementDiscoveryEntry,
     ElementDiscoveryResult,
     ExportRequest,
     ItemDetails,
     JobRecord,
+    JobStatus,
     JobType,
+    MaterializedCacheStatus,
     OSLCAuthorizationStatus,
     OSLCConsumerCredentials,
     OSLCExecuteRequest,
@@ -61,6 +75,7 @@ from app.models.domain import (
     TWCVersion,
     UserServerState,
     UserContext,
+    WebhookRegistrationStatus,
     utcnow,
 )
 from app.security.session import SessionManager
@@ -72,6 +87,8 @@ logger = structlog.get_logger(__name__)
 
 ADMIN_CLAIM_MARKERS = ("admin", "administrator")
 PROJECT_LIST_CACHE_KEY = "projects"
+BRANCH_REVISION_PROBE_TTL_SECONDS = 20
+FAILED_BRANCH_CACHE_RETRY_SECONDS = 300
 
 
 class PlatformService:
@@ -91,6 +108,8 @@ class PlatformService:
         self.sessions = sessions
         self.jobs = jobs
         self.publisher = publisher
+        self._model_cache_server_locks: dict[str, asyncio.Lock] = {}
+        self._branch_revision_probe_cache: dict[tuple[str, str, str], tuple[datetime, str | None]] = {}
         contract_path = Path(__file__).resolve().parents[3] / "contracts" / "RealSwagger.json"
         if not contract_path.exists():
             contract_path = Path.cwd() / "contracts" / "RealSwagger.json"
@@ -359,13 +378,25 @@ class PlatformService:
 
     async def get_model_tree(self, session: SessionData, project_id: str | None, branch_id: str | None, refresh: bool = False):
         cache_key = self._tree_cache_key(project_id, branch_id)
-        if cache_key and not refresh:
+        use_branch_materialized_cache = bool(project_id and branch_id)
+        if cache_key and not refresh and not use_branch_materialized_cache:
             cached_tree = self._cached_model_list(session, cache_key, TreeNode)
             if cached_tree is not None:
                 return cached_tree
 
+        if project_id and branch_id:
+            await self._schedule_branch_cache_refresh_if_stale(
+                session,
+                project_id,
+                branch_id,
+                refresh=refresh,
+            )
+            materialized_tree = self._materialized_model_tree(session, project_id, branch_id)
+            if materialized_tree is not None:
+                return materialized_tree
+
         tree = await self._adapter_for_session(session).get_model_tree(project_id, branch_id)
-        if cache_key:
+        if cache_key and not use_branch_materialized_cache:
             self.repo.upsert_user_cache(
                 self._user_key(session.user.preferred_username),
                 session.server.id,
@@ -383,47 +414,72 @@ class PlatformService:
         refresh: bool = False,
     ) -> ElementDiscoveryResult:
         cache_key = self._element_discovery_cache_key(project_id, branch_id)
-        resolved_workspace_id = workspace_id or await self._workspace_id_for_project(session, project_id)
-        adapter = self._adapter_for_session(session)
-        cached_result = self._cached_model(session, cache_key, ElementDiscoveryResult)
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        resolved_workspace_id = workspace_id or (summary.workspace_id if summary is not None else None)
+        materialized = self._materialized_element_discovery(session, project_id, branch_id, summary)
 
-        if cached_result is not None:
-            current_revision = await adapter.get_latest_branch_revision(project_id, branch_id, resolved_workspace_id)
-            cached_revision = (cached_result.latest_revision or "").strip() or None
+        sync_job = await self._schedule_branch_cache_refresh_if_stale(
+            session,
+            project_id,
+            branch_id,
+            workspace_id=resolved_workspace_id,
+            refresh=refresh,
+            summary=summary,
+        )
 
-            if not refresh and current_revision and cached_revision and current_revision == cached_revision:
-                cache_hit = cached_result.model_copy(update={"cache_status": "cache-hit"})
-                self.repo.upsert_user_cache(
-                    self._user_key(session.user.preferred_username),
-                    session.server.id,
-                    cache_key,
-                    json.loads(cache_hit.model_dump_json()),
-                )
-                return cache_hit
+        if materialized is not None and sync_job is None:
+            self.repo.upsert_user_cache(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                cache_key,
+                json.loads(materialized.model_dump_json()),
+            )
+            return materialized
 
-            if current_revision and cached_revision and current_revision != cached_revision:
-                merged_result = await self._refresh_element_cache_incrementally(
-                    cached_result,
-                    adapter=adapter,
-                    project_id=project_id,
-                    branch_id=branch_id,
-                    workspace_id=resolved_workspace_id,
-                    source_revision=cached_revision,
-                    target_revision=current_revision,
-                )
-                if merged_result is not None:
-                    self.repo.upsert_user_cache(
-                        self._user_key(session.user.preferred_username),
-                        session.server.id,
-                        cache_key,
-                        json.loads(merged_result.model_dump_json()),
-                    )
-                    return merged_result
+        if materialized is not None:
+            refreshed = materialized.model_copy(
+                update={
+                    "warnings": [
+                        *materialized.warnings,
+                        (
+                            f"Background model cache sync started as job {sync_job.id}; cached results remain available while the branch refreshes. "
+                            f"Syncs run one at a time per server and keep at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests."
+                        ),
+                    ][-50:],
+                    "cache_status": "cache-hit",
+                }
+            )
+            self.repo.upsert_user_cache(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                cache_key,
+                json.loads(refreshed.model_dump_json()),
+            )
+            return refreshed
 
-            if not refresh and cached_result is not None and not current_revision:
-                return cached_result.model_copy(update={"cache_status": "cache-hit"})
-
-        result = await adapter.discover_elements(project_id, branch_id, resolved_workspace_id)
+        result = ElementDiscoveryResult(
+            project_id=project_id,
+            branch_id=branch_id,
+            workspace_id=resolved_workspace_id,
+            latest_revision=summary.latest_revision if summary is not None else None,
+            seed_source="materialized-model-cache",
+            seed_ids=[],
+            ids=[],
+            entries=[],
+            total_ids=0,
+            traversed_elements=0,
+            hydrated_elements=0,
+            batch_count=0,
+            batch_size=0,
+            cache_status="full-refresh",
+            warnings=[
+                (
+                    f"Branch cache warm-up started as job {sync_job.id}. Track it with the jobs API and retry when the sync completes. "
+                    f"Syncs run one at a time per server and keep at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests."
+                ),
+                "Element discovery now serves from the local materialized cache instead of walking Teamwork Cloud live.",
+            ],
+        )
         self.repo.upsert_user_cache(
             self._user_key(session.user.preferred_username),
             session.server.id,
@@ -431,6 +487,980 @@ class PlatformService:
             json.loads(result.model_dump_json()),
         )
         return result
+
+    async def submit_branch_cache_sync(self, session: SessionData, request: BranchCacheSyncRequest) -> JobRecord:
+        resolved_workspace_id = request.workspace_id or await self._workspace_id_for_project(session, request.project_id)
+        webhook_registration = await self._ensure_branch_cache_webhook(
+            session,
+            request.project_id,
+            request.branch_id,
+            workspace_id=resolved_workspace_id,
+        )
+        active_job = self._active_branch_cache_job(session, request.project_id, request.branch_id)
+        if active_job is not None:
+            return active_job
+
+        existing_summary = self.repo.get_branch_cache_summary(session.server.id, request.project_id, request.branch_id)
+        webhook_note = ""
+        if webhook_registration is not None:
+            if webhook_registration.status == WebhookRegistrationStatus.READY:
+                webhook_note = " Branch webhook is registered for automatic cache refresh."
+            elif webhook_registration.status == WebhookRegistrationStatus.FAILED and webhook_registration.status_message:
+                webhook_note = f" Automatic webhook registration was not confirmed: {webhook_registration.status_message}"
+        job = self.jobs.create_job(
+            job_type=JobType.MODEL_CACHE,
+            title=f"Model cache: {request.project_id}/{request.branch_id}",
+            owner=session.user.preferred_username,
+            server_id=session.server.id,
+            payload={
+                "project_id": request.project_id,
+                "branch_id": request.branch_id,
+                "workspace_id": resolved_workspace_id,
+                "force_full_refresh": request.force_full_refresh,
+            },
+        )
+        self.repo.upsert_branch_cache_summary(
+            self._branch_cache_summary(
+                session,
+                request.project_id,
+                request.branch_id,
+                workspace_id=resolved_workspace_id,
+                latest_revision=existing_summary.latest_revision if existing_summary else None,
+                status=MaterializedCacheStatus.SYNCING,
+                message=(
+                    "Queued materialized branch cache sync. Model cache jobs are serialized per server and paced between upstream requests to avoid hammering Teamwork Cloud."
+                    f"{webhook_note}"
+                ),
+                model_count=existing_summary.model_count if existing_summary else 0,
+                element_count=existing_summary.element_count if existing_summary else 0,
+                last_job_id=job.id,
+            )
+        )
+        adapter = self._adapter_for_session(session)
+
+        async def handler(context):
+            server_lock = self._model_cache_server_lock(session.server.id)
+            if server_lock.locked():
+                await context.report(
+                    1,
+                    "Waiting for another model cache sync on this server to finish before starting, to avoid hammering Teamwork Cloud.",
+                )
+            async with server_lock:
+                await context.report(
+                    max(2, self.jobs.get_job(job.id).progress if self.jobs.get_job(job.id) else 2),
+                    f"Starting paced model cache sync with a minimum {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s gap between upstream requests.",
+                )
+                return await self._run_branch_cache_sync(
+                    session,
+                    adapter,
+                    request.project_id,
+                    request.branch_id,
+                    resolved_workspace_id,
+                    context.report,
+                    context.cancel_requested,
+                    job.id,
+                )
+
+        return self.jobs.submit(job, handler)
+
+    async def handle_model_cache_webhook(
+        self,
+        registration_id: str,
+        authorization_header: str | None,
+        payload: Any,
+    ) -> dict[str, Any]:
+        registration = self.repo.get_branch_webhook_registration_by_id(registration_id)
+        if registration is None:
+            raise KeyError(registration_id)
+        if not self._validate_branch_webhook_auth(registration, authorization_header):
+            raise PermissionError("Invalid webhook credentials.")
+
+        event_summary = self._summarize_webhook_payload(payload)
+        registration = registration.model_copy(
+            update={
+                "last_event_at": utcnow(),
+                "last_event_summary": event_summary,
+                "updated_at": utcnow(),
+                "status_message": "Webhook event received and queued for cache reconciliation.",
+            }
+        )
+        self.repo.upsert_branch_webhook_registration(registration)
+
+        if not registration.encrypted_service_credentials:
+            failed = registration.model_copy(
+                update={
+                    "status": WebhookRegistrationStatus.FAILED,
+                    "enabled": registration.enabled,
+                    "updated_at": utcnow(),
+                    "status_message": "Webhook event received, but no stored service credentials are available for background Teamwork Cloud refresh.",
+                }
+            )
+            self.repo.upsert_branch_webhook_registration(failed)
+            return {"accepted": True, "queued": False, "message": failed.status_message}
+
+        try:
+            server = self._require_server(registration.server_id, include_disabled=False)
+            credentials = self.sessions.cipher.decrypt(registration.encrypted_service_credentials)
+        except Exception as exc:
+            failed = registration.model_copy(
+                update={
+                    "status": WebhookRegistrationStatus.FAILED,
+                    "enabled": False,
+                    "updated_at": utcnow(),
+                    "status_message": f"Webhook event received, but the stored webhook service credentials are no longer usable: {exc}",
+                }
+            )
+            self.repo.upsert_branch_webhook_registration(failed)
+            return {"accepted": True, "queued": False, "message": failed.status_message}
+
+        refreshed_credentials = await self._refresh_twc_credentials_if_needed(server, credentials)
+        if refreshed_credentials is not credentials:
+            registration = registration.model_copy(
+                update={
+                    "encrypted_service_credentials": self.sessions.cipher.encrypt(refreshed_credentials),
+                    "updated_at": utcnow(),
+                }
+            )
+            self.repo.upsert_branch_webhook_registration(registration)
+
+        try:
+            service_session = await self._build_transient_session(
+                server,
+                refreshed_credentials,
+                fallback_username=f"twc-webhook-{registration.registration_id[:12]}",
+            )
+            job = await self.submit_branch_cache_sync(
+                service_session,
+                BranchCacheSyncRequest(
+                    project_id=registration.project_id,
+                    branch_id=registration.branch_id,
+                    workspace_id=registration.workspace_id,
+                    force_full_refresh=False,
+                ),
+            )
+        except Exception as exc:
+            failed = registration.model_copy(
+                update={
+                    "status": WebhookRegistrationStatus.FAILED,
+                    "enabled": registration.enabled,
+                    "updated_at": utcnow(),
+                    "status_message": f"Webhook event received, but background cache sync could not be queued: {exc}",
+                }
+            )
+            self.repo.upsert_branch_webhook_registration(failed)
+            return {"accepted": True, "queued": False, "message": failed.status_message}
+
+        ready = registration.model_copy(
+            update={
+                "status": WebhookRegistrationStatus.READY,
+                "enabled": True,
+                "updated_at": utcnow(),
+                "status_message": f"Webhook event queued branch cache sync as job {job.id}.",
+            }
+        )
+        self.repo.upsert_branch_webhook_registration(ready)
+        return {"accepted": True, "queued": True, "job_id": job.id}
+
+    def get_branch_cache_summary(self, session: SessionData, project_id: str, branch_id: str) -> BranchCacheSummary:
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if summary is not None:
+            return summary
+        return self._branch_cache_summary(
+            session,
+            project_id,
+            branch_id,
+            status=MaterializedCacheStatus.EMPTY,
+            message="No materialized branch cache has been created yet.",
+        )
+
+    def get_branch_cache_snapshot(self, session: SessionData, project_id: str, branch_id: str) -> BranchCacheSnapshot:
+        summary = self.get_branch_cache_summary(session, project_id, branch_id)
+        permissions = {
+            item.model_id: item
+            for item in self.repo.list_model_permissions(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                project_id,
+                branch_id,
+            )
+        }
+        models = [
+            CachedModelView(model=model, permissions=permissions.get(model.model_id))
+            for model in self.repo.list_cached_models(session.server.id, project_id, branch_id)
+            if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
+        ]
+        return BranchCacheSnapshot(summary=summary, models=models)
+
+    def get_cached_branch_model(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+    ) -> CachedModelView | None:
+        model = self.repo.get_cached_model(session.server.id, project_id, branch_id, model_id)
+        if model is None:
+            return None
+        permission = self.repo.get_model_permission(
+            self._user_key(session.user.preferred_username),
+            session.server.id,
+            project_id,
+            branch_id,
+            model_id,
+        )
+        if permission is None or not permission.accessible or permission.restricted:
+            return None
+        return CachedModelView(model=model, permissions=permission)
+
+    def list_cached_branch_elements(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        *,
+        model_id: str | None = None,
+        search: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> CachedElementQueryResponse:
+        permissions = {
+            item.model_id: item
+            for item in self.repo.list_model_permissions(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                project_id,
+                branch_id,
+            )
+        }
+        visible_models = [
+            model
+            for model in self.repo.list_cached_models(session.server.id, project_id, branch_id)
+            if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
+        ]
+        visible_model_ids = {
+            permission.model_id for permission in permissions.values() if permission.accessible and not permission.restricted
+        }
+        if model_id is not None and model_id not in visible_model_ids:
+            return CachedElementQueryResponse(total=0, items=[])
+
+        raw = self.repo.list_cached_elements(
+            session.server.id,
+            project_id,
+            branch_id,
+            model_id=model_id,
+            search=search,
+            limit=limit if model_id is not None else max(limit + offset, sum(model.element_count for model in visible_models), 1),
+            offset=offset if model_id is not None else 0,
+        )
+        if model_id is not None:
+            return raw
+
+        filtered_items = [item for item in raw.items if item.model_id in visible_model_ids]
+        return CachedElementQueryResponse(
+            total=len(filtered_items),
+            items=filtered_items[offset : offset + limit],
+        )
+
+    def get_cached_branch_element(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        element_id: str,
+        *,
+        model_id: str | None = None,
+    ) -> CachedElementRecord | None:
+        permissions = {
+            item.model_id: item
+            for item in self.repo.list_model_permissions(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                project_id,
+                branch_id,
+            )
+        }
+        visible_model_ids = [
+            permission.model_id for permission in permissions.values() if permission.accessible and not permission.restricted
+        ]
+        if model_id is not None:
+            if model_id not in visible_model_ids:
+                return None
+            return self.repo.get_cached_element(
+                session.server.id,
+                project_id,
+                branch_id,
+                element_id,
+                model_id=model_id,
+            )
+        for visible_model_id in visible_model_ids:
+            match = self.repo.get_cached_element(
+                session.server.id,
+                project_id,
+                branch_id,
+                element_id,
+                model_id=visible_model_id,
+            )
+            if match is not None:
+                return match
+        return None
+
+    async def _run_branch_cache_sync(
+        self,
+        session: SessionData,
+        adapter: TeamworkAdapter,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None,
+        report,
+        cancel_requested,
+        job_id: str,
+    ) -> dict[str, Any]:
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        synced_model_ids: list[str] = []
+        total_elements = 0
+        latest_revision: str | None = summary.latest_revision if summary else None
+        warnings: list[str] = []
+        request_pacer = self._model_cache_request_pacer()
+        try:
+            await report(5, "Loading branch model inventory")
+            latest_revision, models, warnings = await adapter.list_branch_models(
+                project_id,
+                branch_id,
+                workspace_id,
+                request_pacer=request_pacer,
+            )
+            if not models and warnings:
+                failure_summary = self._branch_cache_summary(
+                    session,
+                    project_id,
+                    branch_id,
+                    workspace_id=workspace_id,
+                    latest_revision=latest_revision,
+                    status=MaterializedCacheStatus.FAILED,
+                    message=warnings[-1],
+                    last_job_id=job_id,
+                )
+                self.repo.upsert_branch_cache_summary(failure_summary)
+                raise RuntimeError(warnings[-1])
+
+            total_models = max(1, len(models))
+            for index, (model_id, model_payload) in enumerate(models, start=1):
+                if cancel_requested():
+                    cancelled_summary = self._branch_cache_summary(
+                        session,
+                        project_id,
+                        branch_id,
+                        workspace_id=workspace_id,
+                        latest_revision=latest_revision,
+                        status=MaterializedCacheStatus.FAILED,
+                        message="Materialized branch cache sync was cancelled before completion.",
+                        model_count=len(synced_model_ids),
+                        element_count=total_elements,
+                        last_job_id=job_id,
+                    )
+                    self.repo.upsert_branch_cache_summary(cancelled_summary)
+                    return {
+                        "cancelled": True,
+                        "project_id": project_id,
+                        "branch_id": branch_id,
+                        "model_count": len(synced_model_ids),
+                        "element_count": total_elements,
+                        "latest_revision": latest_revision,
+                        "warnings": warnings,
+                    }
+
+                await report(min(95, 5 + int(index * 90 / total_models)), f"Syncing model {index}/{len(models)}: {model_id}")
+                model_record, permission, element_records, model_warnings = await adapter.materialize_model_snapshot(
+                    self._user_key(session.user.preferred_username),
+                    project_id,
+                    branch_id,
+                    model_id,
+                    model_payload,
+                    latest_revision=latest_revision,
+                    workspace_id=workspace_id,
+                    cancel_requested=cancel_requested,
+                    request_pacer=request_pacer,
+                )
+                synced_model_ids.append(model_id)
+                total_elements += len(element_records)
+                warnings.extend(model_warnings[-10:])
+                self.repo.upsert_cached_models([model_record])
+                self.repo.upsert_model_permissions([permission])
+                self.repo.replace_cached_elements(
+                    session.server.id,
+                    project_id,
+                    branch_id,
+                    model_id,
+                    element_records,
+                )
+                self.repo.upsert_branch_cache_summary(
+                    self._branch_cache_summary(
+                        session,
+                        project_id,
+                        branch_id,
+                        workspace_id=workspace_id,
+                        latest_revision=latest_revision,
+                        status=MaterializedCacheStatus.SYNCING,
+                        message=f"Synced model {index}/{len(models)}: {model_record.name or model_id}",
+                        model_count=len(synced_model_ids),
+                        element_count=total_elements,
+                        last_job_id=job_id,
+                    )
+                )
+
+            self.repo.delete_branch_models_except(session.server.id, project_id, branch_id, synced_model_ids)
+            final_message = f"Materialized {len(synced_model_ids)} models and {total_elements} elements into the local branch cache."
+            if warnings:
+                final_message = f"{final_message} Last warning: {warnings[-1]}"
+            self.repo.upsert_branch_cache_summary(
+                self._branch_cache_summary(
+                    session,
+                    project_id,
+                    branch_id,
+                    workspace_id=workspace_id,
+                    latest_revision=latest_revision,
+                    status=MaterializedCacheStatus.READY,
+                    message=final_message,
+                    model_count=len(synced_model_ids),
+                    element_count=total_elements,
+                    last_job_id=job_id,
+                )
+            )
+            self._remember_branch_revision(session.server.id, project_id, branch_id, latest_revision)
+            await report(100, final_message)
+            return {
+                "cancelled": False,
+                "project_id": project_id,
+                "branch_id": branch_id,
+                "model_count": len(synced_model_ids),
+                "element_count": total_elements,
+                "latest_revision": latest_revision,
+                "warnings": warnings[-25:],
+            }
+        except Exception as exc:
+            self.repo.upsert_branch_cache_summary(
+                self._branch_cache_summary(
+                    session,
+                    project_id,
+                    branch_id,
+                    workspace_id=workspace_id,
+                    latest_revision=latest_revision,
+                    status=MaterializedCacheStatus.FAILED,
+                    message=str(exc),
+                    model_count=len(synced_model_ids),
+                    element_count=total_elements,
+                    last_job_id=job_id,
+                )
+            )
+            raise
+
+    def _active_branch_cache_job(self, session: SessionData, project_id: str, branch_id: str) -> JobRecord | None:
+        for job in self.repo.list_jobs():
+            if job.server_id != session.server.id or job.job_type != JobType.MODEL_CACHE:
+                continue
+            if job.status not in {JobStatus.PENDING, JobStatus.RUNNING}:
+                continue
+            if job.payload.get("project_id") == project_id and job.payload.get("branch_id") == branch_id:
+                return job
+        return None
+
+    def _model_cache_server_lock(self, server_id: str) -> asyncio.Lock:
+        lock = self._model_cache_server_locks.get(server_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._model_cache_server_locks[server_id] = lock
+        return lock
+
+    def _model_cache_request_pacer(self) -> callable:
+        next_request_at = 0.0
+
+        async def pace() -> None:
+            nonlocal next_request_at
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            if next_request_at > now:
+                await asyncio.sleep(next_request_at - now)
+                now = loop.time()
+            next_request_at = now + MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS
+
+        return pace
+
+    def _remember_branch_revision(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        latest_revision: str | None,
+    ) -> None:
+        self._branch_revision_probe_cache[(server_id, project_id, branch_id)] = (utcnow(), latest_revision)
+
+    async def _probe_branch_revision(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        *,
+        workspace_id: str | None = None,
+        force: bool = False,
+    ) -> str | None:
+        cache_key = (session.server.id, project_id, branch_id)
+        if not force:
+            cached = self._branch_revision_probe_cache.get(cache_key)
+            if cached is not None and cached[0] >= utcnow() - timedelta(seconds=BRANCH_REVISION_PROBE_TTL_SECONDS):
+                return cached[1]
+
+        try:
+            latest_revision = await self._adapter_for_session(session).get_latest_branch_revision(project_id, branch_id, workspace_id)
+        except Exception as exc:
+            logger.warning(
+                "twc-branch-revision-probe-failed",
+                server_id=session.server.id,
+                project_id=project_id,
+                branch_id=branch_id,
+                detail=str(exc),
+            )
+            return None
+
+        self._remember_branch_revision(session.server.id, project_id, branch_id, latest_revision)
+        return latest_revision
+
+    async def _schedule_branch_cache_refresh_if_stale(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        *,
+        workspace_id: str | None = None,
+        refresh: bool = False,
+        summary: BranchCacheSummary | None = None,
+    ) -> JobRecord | None:
+        existing_summary = summary or self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        resolved_workspace_id = workspace_id or (existing_summary.workspace_id if existing_summary is not None else None)
+
+        if refresh:
+            if resolved_workspace_id is None:
+                resolved_workspace_id = await self._workspace_id_for_project(session, project_id)
+            return await self.submit_branch_cache_sync(
+                session,
+                BranchCacheSyncRequest(
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    workspace_id=resolved_workspace_id,
+                    force_full_refresh=True,
+                ),
+            )
+
+        if existing_summary is None:
+            if resolved_workspace_id is None:
+                resolved_workspace_id = await self._workspace_id_for_project(session, project_id)
+            return await self.submit_branch_cache_sync(
+                session,
+                BranchCacheSyncRequest(
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    workspace_id=resolved_workspace_id,
+                    force_full_refresh=False,
+                ),
+            )
+
+        if existing_summary.status == MaterializedCacheStatus.SYNCING:
+            return self._active_branch_cache_job(session, project_id, branch_id)
+
+        if existing_summary.status == MaterializedCacheStatus.FAILED:
+            if existing_summary.updated_at <= utcnow() - timedelta(seconds=FAILED_BRANCH_CACHE_RETRY_SECONDS):
+                if resolved_workspace_id is None:
+                    resolved_workspace_id = existing_summary.workspace_id or await self._workspace_id_for_project(session, project_id)
+                return await self.submit_branch_cache_sync(
+                    session,
+                    BranchCacheSyncRequest(
+                        project_id=project_id,
+                        branch_id=branch_id,
+                        workspace_id=resolved_workspace_id,
+                        force_full_refresh=False,
+                    ),
+                )
+            return None
+
+        summary_revision = (existing_summary.latest_revision or "").strip() or None
+        latest_revision = await self._probe_branch_revision(
+            session,
+            project_id,
+            branch_id,
+            workspace_id=resolved_workspace_id,
+            force=False,
+        )
+        if not latest_revision or latest_revision == summary_revision:
+            return None
+
+        if resolved_workspace_id is None:
+            resolved_workspace_id = existing_summary.workspace_id or await self._workspace_id_for_project(session, project_id)
+        return await self.submit_branch_cache_sync(
+            session,
+            BranchCacheSyncRequest(
+                project_id=project_id,
+                branch_id=branch_id,
+                workspace_id=resolved_workspace_id,
+                force_full_refresh=False,
+            ),
+        )
+
+    async def _ensure_branch_cache_webhook(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        *,
+        workspace_id: str | None,
+    ) -> BranchWebhookRegistration | None:
+        existing = self.repo.get_branch_webhook_registration(session.server.id, project_id, branch_id)
+        callback_url = self._branch_webhook_callback_url(
+            (existing.registration_id if existing is not None else None) or BranchWebhookRegistration(
+                server_id=session.server.id,
+                project_id=project_id,
+                branch_id=branch_id,
+                workspace_id=workspace_id,
+            ).registration_id
+        )
+
+        if (
+            existing is not None
+            and existing.status == WebhookRegistrationStatus.READY
+            and existing.webhook_id
+            and existing.encrypted_service_credentials
+            and existing.endpoint_url == callback_url
+        ):
+            return existing
+
+        if not session.authorization_context.can_manage_server_presets:
+            return existing
+
+        registration = existing or BranchWebhookRegistration(
+            server_id=session.server.id,
+            project_id=project_id,
+            branch_id=branch_id,
+            workspace_id=workspace_id,
+        )
+        if not registration.auth_username:
+            registration = registration.model_copy(update={"auth_username": f"twc-workbench-{registration.registration_id[:12]}"})
+        if not registration.auth_password:
+            registration = registration.model_copy(update={"auth_password": secrets.token_urlsafe(24)})
+
+        callback_url = self._branch_webhook_callback_url(registration.registration_id)
+        credentials = self.sessions.get_credentials(session)
+        refreshed_credentials = await self._refresh_twc_credentials_if_needed(session.server, credentials)
+        if refreshed_credentials is not credentials:
+            self.sessions.update_credentials(session, refreshed_credentials)
+        registration = registration.model_copy(
+            update={
+                "workspace_id": workspace_id,
+                "endpoint_url": callback_url,
+                "encrypted_service_credentials": self.sessions.cipher.encrypt(refreshed_credentials),
+                "updated_at": utcnow(),
+            }
+        )
+
+        try:
+            ensured = await self._adapter_for_credentials(session.server, refreshed_credentials).ensure_branch_webhook(
+                registration,
+                callback_url=callback_url,
+            )
+        except Exception as exc:
+            failed = registration.model_copy(
+                update={
+                    "status": WebhookRegistrationStatus.FAILED,
+                    "enabled": False,
+                    "status_message": str(exc),
+                    "updated_at": utcnow(),
+                }
+            )
+            self.repo.upsert_branch_webhook_registration(failed)
+            return failed
+
+        ensured = ensured.model_copy(
+            update={
+                "workspace_id": workspace_id,
+                "encrypted_service_credentials": registration.encrypted_service_credentials,
+                "updated_at": utcnow(),
+            }
+        )
+        self.repo.upsert_branch_webhook_registration(ensured)
+        return ensured
+
+    async def _build_transient_session(
+        self,
+        server: ServerProfile,
+        credentials: TokenBundle,
+        *,
+        fallback_username: str,
+    ) -> SessionData:
+        adapter = self._adapter_for_credentials(server, credentials)
+        current_user_context = await adapter.current_user_context()
+        preferred_username = self._resolve_preferred_username(current_user_context, fallback_username)
+        capabilities = await adapter.discover_capabilities()
+        if not self._has_remote_access(capabilities):
+            raise PermissionError(
+                "The stored Teamwork Cloud webhook service credentials no longer expose repository access. Sign in again with an admin-capable account."
+            )
+
+        user = UserContext(
+            preferred_username=preferred_username,
+            server_id=server.id,
+            server_name=server.name,
+        )
+        authorization_context = self._build_authorization_context(preferred_username, current_user_context, upstream_roles=None, upstream_groups=None)
+        now = utcnow()
+        return SessionData(
+            server=server,
+            user=user,
+            authorization_context=authorization_context,
+            encrypted_credentials=self.sessions.cipher.encrypt(credentials),
+            capabilities=capabilities,
+            created_at=now,
+            expires_at=now + timedelta(minutes=self.settings.session_ttl_minutes),
+        )
+
+    def _branch_webhook_callback_url(self, registration_id: str) -> str:
+        return f"{self.settings.resolved_twc_webhook_callback_url.rstrip('/')}/{registration_id}"
+
+    def _validate_branch_webhook_auth(
+        self,
+        registration: BranchWebhookRegistration,
+        authorization_header: str | None,
+    ) -> bool:
+        if not authorization_header or not authorization_header.lower().startswith("basic "):
+            return False
+        encoded = authorization_header.split(" ", 1)[1].strip()
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+        except Exception:
+            return False
+        username, separator, password = decoded.partition(":")
+        if not separator:
+            return False
+        return secrets.compare_digest(username, registration.auth_username) and secrets.compare_digest(
+            password,
+            registration.auth_password,
+        )
+
+    def _summarize_webhook_payload(self, payload: Any) -> str:
+        if isinstance(payload, dict):
+            for key in ("event", "type", "trigger", "branchId", "commitId", "eobjectId"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return f"Webhook event received ({key}={value.strip()})."
+                if isinstance(value, dict) and isinstance(value.get("type"), str):
+                    return f"Webhook event received (trigger={value['type']})."
+            keys = ", ".join(sorted(str(key) for key in payload.keys())[:5])
+            return f"Webhook event received with payload keys: {keys or 'none'}."
+        if isinstance(payload, list):
+            return f"Webhook event received with an array payload of {len(payload)} item(s)."
+        if isinstance(payload, str) and payload.strip():
+            return f"Webhook event received ({payload.strip()[:160]})."
+        return "Webhook event received."
+
+    def _branch_cache_summary(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        *,
+        status: MaterializedCacheStatus,
+        message: str,
+        workspace_id: str | None = None,
+        latest_revision: str | None = None,
+        model_count: int = 0,
+        element_count: int = 0,
+        last_job_id: str | None = None,
+    ) -> BranchCacheSummary:
+        return BranchCacheSummary(
+            server_id=session.server.id,
+            project_id=project_id,
+            branch_id=branch_id,
+            workspace_id=workspace_id,
+            latest_revision=latest_revision,
+            status=status,
+            message=message,
+            model_count=model_count,
+            element_count=element_count,
+            last_job_id=last_job_id,
+        )
+
+    async def _materialized_item_details(
+        self,
+        session: SessionData,
+        item_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> ItemDetails | None:
+        cached_record = self.get_cached_branch_element(session, project_id, branch_id, item_id)
+        if cached_record is None:
+            return None
+
+        permission = self.repo.get_model_permission(
+            self._user_key(session.user.preferred_username),
+            session.server.id,
+            project_id,
+            branch_id,
+            cached_record.model_id,
+        )
+        adapter = self._adapter_for_session(session)
+        resolved_payloads: dict[str, Any] = {}
+        for reference_id in adapter.reference_resolution_ids(cached_record.payload):
+            referenced_record = self.get_cached_branch_element(session, project_id, branch_id, reference_id)
+            if referenced_record is not None and isinstance(referenced_record.payload, dict):
+                resolved_payloads[reference_id] = referenced_record.payload
+
+        return adapter.build_item_details_from_payload(
+            cached_record.payload,
+            item_id,
+            project_id,
+            branch_id,
+            resolved_payloads=resolved_payloads,
+            editable=bool(permission.editable) if permission else False,
+            version=cached_record.latest_revision or cached_record.synced_at.isoformat(),
+        )
+
+    def _accessible_cached_models(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+    ) -> list[CachedModelRecord]:
+        permissions = {
+            item.model_id: item
+            for item in self.repo.list_model_permissions(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                project_id,
+                branch_id,
+            )
+        }
+        return [
+            model
+            for model in self.repo.list_cached_models(session.server.id, project_id, branch_id)
+            if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
+        ]
+
+    def _materialized_model_tree(self, session: SessionData, project_id: str, branch_id: str) -> list[TreeNode] | None:
+        models = self._accessible_cached_models(session, project_id, branch_id)
+        if not models:
+            return None
+
+        nodes: list[TreeNode] = []
+        for model in models:
+            model_name = model.name or model.model_id
+            model_path = f"{project_id}/{branch_id}/{model_name}"
+            children: list[TreeNode] = []
+            for root_id in model.root_ids:
+                root_record = self.get_cached_branch_element(session, project_id, branch_id, root_id, model_id=model.model_id)
+                root_name = root_record.name if root_record is not None else root_id
+                root_type = root_record.item_type if root_record is not None else "model_root"
+                children.append(
+                    TreeNode(
+                        id=root_id,
+                        label=root_name,
+                        node_type=root_type,
+                        path=f"{model_path}/{root_name}",
+                        children=[],
+                        metadata={
+                            "project_id": project_id,
+                            "branch_id": branch_id,
+                            "model_id": model.model_id,
+                        },
+                    )
+                )
+            nodes.append(
+                TreeNode(
+                    id=model.model_id,
+                    label=model_name,
+                    node_type="model",
+                    path=model_path,
+                    children=children,
+                    metadata={
+                        "project_id": project_id,
+                        "branch_id": branch_id,
+                        "model_id": model.model_id,
+                    },
+                )
+            )
+        return nodes
+
+    def _materialized_element_discovery(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        summary: BranchCacheSummary | None,
+    ) -> ElementDiscoveryResult | None:
+        if summary is None:
+            return None
+        models = self.repo.list_cached_models(session.server.id, project_id, branch_id)
+        if not models:
+            return None
+        permissions = {
+            item.model_id: item
+            for item in self.repo.list_model_permissions(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                project_id,
+                branch_id,
+            )
+        }
+        accessible_models = [
+            model for model in models if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
+        ]
+        if not accessible_models:
+            return None
+
+        cached_elements = self.repo.list_cached_elements(
+            session.server.id,
+            project_id,
+            branch_id,
+            limit=max(1, summary.element_count or sum(model.element_count for model in accessible_models) or 1),
+            offset=0,
+        )
+        visible_model_ids = {model.model_id for model in accessible_models}
+        entries_by_id: dict[str, Any] = {}
+        ids: list[str] = []
+        for item in cached_elements.items:
+            if item.model_id not in visible_model_ids or item.element_id in entries_by_id:
+                continue
+            ids.append(item.element_id)
+            entries_by_id[item.element_id] = {
+                "id": item.element_id,
+                "name": item.name,
+                "item_type": item.item_type,
+                "child_count": item.child_count,
+            }
+
+        if not ids:
+            return None
+
+        warnings = [f"Serving elements from the local materialized cache for {project_id}/{branch_id}."]
+        if summary.message:
+            warnings.append(summary.message)
+        if summary.status == MaterializedCacheStatus.SYNCING:
+            warnings.append("The materialized cache is refreshing in the background; results may lag the latest branch revision.")
+
+        seed_ids = list(dict.fromkeys(root_id for model in accessible_models for root_id in model.root_ids if root_id))
+        return ElementDiscoveryResult(
+            project_id=project_id,
+            branch_id=branch_id,
+            workspace_id=summary.workspace_id,
+            latest_revision=summary.latest_revision,
+            seed_source="materialized-model-cache",
+            seed_ids=seed_ids,
+            ids=ids,
+            entries=[ElementDiscoveryEntry(**payload) for payload in entries_by_id.values()],
+            total_ids=len(ids),
+            traversed_elements=0,
+            hydrated_elements=len(ids),
+            batch_count=0,
+            batch_size=0,
+            cache_status="cache-hit",
+            warnings=warnings[-50:],
+            discovered_at=summary.updated_at,
+        )
 
     async def _refresh_element_cache_incrementally(
         self,
@@ -514,13 +1544,36 @@ class PlatformService:
         refresh: bool = False,
     ) -> ItemDetails:
         cache_key = self._item_cache_key(project_id, branch_id, item_id)
-        if cache_key and not refresh:
+        use_branch_materialized_cache = bool(project_id and branch_id)
+        if cache_key and not refresh and not use_branch_materialized_cache:
             cached_item = self._cached_model(session, cache_key, ItemDetails)
             if cached_item is not None:
                 return cached_item
 
+        if project_id and branch_id:
+            await self._schedule_branch_cache_refresh_if_stale(
+                session,
+                project_id,
+                branch_id,
+                refresh=refresh,
+            )
+            materialized_item = await self._materialized_item_details(session, item_id, project_id, branch_id)
+            if materialized_item is not None:
+                self.sessions.add_recent_item(
+                    session,
+                    Bookmark(
+                        title=materialized_item.name,
+                        item_id=materialized_item.id,
+                        item_type=materialized_item.item_type,
+                        path=materialized_item.path,
+                        project_id=materialized_item.project_id,
+                        branch_id=materialized_item.branch_id,
+                    ),
+                )
+                return materialized_item
+
         item = await self._adapter_for_session(session).get_item(item_id, project_id, branch_id)
-        if cache_key:
+        if cache_key and not use_branch_materialized_cache:
             self.repo.upsert_user_cache(
                 self._user_key(session.user.preferred_username),
                 session.server.id,
@@ -596,13 +1649,28 @@ class PlatformService:
         right_project_id: str | None = None,
         right_branch_id: str | None = None,
     ) -> CompareResult:
-        return await self._adapter_for_session(session).compare_items(
-            left_id,
-            right_id,
-            left_project_id,
-            left_branch_id,
-            right_project_id,
-            right_branch_id,
+        adapter = self._adapter_for_session(session)
+        if left_project_id and left_project_id == right_project_id and left_id.isdigit() and right_id.isdigit():
+            revision_diff = await adapter.compare_items(
+                left_id,
+                right_id,
+                left_project_id,
+                left_branch_id,
+                right_project_id,
+                right_branch_id,
+            )
+            if revision_diff.compare_type == "revisiondiff":
+                return revision_diff
+
+        left = (await self.get_item(session, left_id, left_project_id, left_branch_id)).model_dump(mode="json")
+        right = (await self.get_item(session, right_id, right_project_id, right_branch_id)).model_dump(mode="json")
+        differences: list[CompareDifference] = _dict_diff(left, right)
+        return CompareResult(
+            compare_type="item",
+            left_id=left_id,
+            right_id=right_id,
+            summary=f"{len(differences)} field differences detected.",
+            differences=differences,
         )
 
     def swagger_contract_manifest(self) -> SwaggerContractManifest:

@@ -1341,13 +1341,13 @@ export default function WorkspacePage() {
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                   <Chip label={`${elementDiscovery.total_ids} elements`} color="primary" />
                   <Chip label={`${elementDiscovery.traversed_elements} traversed`} variant="outlined" />
-                  <Chip label={`${elementDiscovery.hydrated_elements} batch hydrated`} variant="outlined" />
-                  <Chip label={`${elementDiscovery.batch_count} batches`} variant="outlined" />
+                  <Chip label={`${elementDiscovery.hydrated_elements} payloads cached`} variant="outlined" />
+                  <Chip label={`${elementDiscovery.batch_count} gap-fill batches`} variant="outlined" />
                   <Chip label={elementDiscovery.seed_source || "model-roots"} variant="outlined" />
                   {elementDiscovery.cache_status ? <Chip label={humanizeFieldLabel(elementDiscovery.cache_status)} variant="outlined" /> : null}
                 </Stack>
                 <Typography variant="body2" color="text.secondary">
-                  This run stays inside the Swagger contract: seed roots come from the selected branch models, each discovered element is fetched through the branch element endpoint, and batch hydration uses the branch-level element POST in chunks of {elementDiscovery.batch_size}.
+                  This run stays inside the Swagger contract: seed roots come from the selected branch models, each discovered element is fetched through the branch element endpoint, and the branch-level element POST is now reserved for smaller gap-fill batches of up to {elementDiscovery.batch_size} elements when traversal payloads are missing.
                 </Typography>
                 {elementDiscovery.warnings.map((warning) => (
                   <Alert severity="warning" key={warning}>
