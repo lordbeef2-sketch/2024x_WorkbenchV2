@@ -414,6 +414,7 @@ export default function WorkspacePage() {
   const [oslcManualKey, setOslcManualKey] = useState("");
   const [oslcManualSecret, setOslcManualSecret] = useState("");
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
+  const projectContextActive = tab === "models" || tab === "elements" || tab === "details" || tab === "compare";
 
   const projectsQuery = useQuery({
     queryKey: ["workspace-projects", ...sessionCacheKey],
@@ -486,13 +487,11 @@ export default function WorkspacePage() {
   );
 
   useEffect(() => {
-    if (!selectedProjectId && projects.length) {
-      setSelectedProjectId(projects[0].id);
+    if (!selectedProjectId) {
+      setSelectedBranchId("");
+      return;
     }
-  }, [projects, selectedProjectId]);
-
-  useEffect(() => {
-    if (!selectedProjectId || branchesQuery.isLoading) {
+    if (branchesQuery.isLoading) {
       return;
     }
     if (!selectedProjectBranches.length) {
@@ -507,7 +506,11 @@ export default function WorkspacePage() {
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
     queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined),
-    enabled: Boolean(selectedProjectId) && !branchesQuery.isLoading && (!selectedProjectBranches.length || Boolean(selectedBranchId)),
+    enabled:
+      projectContextActive &&
+      Boolean(selectedProjectId) &&
+      !branchesQuery.isLoading &&
+      (!selectedProjectBranches.length || Boolean(selectedBranchId)),
     staleTime: cacheTimeMs,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -2290,6 +2293,9 @@ export default function WorkspacePage() {
               fullWidth
               disabled={!projects.length}
             >
+              <MenuItem value="">
+                <em>Select a project</em>
+              </MenuItem>
               {projects.map((project) => (
                 <MenuItem key={project.id} value={project.id}>
                   {project.name}
@@ -2304,7 +2310,11 @@ export default function WorkspacePage() {
               fullWidth
               disabled={!selectedProjectId || branchesQuery.isLoading || !selectedProjectBranches.length}
             >
-              {selectedProjectBranches.length ? (
+              {!selectedProjectId ? (
+                <MenuItem value="" disabled>
+                  Select a project first
+                </MenuItem>
+              ) : selectedProjectBranches.length ? (
                 selectedProjectBranches.map((branch) => (
                   <MenuItem key={branch.id} value={branch.id}>
                     {branch.name}
