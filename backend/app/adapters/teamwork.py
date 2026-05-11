@@ -56,12 +56,12 @@ UUID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 ELEMENT_DISCOVERY_MAX_WORKERS = 2
-ELEMENT_DISCOVERY_THROTTLE_EVERY = 50
-ELEMENT_DISCOVERY_THROTTLE_SECONDS = 1.0
+ELEMENT_DISCOVERY_THROTTLE_EVERY = 0
+ELEMENT_DISCOVERY_THROTTLE_SECONDS = 0.0
 ELEMENT_DISCOVERY_BATCH_SIZE = 50
-MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS = 0.5
-MODEL_CACHE_SYNC_THROTTLE_EVERY = 25
-MODEL_CACHE_SYNC_THROTTLE_SECONDS = 1.0
+MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS = 0.0
+MODEL_CACHE_SYNC_THROTTLE_EVERY = 0
+MODEL_CACHE_SYNC_THROTTLE_SECONDS = 0.0
 
 
 @dataclass
@@ -2605,9 +2605,14 @@ class TeamworkAdapter:
             synced_at=synced_at,
         )
         if request_pacer is not None and warnings is not None:
-            warnings.append(
-                f"Model cache sync keeps at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests and pauses every {MODEL_CACHE_SYNC_THROTTLE_EVERY} traversed elements."
-            )
+            if MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS > 0 or (
+                MODEL_CACHE_SYNC_THROTTLE_EVERY > 0 and MODEL_CACHE_SYNC_THROTTLE_SECONDS > 0
+            ):
+                warnings.append(
+                    f"Model cache sync keeps at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests and pauses every {MODEL_CACHE_SYNC_THROTTLE_EVERY} traversed elements."
+                )
+            else:
+                warnings.append("Model cache sync runs without intentional client-side pacing.")
         return model_record, permission, records, warnings
 
     async def ensure_branch_webhook(
@@ -2713,8 +2718,10 @@ class TeamworkAdapter:
             warnings.append(
                 f"Element discovery pauses for {ELEMENT_DISCOVERY_THROTTLE_SECONDS:g} seconds after every {ELEMENT_DISCOVERY_THROTTLE_EVERY} traversed elements to reduce upstream load."
             )
+        else:
+            warnings.append("Element discovery runs without intentional client-side pacing.")
         warnings.append(
-            "Element discovery reuses the traversal payloads and only gap-fills missing element payloads in smaller batches to reduce upstream Teamwork Cloud load."
+            "Element discovery reuses the traversal payloads and only gap-fills missing element payloads in smaller batches."
         )
         if not seed_ids:
             return ElementDiscoveryResult(

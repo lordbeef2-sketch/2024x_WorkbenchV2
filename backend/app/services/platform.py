@@ -437,13 +437,18 @@ class PlatformService:
             return materialized
 
         if materialized is not None:
+            sync_note = (
+                "Syncs run one at a time per server."
+                if MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS <= 0
+                else f"Syncs run one at a time per server and keep at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests."
+            )
             refreshed = materialized.model_copy(
                 update={
                     "warnings": [
                         *materialized.warnings,
                         (
                             f"Background model cache sync started as job {sync_job.id}; cached results remain available while the branch refreshes. "
-                            f"Syncs run one at a time per server and keep at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests."
+                            f"{sync_note}"
                         ),
                     ][-50:],
                     "cache_status": "cache-hit",
@@ -475,7 +480,11 @@ class PlatformService:
             warnings=[
                 (
                     f"Branch cache warm-up started as job {sync_job.id}. Track it with the jobs API and retry when the sync completes. "
-                    f"Syncs run one at a time per server and keep at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests."
+                    + (
+                        "Syncs run one at a time per server."
+                        if MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS <= 0
+                        else f"Syncs run one at a time per server and keep at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests."
+                    )
                 ),
                 "Element discovery now serves from the local materialized cache instead of walking Teamwork Cloud live.",
             ],
@@ -528,7 +537,7 @@ class PlatformService:
                 latest_revision=existing_summary.latest_revision if existing_summary else None,
                 status=MaterializedCacheStatus.SYNCING,
                 message=(
-                    "Queued materialized branch cache sync. Model cache jobs are serialized per server and paced between upstream requests to avoid hammering Teamwork Cloud."
+                    "Queued materialized branch cache sync. Model cache jobs are serialized per server."
                     f"{webhook_note}"
                 ),
                 model_count=existing_summary.model_count if existing_summary else 0,
@@ -543,12 +552,17 @@ class PlatformService:
             if server_lock.locked():
                 await context.report(
                     1,
-                    "Waiting for another model cache sync on this server to finish before starting, to avoid hammering Teamwork Cloud.",
+                    "Waiting for another model cache sync on this server to finish before starting.",
                 )
             async with server_lock:
+                start_message = (
+                    "Starting model cache sync."
+                    if MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS <= 0
+                    else f"Starting paced model cache sync with a minimum {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s gap between upstream requests."
+                )
                 await context.report(
                     max(2, self.jobs.get_job(job.id).progress if self.jobs.get_job(job.id) else 2),
-                    f"Starting paced model cache sync with a minimum {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s gap between upstream requests.",
+                    start_message,
                 )
                 return await self._run_branch_cache_sync(
                     session,
