@@ -240,13 +240,16 @@ export const api = {
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request<BranchSummary[]>(`/workspace/projects/${projectId}/branches${suffix}`);
   },
-  getTree(projectId?: string, branchId?: string, refresh = false) {
+  getTree(projectId?: string, branchId?: string, workspaceId?: string, refresh = false) {
     const params = new URLSearchParams();
     if (projectId) {
       params.set("projectId", projectId);
     }
     if (branchId) {
       params.set("branchId", branchId);
+    }
+    if (workspaceId) {
+      params.set("workspaceId", workspaceId);
     }
     if (refresh) {
       params.set("refresh", "true");
@@ -267,13 +270,16 @@ export const api = {
     }
     return request<ElementDiscoveryResult>(`/workspace/elements/discovery?${params.toString()}`);
   },
-  getItem(itemId: string, projectId?: string, branchId?: string, refresh = false) {
+  getItem(itemId: string, projectId?: string, branchId?: string, workspaceId?: string, refresh = false) {
     const params = new URLSearchParams();
     if (projectId) {
       params.set("projectId", projectId);
     }
     if (branchId) {
       params.set("branchId", branchId);
+    }
+    if (workspaceId) {
+      params.set("workspaceId", workspaceId);
     }
     if (refresh) {
       params.set("refresh", "true");

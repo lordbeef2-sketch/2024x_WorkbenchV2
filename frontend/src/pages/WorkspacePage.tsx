@@ -505,7 +505,7 @@ export default function WorkspacePage() {
 
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
-    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined),
+    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined),
     enabled:
       projectContextActive &&
       Boolean(selectedProjectId) &&
@@ -671,7 +671,13 @@ export default function WorkspacePage() {
 
   const itemQuery = useQuery({
     queryKey: ["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId],
-    queryFn: () => api.getItem(selectedItemId, selectedProjectId || undefined, selectedBranchId || undefined),
+    queryFn: () =>
+      api.getItem(
+        selectedItemId,
+        selectedProjectId || undefined,
+        selectedBranchId || undefined,
+        selectedProject?.workspace_id || undefined,
+      ),
     enabled: Boolean(selectedItemId),
     staleTime: cacheTimeMs,
     gcTime: cacheTimeMs,
@@ -796,7 +802,7 @@ export default function WorkspacePage() {
       let tree: TreeNode[] | null = null;
       const currentBranchId = selectedBranchId || branches[0]?.id;
       if (currentBranchId) {
-        tree = await api.getTree(selectedProjectId, currentBranchId, true);
+        tree = await api.getTree(selectedProjectId, currentBranchId, selectedProject?.workspace_id || undefined, true);
       }
       return { branches, tree, branchId: currentBranchId ?? "" };
     },
@@ -816,7 +822,13 @@ export default function WorkspacePage() {
       if (!selectedItemId) {
         throw new Error("Select an item before refreshing.");
       }
-      return api.getItem(selectedItemId, selectedProjectId || undefined, selectedBranchId || undefined, true);
+      return api.getItem(
+        selectedItemId,
+        selectedProjectId || undefined,
+        selectedBranchId || undefined,
+        selectedProject?.workspace_id || undefined,
+        true,
+      );
     },
     onSuccess: (item) => {
       queryClient.setQueryData(["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId], item);

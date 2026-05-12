@@ -337,17 +337,11 @@ class PlatformService:
         )
 
     async def list_projects(self, session: SessionData, refresh: bool = False):
-        if not refresh:
-            cached_projects = self._cached_model_list(session, PROJECT_LIST_CACHE_KEY, ProjectSummary)
-            if cached_projects is not None:
-                return cached_projects
-
         projects = await self._adapter_for_session(session).list_projects(include_branches=False)
-        self.repo.upsert_user_cache(
+        self.repo.delete_user_cache(
             self._user_key(session.user.preferred_username),
             session.server.id,
             PROJECT_LIST_CACHE_KEY,
-            [json.loads(project.model_dump_json()) for project in projects],
         )
         logger.info("twc-project-list-ui", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
         return projects
@@ -376,7 +370,14 @@ class PlatformService:
         )
         return branches
 
-    async def get_model_tree(self, session: SessionData, project_id: str | None, branch_id: str | None, refresh: bool = False):
+    async def get_model_tree(
+        self,
+        session: SessionData,
+        project_id: str | None,
+        branch_id: str | None,
+        workspace_id: str | None = None,
+        refresh: bool = False,
+    ):
         cache_key = self._tree_cache_key(project_id, branch_id)
         use_branch_materialized_cache = bool(project_id and branch_id)
         if cache_key and not refresh and not use_branch_materialized_cache:
@@ -389,6 +390,7 @@ class PlatformService:
                 session,
                 project_id,
                 branch_id,
+                workspace_id=workspace_id,
                 refresh=refresh,
             )
             materialized_tree = self._materialized_model_tree(session, project_id, branch_id)
@@ -1555,6 +1557,7 @@ class PlatformService:
         item_id: str,
         project_id: str | None = None,
         branch_id: str | None = None,
+        workspace_id: str | None = None,
         refresh: bool = False,
     ) -> ItemDetails:
         cache_key = self._item_cache_key(project_id, branch_id, item_id)
@@ -1569,6 +1572,7 @@ class PlatformService:
                 session,
                 project_id,
                 branch_id,
+                workspace_id=workspace_id,
                 refresh=refresh,
             )
             materialized_item = await self._materialized_item_details(session, item_id, project_id, branch_id)
@@ -2317,11 +2321,6 @@ class PlatformService:
         return f"project:{project_id}:branch:{normalized_branch}:item:{item_id}"
 
     async def _workspace_id_for_project(self, session: SessionData, project_id: str) -> str | None:
-        cached_projects = self._cached_model_list(session, PROJECT_LIST_CACHE_KEY, ProjectSummary)
-        for project in cached_projects or []:
-            if project.id == project_id and project.workspace_id:
-                return project.workspace_id
-
         projects = await self.list_projects(session, refresh=False)
         for project in projects:
             if project.id == project_id and project.workspace_id:

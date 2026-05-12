@@ -222,11 +222,12 @@ async def project_branches(
 async def tree(
     projectId: str | None = Query(default=None),
     branchId: str | None = Query(default=None),
+    workspaceId: str | None = Query(default=None),
     refresh: bool = Query(default=False),
     session=Depends(get_session),
     container: ApplicationContainer = Depends(get_container),
 ):
-    return await container.platform.get_model_tree(session, projectId, branchId, refresh=refresh)
+    return await container.platform.get_model_tree(session, projectId, branchId, workspaceId, refresh=refresh)
 
 
 @router.get("/elements/discovery")
@@ -388,12 +389,13 @@ async def item(
     item_id: str,
     projectId: str | None = Query(default=None),
     branchId: str | None = Query(default=None),
+    workspaceId: str | None = Query(default=None),
     refresh: bool = Query(default=False),
     session=Depends(get_session),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
-        return await container.platform.get_item(session, item_id, projectId, branchId, refresh=refresh)
+        return await container.platform.get_item(session, item_id, projectId, branchId, workspaceId, refresh=refresh)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found") from exc
 
