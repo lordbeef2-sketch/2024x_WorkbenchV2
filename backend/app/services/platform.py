@@ -501,23 +501,11 @@ class PlatformService:
 
     async def submit_branch_cache_sync(self, session: SessionData, request: BranchCacheSyncRequest) -> JobRecord:
         resolved_workspace_id = request.workspace_id or await self._workspace_id_for_project(session, request.project_id)
-        webhook_registration = await self._ensure_branch_cache_webhook(
-            session,
-            request.project_id,
-            request.branch_id,
-            workspace_id=resolved_workspace_id,
-        )
         active_job = self._active_branch_cache_job(session, request.project_id, request.branch_id)
         if active_job is not None:
             return active_job
 
         existing_summary = self.repo.get_branch_cache_summary(session.server.id, request.project_id, request.branch_id)
-        webhook_note = ""
-        if webhook_registration is not None:
-            if webhook_registration.status == WebhookRegistrationStatus.READY:
-                webhook_note = " Branch webhook is registered for automatic cache refresh."
-            elif webhook_registration.status == WebhookRegistrationStatus.FAILED and webhook_registration.status_message:
-                webhook_note = f" Automatic webhook registration was not confirmed: {webhook_registration.status_message}"
         job = self.jobs.create_job(
             job_type=JobType.MODEL_CACHE,
             title=f"Model cache: {request.project_id}/{request.branch_id}",
@@ -538,10 +526,7 @@ class PlatformService:
                 workspace_id=resolved_workspace_id,
                 latest_revision=existing_summary.latest_revision if existing_summary else None,
                 status=MaterializedCacheStatus.SYNCING,
-                message=(
-                    "Queued materialized branch cache sync. Model cache jobs are serialized per server."
-                    f"{webhook_note}"
-                ),
+                message="Queued materialized branch cache sync for the actively viewed project branch. Model cache jobs are serialized per server.",
                 model_count=existing_summary.model_count if existing_summary else 0,
                 element_count=existing_summary.element_count if existing_summary else 0,
                 last_job_id=job.id,
@@ -597,85 +582,11 @@ class PlatformService:
                 "last_event_at": utcnow(),
                 "last_event_summary": event_summary,
                 "updated_at": utcnow(),
-                "status_message": "Webhook event received and queued for cache reconciliation.",
+                "status_message": "Webhook event received, but automatic background refresh is disabled. The branch refreshes only when a user views it.",
             }
         )
         self.repo.upsert_branch_webhook_registration(registration)
-
-        if not registration.encrypted_service_credentials:
-            failed = registration.model_copy(
-                update={
-                    "status": WebhookRegistrationStatus.FAILED,
-                    "enabled": registration.enabled,
-                    "updated_at": utcnow(),
-                    "status_message": "Webhook event received, but no stored service credentials are available for background Teamwork Cloud refresh.",
-                }
-            )
-            self.repo.upsert_branch_webhook_registration(failed)
-            return {"accepted": True, "queued": False, "message": failed.status_message}
-
-        try:
-            server = self._require_server(registration.server_id, include_disabled=False)
-            credentials = self.sessions.cipher.decrypt(registration.encrypted_service_credentials)
-        except Exception as exc:
-            failed = registration.model_copy(
-                update={
-                    "status": WebhookRegistrationStatus.FAILED,
-                    "enabled": False,
-                    "updated_at": utcnow(),
-                    "status_message": f"Webhook event received, but the stored webhook service credentials are no longer usable: {exc}",
-                }
-            )
-            self.repo.upsert_branch_webhook_registration(failed)
-            return {"accepted": True, "queued": False, "message": failed.status_message}
-
-        refreshed_credentials = await self._refresh_twc_credentials_if_needed(server, credentials)
-        if refreshed_credentials is not credentials:
-            registration = registration.model_copy(
-                update={
-                    "encrypted_service_credentials": self.sessions.cipher.encrypt(refreshed_credentials),
-                    "updated_at": utcnow(),
-                }
-            )
-            self.repo.upsert_branch_webhook_registration(registration)
-
-        try:
-            service_session = await self._build_transient_session(
-                server,
-                refreshed_credentials,
-                fallback_username=f"twc-webhook-{registration.registration_id[:12]}",
-            )
-            job = await self.submit_branch_cache_sync(
-                service_session,
-                BranchCacheSyncRequest(
-                    project_id=registration.project_id,
-                    branch_id=registration.branch_id,
-                    workspace_id=registration.workspace_id,
-                    force_full_refresh=False,
-                ),
-            )
-        except Exception as exc:
-            failed = registration.model_copy(
-                update={
-                    "status": WebhookRegistrationStatus.FAILED,
-                    "enabled": registration.enabled,
-                    "updated_at": utcnow(),
-                    "status_message": f"Webhook event received, but background cache sync could not be queued: {exc}",
-                }
-            )
-            self.repo.upsert_branch_webhook_registration(failed)
-            return {"accepted": True, "queued": False, "message": failed.status_message}
-
-        ready = registration.model_copy(
-            update={
-                "status": WebhookRegistrationStatus.READY,
-                "enabled": True,
-                "updated_at": utcnow(),
-                "status_message": f"Webhook event queued branch cache sync as job {job.id}.",
-            }
-        )
-        self.repo.upsert_branch_webhook_registration(ready)
-        return {"accepted": True, "queued": True, "job_id": job.id}
+        return {"accepted": True, "queued": False, "message": registration.status_message}
 
     def get_branch_cache_summary(self, session: SessionData, project_id: str, branch_id: str) -> BranchCacheSummary:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
