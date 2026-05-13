@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utcnow() -> datetime:
@@ -527,12 +527,16 @@ class BranchCacheSummary(BaseModel):
     project_id: str
     branch_id: str
     workspace_id: str | None = None
+    project_name: str = ""
+    branch_name: str = ""
     latest_revision: str | None = None
     status: MaterializedCacheStatus = MaterializedCacheStatus.EMPTY
     message: str = ""
     model_count: int = 0
     element_count: int = 0
     last_job_id: str | None = None
+    source_kind: str = "twc-rest"
+    source_user: str | None = None
     updated_at: datetime = Field(default_factory=utcnow)
 
 
@@ -567,6 +571,7 @@ class CachedModelRecord(BaseModel):
     root_ids: list[str] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
     element_count: int = 0
+    source_user: str | None = None
     synced_at: datetime = Field(default_factory=utcnow)
 
 
@@ -604,6 +609,7 @@ class CachedElementRecord(BaseModel):
     path: str = ""
     child_count: int = 0
     payload: dict[str, Any] = Field(default_factory=dict)
+    source_user: str | None = None
     synced_at: datetime = Field(default_factory=utcnow)
 
 
@@ -615,6 +621,100 @@ class CachedElementQueryResponse(BaseModel):
 class BranchCacheSnapshot(BaseModel):
     summary: BranchCacheSummary
     models: list[CachedModelView] = Field(default_factory=list)
+
+
+class IngestModelRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    model_id: str = Field(alias="modelId")
+    name: str = ""
+    human_name: str = Field(default="", alias="humanName")
+    qualified_name: str = Field(default="", alias="qualifiedName")
+    owner_id: str | None = Field(default=None, alias="ownerId")
+    root_element_ids: list[str] = Field(default_factory=list, alias="rootElementIds")
+
+
+class IngestElementRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    element_id: str = Field(alias="elementId")
+    model_id: str | None = Field(default=None, alias="modelId")
+    local_id: str | None = Field(default=None, alias="localId")
+    owner_id: str | None = Field(default=None, alias="ownerId")
+    name: str = ""
+    human_name: str = Field(default="", alias="humanName")
+    qualified_name: str = Field(default="", alias="qualifiedName")
+    human_type: str = Field(default="element", alias="humanType")
+    metaclass: str = "Element"
+    documentation: str = ""
+    owned_element_ids: list[str] = Field(default_factory=list, alias="ownedElementIds")
+    applied_stereotype_ids: list[str] = Field(default_factory=list, alias="appliedStereotypeIds")
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    references: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class BranchSnapshotIngestRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_version: str = Field(default="1.0", alias="schemaVersion")
+    source: str = "cameo-plugin"
+    exported_at: datetime = Field(default_factory=utcnow, alias="exportedAt")
+    export_reason: str = Field(default="", alias="exportReason")
+    server_id: str = Field(alias="serverId")
+    server_url: str | None = Field(default=None, alias="serverUrl")
+    workspace_id: str | None = Field(default=None, alias="workspaceId")
+    resource_id: str | None = Field(default=None, alias="resourceId")
+    project_id: str = Field(alias="projectId")
+    project_name: str = Field(default="", alias="projectName")
+    branch_id: str = Field(alias="branchId")
+    branch_name: str = Field(default="", alias="branchName")
+    revision_id: str | None = Field(default=None, alias="revisionId")
+    source_user: str = Field(alias="sourceUser")
+    models: list[IngestModelRecord] = Field(default_factory=list)
+    elements: list[IngestElementRecord] = Field(default_factory=list)
+
+
+class BranchDeltaIngestRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_version: str = Field(default="1.0", alias="schemaVersion")
+    source: str = "cameo-plugin"
+    exported_at: datetime = Field(default_factory=utcnow, alias="exportedAt")
+    export_reason: str = Field(default="", alias="exportReason")
+    server_id: str = Field(alias="serverId")
+    server_url: str | None = Field(default=None, alias="serverUrl")
+    workspace_id: str | None = Field(default=None, alias="workspaceId")
+    resource_id: str | None = Field(default=None, alias="resourceId")
+    project_id: str = Field(alias="projectId")
+    project_name: str = Field(default="", alias="projectName")
+    branch_id: str = Field(alias="branchId")
+    branch_name: str = Field(default="", alias="branchName")
+    from_revision_id: str | None = Field(default=None, alias="fromRevisionId")
+    to_revision_id: str | None = Field(default=None, alias="toRevisionId")
+    source_user: str = Field(alias="sourceUser")
+    added_models: list[IngestModelRecord] = Field(default_factory=list, alias="addedModels")
+    updated_models: list[IngestModelRecord] = Field(default_factory=list, alias="updatedModels")
+    removed_model_ids: list[str] = Field(default_factory=list, alias="removedModelIds")
+    added_elements: list[IngestElementRecord] = Field(default_factory=list, alias="addedElements")
+    updated_elements: list[IngestElementRecord] = Field(default_factory=list, alias="updatedElements")
+    removed_element_ids: list[str] = Field(default_factory=list, alias="removedElementIds")
+
+
+class CacheProjectBranchEntry(BaseModel):
+    branch_id: str
+    branch_name: str = ""
+    latest_revision: str | None = None
+    status: MaterializedCacheStatus = MaterializedCacheStatus.EMPTY
+    model_count: int = 0
+    element_count: int = 0
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class CacheProjectEntry(BaseModel):
+    project_id: str
+    project_name: str = ""
+    workspace_id: str | None = None
+    branches: list[CacheProjectBranchEntry] = Field(default_factory=list)
 
 
 class DashboardPayload(BaseModel):

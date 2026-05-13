@@ -1,0 +1,58 @@
+plugins {
+    id 'java'
+}
+
+group = project.findProperty('group')
+version = project.findProperty('version')
+
+def cameoHome = findProperty('cameoHome') ?: System.getenv('CAMEO_HOME')
+def jarName = project.findProperty('jarName')
+def pluginTarget = findProperty('pluginTarget') ?: 'generic'
+def stageDirName = "cameo-plugin-${pluginTarget}"
+def pluginJavaVersion = (findProperty('pluginJavaVersion') ?: '11').toString()
+
+sourceCompatibility = JavaVersion.toVersion(pluginJavaVersion)
+targetCompatibility = JavaVersion.toVersion(pluginJavaVersion)
+
+dependencies {
+    if (cameoHome) {
+        compileOnly fileTree(dir: "${cameoHome}/lib", include: ['**/*.jar'])
+        compileOnly fileTree(dir: "${cameoHome}/plugins", include: ['**/*.jar'])
+    }
+}
+
+tasks.register('verifyCameoHome') {
+    doLast {
+        if (!cameoHome) {
+            throw new GradleException('Set CAMEO_HOME or pass -PcameoHome=<path> before building the plugin.')
+        }
+    }
+}
+
+compileJava {
+    dependsOn tasks.named('verifyCameoHome')
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:deprecation', '-Xlint:unchecked']
+}
+
+jar {
+    archiveBaseName.set(jarName)
+    archiveVersion.set('')
+    destinationDirectory.set(layout.buildDirectory.dir("${stageDirName}/lib"))
+}
+
+tasks.register('copyPluginDescriptor', Copy) {
+    from('plugin.xml')
+    into(layout.buildDirectory.dir(stageDirName))
+}
+
+tasks.register('copyPluginConfig', Copy) {
+    from('config')
+    into(layout.buildDirectory.dir("${stageDirName}/config"))
+}
+
+tasks.register('stagePlugin') {
+    group = 'distribution'
+    description = 'Builds and stages an installable Cameo plugin folder.'
+    dependsOn tasks.named('jar'), tasks.named('copyPluginDescriptor'), tasks.named('copyPluginConfig')
+}

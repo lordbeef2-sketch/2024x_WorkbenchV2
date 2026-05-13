@@ -1,0 +1,143 @@
+package com.twcworkbench.cameo.ui;
+
+import com.twcworkbench.cameo.config.PluginConfig;
+
+import javax.swing.BorderFactory;
+import javax.swing.JCheckBox;
+import javax.swing.JComponent;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JPasswordField;
+import javax.swing.JTextField;
+import javax.swing.SwingConstants;
+import java.awt.Component;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
+
+public final class WorkbenchConnectionDialog {
+    private WorkbenchConnectionDialog() {
+    }
+
+    public static boolean show(Component parent, PluginConfig config) {
+        JTextField baseUrlField = new JTextField(nullToEmpty(config.workbenchBaseUrl), 34);
+        JPasswordField ingestTokenField = new JPasswordField(nullToEmpty(config.workbenchIngestToken), 34);
+        JTextField serverIdField = new JTextField(nullToEmpty(config.serverIdOverride), 24);
+        JTextField workspaceIdField = new JTextField(nullToEmpty(config.workspaceIdOverride), 24);
+        JTextField resourceIdField = new JTextField(nullToEmpty(config.resourceIdOverride), 24);
+        JTextField exportDirField = new JTextField(config.exportOutputDir == null ? "exports" : config.exportOutputDir, 24);
+        JTextField connectTimeoutField = new JTextField(Integer.toString(config.connectTimeoutSeconds), 8);
+        JTextField readTimeoutField = new JTextField(Integer.toString(config.readTimeoutSeconds), 8);
+        JCheckBox snapshotOnOpenBox = new JCheckBox("Capture baseline on project open", config.snapshotOnOpen);
+        JCheckBox snapshotOnSaveBox = new JCheckBox("Publish full snapshot on project save", config.snapshotOnSave);
+        JCheckBox deltaOnCloseBox = new JCheckBox("Publish delta on project close", config.deltaOnClose);
+
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+        GridBagConstraints constraints = new GridBagConstraints();
+        constraints.insets = new Insets(4, 4, 4, 4);
+        constraints.anchor = GridBagConstraints.WEST;
+        constraints.fill = GridBagConstraints.HORIZONTAL;
+
+        int row = 0;
+        row = addRow(panel, constraints, row, "Workbench Base URL", baseUrlField);
+        row = addRow(panel, constraints, row, "Ingest Bearer Token", ingestTokenField);
+        row = addRow(panel, constraints, row, "Workbench Server ID", serverIdField);
+        row = addRow(panel, constraints, row, "Workspace ID Override", workspaceIdField);
+        row = addRow(panel, constraints, row, "Resource ID Override", resourceIdField);
+        row = addRow(panel, constraints, row, "Local Export Folder", exportDirField);
+        row = addRow(panel, constraints, row, "Connect Timeout (sec)", connectTimeoutField);
+        row = addRow(panel, constraints, row, "Read Timeout (sec)", readTimeoutField);
+        row = addRow(panel, constraints, row, "", snapshotOnOpenBox);
+        row = addRow(panel, constraints, row, "", snapshotOnSaveBox);
+        row = addRow(panel, constraints, row, "", deltaOnCloseBox);
+
+        JLabel note = new JLabel("<html><body style='width: 420px'>"
+                + "Workbench Server ID must exactly match the server profile id inside TWC Workbench, "
+                + "such as <b>twc-2022x</b> or <b>twc-2024x</b>. "
+                + "If the open remote project URL already contains workspace and resource identifiers, "
+                + "the plugin can usually resolve those automatically.</body></html>");
+        note.setVerticalAlignment(SwingConstants.TOP);
+        constraints.gridx = 0;
+        constraints.gridy = row;
+        constraints.gridwidth = 2;
+        constraints.weightx = 1.0;
+        panel.add(note, constraints);
+
+        while (true) {
+            int result = JOptionPane.showConfirmDialog(
+                    parent,
+                    panel,
+                    "TWC Workbench Connection",
+                    JOptionPane.OK_CANCEL_OPTION,
+                    JOptionPane.PLAIN_MESSAGE
+            );
+            if (result != JOptionPane.OK_OPTION) {
+                return false;
+            }
+
+            try {
+                int connectTimeout = parsePositiveInt(connectTimeoutField.getText(), "Connect Timeout");
+                int readTimeout = parsePositiveInt(readTimeoutField.getText(), "Read Timeout");
+                config.applyEditableSettings(
+                        baseUrlField.getText(),
+                        new String(ingestTokenField.getPassword()),
+                        exportDirField.getText(),
+                        snapshotOnOpenBox.isSelected(),
+                        snapshotOnSaveBox.isSelected(),
+                        deltaOnCloseBox.isSelected(),
+                        connectTimeout,
+                        readTimeout,
+                        workspaceIdField.getText(),
+                        serverIdField.getText(),
+                        resourceIdField.getText()
+                );
+                config.save();
+                return true;
+            }
+            catch (IllegalArgumentException exception) {
+                JOptionPane.showMessageDialog(parent, exception.getMessage(), "Invalid Workbench Configuration", JOptionPane.ERROR_MESSAGE);
+            }
+            catch (Exception exception) {
+                JOptionPane.showMessageDialog(parent, exception.getMessage(), "Failed to Save Configuration", JOptionPane.ERROR_MESSAGE);
+                return false;
+            }
+        }
+    }
+
+    private static int addRow(JPanel panel, GridBagConstraints constraints, int row, String label, JComponent field) {
+        constraints.gridwidth = 1;
+        constraints.weightx = 0.0;
+        constraints.gridx = 0;
+        constraints.gridy = row;
+        if (label == null || label.isBlank()) {
+            panel.add(new JLabel(""), constraints);
+        }
+        else {
+            panel.add(new JLabel(label), constraints);
+        }
+
+        constraints.gridx = 1;
+        constraints.weightx = 1.0;
+        panel.add(field, constraints);
+        return row + 1;
+    }
+
+    private static int parsePositiveInt(String rawValue, String label) {
+        try {
+            int value = Integer.parseInt(rawValue.trim());
+            if (value <= 0) {
+                throw new NumberFormatException();
+            }
+            return value;
+        }
+        catch (Exception exception) {
+            throw new IllegalArgumentException(label + " must be a positive whole number.");
+        }
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+}

@@ -1,0 +1,131 @@
+# Workbench Ingest and Cached Data API
+
+## Purpose
+
+Workbench receives model exports from the Cameo plugin, writes them into the
+database, and exposes cached data through authenticated APIs.
+
+## Authentication
+
+Two access patterns are needed.
+
+### 1. Ingest authentication
+
+Used by the plugin/worker to push snapshots and deltas into Workbench.
+
+Recommended header:
+
+```http
+Authorization: Bearer <workbench-ingest-token>
+```
+
+Alternative:
+
+- signed internal API key
+- short-lived scoped token
+
+The ingest token should not be the same thing as the end-user UI token.
+
+### 2. Cached data API authentication
+
+Used by clients, the UI, and integrations to read cached model data.
+
+Recommended:
+
+- Workbench app session
+- or Workbench-issued token access
+
+```http
+Authorization: Bearer <workbench-api-token>
+```
+
+## Ingest Endpoints
+
+### POST `/api/cache-ingest/branch-snapshots`
+
+Create or replace a branch snapshot.
+
+Request body:
+
+- server metadata
+- project metadata
+- branch metadata
+- revision metadata
+- source user metadata
+- full model payload
+
+Response:
+
+- ingest id
+- branch id
+- revision id
+- model count
+- element count
+- status
+
+### POST `/api/cache-ingest/branch-deltas`
+
+Apply a branch delta to an existing snapshot.
+
+Request body:
+
+- branch identity
+- source revision
+- target revision
+- changed element set
+- added/removed items
+- relationship updates
+
+Response:
+
+- ingest id
+- updated revision id
+- changed counts
+- status
+
+## Cached Data Read Endpoints
+
+### GET `/api/cache/servers/{serverId}/projects`
+
+Returns cached projects available to the authenticated caller.
+
+### GET `/api/cache/servers/{serverId}/projects/{projectId}/branches/{branchId}/summary`
+
+Returns branch cache summary.
+
+### GET `/api/cache/servers/{serverId}/projects/{projectId}/branches/{branchId}/snapshot`
+
+Returns the cached branch summary plus cached models and permissions.
+
+### GET `/api/cache/servers/{serverId}/projects/{projectId}/branches/{branchId}/models`
+
+Returns cached models for the branch.
+
+### GET `/api/cache/servers/{serverId}/projects/{projectId}/branches/{branchId}/models/{modelId}`
+
+Returns one cached model record.
+
+### GET `/api/cache/servers/{serverId}/projects/{projectId}/branches/{branchId}/elements`
+
+Query parameters:
+
+- `modelId`
+- `search`
+- `limit`
+- `offset`
+
+Returns cached element rows.
+
+### GET `/api/cache/servers/{serverId}/projects/{projectId}/branches/{branchId}/elements/{elementId}`
+
+Returns one cached element with its normalized detail view.
+
+## Refresh Rule
+
+Workbench should:
+
+- serve cache first
+- only trigger refresh for the branch the user is actively viewing
+- only refresh if the cached revision differs from the live branch revision
+
+Background webhook-driven refresh is intentionally disabled in the current plan.

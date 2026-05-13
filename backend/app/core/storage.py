@@ -611,6 +611,50 @@ class SqliteRepository:
             )
             connection.commit()
 
+    def replace_model_permissions_for_user_branch(
+        self,
+        user_id: str,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        records: Iterable[ModelPermissionSnapshot],
+    ) -> None:
+        items = list(records)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM twc_cached_model_permissions
+                WHERE user_id = ? AND server_id = ? AND project_id = ? AND branch_id = ?
+                """,
+                (user_id, server_id, project_id, branch_id),
+            )
+            if items:
+                connection.executemany(
+                    """
+                    INSERT OR REPLACE INTO twc_cached_model_permissions (
+                        user_id, server_id, project_id, branch_id, model_id,
+                        accessible, restricted, editable, updated_at, payload
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            item.user_id,
+                            item.server_id,
+                            item.project_id,
+                            item.branch_id,
+                            item.model_id,
+                            int(item.accessible),
+                            int(item.restricted),
+                            int(item.editable),
+                            item.updated_at.isoformat(),
+                            item.model_dump_json(),
+                        )
+                        for item in items
+                    ],
+                )
+            connection.commit()
+
     def replace_cached_elements(
         self,
         server_id: str,
@@ -649,9 +693,130 @@ class SqliteRepository:
                         )
                         for item in items
                     ],
-                )
+            )
             connection.commit()
         return len(items)
+
+    def upsert_cached_elements(self, records: Iterable[CachedElementRecord]) -> int:
+        items = list(records)
+        if not items:
+            return 0
+        with self._lock, self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT OR REPLACE INTO twc_cached_elements (
+                    server_id, project_id, branch_id, model_id, element_id,
+                    name, item_type, path, updated_at, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.server_id,
+                        item.project_id,
+                        item.branch_id,
+                        item.model_id,
+                        item.element_id,
+                        item.name,
+                        item.item_type,
+                        item.path,
+                        item.synced_at.isoformat(),
+                        item.model_dump_json(),
+                    )
+                    for item in items
+                ],
+            )
+            connection.commit()
+        return len(items)
+
+    def delete_cached_elements_by_ids(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        element_ids: Iterable[str],
+    ) -> None:
+        ids = [element_id for element_id in dict.fromkeys(element_ids) if element_id]
+        if not ids:
+            return
+        placeholders = ", ".join("?" for _ in ids)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                f"""
+                DELETE FROM twc_cached_elements
+                WHERE server_id = ? AND project_id = ? AND branch_id = ? AND element_id IN ({placeholders})
+                """,
+                (server_id, project_id, branch_id, *ids),
+            )
+            connection.commit()
+
+    def delete_cached_models_by_ids(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        model_ids: Iterable[str],
+    ) -> None:
+        ids = [model_id for model_id in dict.fromkeys(model_ids) if model_id]
+        if not ids:
+            return
+        placeholders = ", ".join("?" for _ in ids)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                f"""
+                DELETE FROM twc_cached_models
+                WHERE server_id = ? AND project_id = ? AND branch_id = ? AND model_id IN ({placeholders})
+                """,
+                (server_id, project_id, branch_id, *ids),
+            )
+            connection.execute(
+                f"""
+                DELETE FROM twc_cached_model_permissions
+                WHERE server_id = ? AND project_id = ? AND branch_id = ? AND model_id IN ({placeholders})
+                """,
+                (server_id, project_id, branch_id, *ids),
+            )
+            connection.execute(
+                f"""
+                DELETE FROM twc_cached_elements
+                WHERE server_id = ? AND project_id = ? AND branch_id = ? AND model_id IN ({placeholders})
+                """,
+                (server_id, project_id, branch_id, *ids),
+            )
+            connection.commit()
+
+    def count_cached_elements_for_model(self, server_id: str, project_id: str, branch_id: str, model_id: str) -> int:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total FROM twc_cached_elements
+                WHERE server_id = ? AND project_id = ? AND branch_id = ? AND model_id = ?
+                """,
+                (server_id, project_id, branch_id, model_id),
+            ).fetchone()
+        return int(row["total"]) if row else 0
+
+    def count_cached_elements_for_branch(self, server_id: str, project_id: str, branch_id: str) -> int:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total FROM twc_cached_elements
+                WHERE server_id = ? AND project_id = ? AND branch_id = ?
+                """,
+                (server_id, project_id, branch_id),
+            ).fetchone()
+        return int(row["total"]) if row else 0
+
+    def list_branch_cache_summaries(self, server_id: str | None = None) -> list[BranchCacheSummary]:
+        query = "SELECT payload FROM twc_branch_cache"
+        params: tuple[object, ...] = ()
+        if server_id is not None:
+            query += " WHERE server_id = ?"
+            params = (server_id,)
+        query += " ORDER BY project_id, branch_id"
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [BranchCacheSummary.model_validate_json(row["payload"]) for row in rows]
 
     def delete_branch_models_except(
         self,

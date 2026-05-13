@@ -198,6 +198,8 @@ class Settings(BaseSettings):
     publisher_mode: str = "local"
     publisher_command: str | None = None
     publisher_webhook_url: str | None = None
+    cache_ingest_tokens: list[str] = Field(default_factory=list)
+    cache_api_tokens: dict[str, str] = Field(default_factory=dict)
     root_path: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -325,6 +327,44 @@ class Settings(BaseSettings):
                     raise ValueError("ADMIN_USERS must be a JSON array or comma-separated list")
                 return payload
             return [item.strip() for item in text.split(",") if item.strip()]
+        return value
+
+    @field_validator("cache_ingest_tokens", mode="before")
+    @classmethod
+    def parse_cache_ingest_tokens(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            if text.startswith("["):
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("CACHE_INGEST_TOKENS must be a JSON array or comma-separated list") from exc
+                if not isinstance(payload, list):
+                    raise ValueError("CACHE_INGEST_TOKENS must be a JSON array or comma-separated list")
+                return payload
+            return [item.strip() for item in text.split(",") if item.strip()]
+        return value
+
+    @field_validator("cache_api_tokens", mode="before")
+    @classmethod
+    def parse_cache_api_tokens(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return {}
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError("CACHE_API_TOKENS must be a JSON object mapping bearer token to username") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("CACHE_API_TOKENS must be a JSON object mapping bearer token to username")
+            return payload
         return value
 
     @field_validator("twc_preset_servers")

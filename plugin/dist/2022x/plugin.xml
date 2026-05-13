@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin
+        id="com.twcworkbench.cameo.cache"
+        name="TWC Workbench Cache Exporter"
+        internalVersion="1"
+        version="0.1.0"
+        provider-name="TWC Workbench"
+        class="com.twcworkbench.cameo.TWCWorkbenchCameoPlugin">
+    <requires>
+        <api version="1.0"/>
+    </requires>
+    <runtime>
+        <library name="lib/twc-workbench-cameo-plugin.jar"/>
+    </runtime>
+</plugin>

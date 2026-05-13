@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "1.0",
+  "source": "cameo-plugin",
+  "exportedAt": "2026-05-13T12:15:00Z",
+  "exportReason": "close",
+  "serverId": "twc-2022x",
+  "serverUrl": "https://example.company.com:8111",
+  "workspaceId": "workspace-001",
+  "resourceId": "project-123",
+  "projectId": "project-123",
+  "projectName": "Example Project",
+  "branchId": "master",
+  "branchName": "trunk",
+  "fromRevisionId": "456789",
+  "toRevisionId": "456790",
+  "sourceUser": "jdoe",
+  "addedModels": [],
+  "updatedModels": [],
+  "removedModelIds": [],
+  "addedElements": [
+    {
+      "elementId": "element-200",
+      "modelId": "model-001",
+      "localId": "element-200",
+      "ownerId": "root-001",
+      "name": "New Requirement",
+      "humanName": "New Requirement",
+      "qualifiedName": "Primary Model::System Context::New Requirement",
+      "humanType": "Requirement",
+      "metaclass": "Class",
+      "documentation": "",
+      "ownedElementIds": [],
+      "appliedStereotypeIds": [],
+      "attributes": {},
+      "references": {}
+    }
+  ],
+  "updatedElements": [
+    {
+      "elementId": "root-001",
+      "modelId": "model-001",
+      "localId": "root-001",
+      "ownerId": "model-001",
+      "name": "System Context",
+      "humanName": "System Context",
+      "qualifiedName": "Primary Model::System Context",
+      "humanType": "Package",
+      "metaclass": "Package",
+      "documentation": "",
+      "ownedElementIds": [
+        "element-200"
+      ],
+      "appliedStereotypeIds": [],
+      "attributes": {},
+      "references": {}
+    }
+  ],
+  "removedElementIds": []
+}

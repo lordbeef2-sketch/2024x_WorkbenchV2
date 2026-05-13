@@ -23,12 +23,16 @@ from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
     AuthorizationContext,
     Bookmark,
+    BranchDeltaIngestRequest,
     BranchWebhookRegistration,
     BranchCacheSnapshot,
     BranchCacheSummary,
     BranchCacheSyncRequest,
+    BranchSnapshotIngestRequest,
     BranchSummary,
     BranchUpdateRequest,
+    CacheProjectBranchEntry,
+    CacheProjectEntry,
     CapabilityState,
     CachedElementQueryResponse,
     CachedElementRecord,
@@ -46,6 +50,7 @@ from app.models.domain import (
     JobStatus,
     JobType,
     MaterializedCacheStatus,
+    ModelPermissionSnapshot,
     OSLCAuthorizationStatus,
     OSLCConsumerCredentials,
     OSLCExecuteRequest,
@@ -727,6 +732,333 @@ class PlatformService:
                 element_id,
                 model_id=visible_model_id,
             )
+            if match is not None:
+                return match
+        return None
+
+    def ingest_branch_snapshot(self, payload: BranchSnapshotIngestRequest) -> BranchCacheSummary:
+        server = self._require_server(payload.server_id, include_disabled=True)
+        source_user = self._user_key(payload.source_user)
+        ingested_at = utcnow()
+
+        resolved_models = self._resolve_snapshot_model_records(server.id, payload, source_user, ingested_at)
+        resolved_elements = self._resolve_snapshot_element_records(server.id, payload, resolved_models, source_user, ingested_at)
+        element_counts_by_model: dict[str, int] = {}
+        for record in resolved_elements:
+            element_counts_by_model[record.model_id] = element_counts_by_model.get(record.model_id, 0) + 1
+
+        finalized_models = [
+            model.model_copy(update={"element_count": element_counts_by_model.get(model.model_id, 0)})
+            for model in resolved_models
+        ]
+        permissions = [
+            ModelPermissionSnapshot(
+                user_id=source_user,
+                server_id=server.id,
+                project_id=payload.project_id,
+                branch_id=payload.branch_id,
+                workspace_id=payload.workspace_id,
+                latest_revision=payload.revision_id,
+                model_id=model.model_id,
+                accessible=True,
+                restricted=False,
+                editable=True,
+                source="cameo-plugin-ingest",
+                payload={"source_user": payload.source_user, "source": payload.source},
+                updated_at=ingested_at,
+            )
+            for model in finalized_models
+        ]
+
+        self.repo.delete_branch_models_except(
+            server.id,
+            payload.project_id,
+            payload.branch_id,
+            [model.model_id for model in finalized_models],
+        )
+        self.repo.upsert_cached_models(finalized_models)
+        self.repo.replace_model_permissions_for_user_branch(
+            source_user,
+            server.id,
+            payload.project_id,
+            payload.branch_id,
+            permissions,
+        )
+        for model in finalized_models:
+            model_elements = [item for item in resolved_elements if item.model_id == model.model_id]
+            self.repo.replace_cached_elements(server.id, payload.project_id, payload.branch_id, model.model_id, model_elements)
+
+        summary = BranchCacheSummary(
+            server_id=server.id,
+            project_id=payload.project_id,
+            branch_id=payload.branch_id,
+            workspace_id=payload.workspace_id,
+            project_name=payload.project_name or payload.project_id,
+            branch_name=payload.branch_name or payload.branch_id,
+            latest_revision=payload.revision_id,
+            status=MaterializedCacheStatus.READY,
+            message="Materialized from Cameo plugin snapshot.",
+            model_count=len(finalized_models),
+            element_count=len(resolved_elements),
+            source_kind=payload.source,
+            source_user=payload.source_user,
+            updated_at=ingested_at,
+        )
+        self.repo.upsert_branch_cache_summary(summary)
+        self._invalidate_ingested_branch_caches(source_user, server.id, payload.project_id, payload.branch_id)
+        return summary
+
+    def ingest_branch_delta(self, payload: BranchDeltaIngestRequest) -> BranchCacheSummary:
+        server = self._require_server(payload.server_id, include_disabled=True)
+        existing_summary = self.repo.get_branch_cache_summary(server.id, payload.project_id, payload.branch_id)
+        if existing_summary is None:
+            raise ValueError("A branch snapshot must be ingested before deltas can be applied.")
+
+        source_user = self._user_key(payload.source_user)
+        ingested_at = utcnow()
+
+        added_models = self._resolve_delta_model_records(server.id, payload, payload.added_models, source_user, ingested_at)
+        updated_models = self._resolve_delta_model_records(server.id, payload, payload.updated_models, source_user, ingested_at)
+        if payload.removed_model_ids:
+            self.repo.delete_cached_models_by_ids(server.id, payload.project_id, payload.branch_id, payload.removed_model_ids)
+
+        if added_models or updated_models:
+            self.repo.upsert_cached_models([*added_models, *updated_models])
+
+        existing_models = {model.model_id: model for model in self.repo.list_cached_models(server.id, payload.project_id, payload.branch_id)}
+        resolved_added_elements = self._resolve_delta_element_records(
+            server.id,
+            payload,
+            payload.added_elements,
+            existing_models,
+            source_user,
+            ingested_at,
+        )
+        resolved_updated_elements = self._resolve_delta_element_records(
+            server.id,
+            payload,
+            payload.updated_elements,
+            existing_models,
+            source_user,
+            ingested_at,
+        )
+        if payload.removed_element_ids:
+            self.repo.delete_cached_elements_by_ids(server.id, payload.project_id, payload.branch_id, payload.removed_element_ids)
+        self.repo.upsert_cached_elements([*resolved_added_elements, *resolved_updated_elements])
+
+        current_models = self.repo.list_cached_models(server.id, payload.project_id, payload.branch_id)
+        refreshed_models: list[CachedModelRecord] = []
+        for model in current_models:
+            refreshed_models.append(
+                model.model_copy(
+                    update={
+                        "latest_revision": payload.to_revision_id or existing_summary.latest_revision,
+                        "element_count": self.repo.count_cached_elements_for_model(server.id, payload.project_id, payload.branch_id, model.model_id),
+                        "synced_at": ingested_at,
+                        "source_user": payload.source_user,
+                    }
+                )
+            )
+        if refreshed_models:
+            self.repo.upsert_cached_models(refreshed_models)
+
+        permissions = [
+            ModelPermissionSnapshot(
+                user_id=source_user,
+                server_id=server.id,
+                project_id=payload.project_id,
+                branch_id=payload.branch_id,
+                workspace_id=payload.workspace_id or existing_summary.workspace_id,
+                latest_revision=payload.to_revision_id or existing_summary.latest_revision,
+                model_id=model.model_id,
+                accessible=True,
+                restricted=False,
+                editable=True,
+                source="cameo-plugin-ingest",
+                payload={"source_user": payload.source_user, "source": payload.source},
+                updated_at=ingested_at,
+            )
+            for model in refreshed_models
+        ]
+        self.repo.replace_model_permissions_for_user_branch(
+            source_user,
+            server.id,
+            payload.project_id,
+            payload.branch_id,
+            permissions,
+        )
+
+        summary = BranchCacheSummary(
+            server_id=server.id,
+            project_id=payload.project_id,
+            branch_id=payload.branch_id,
+            workspace_id=payload.workspace_id or existing_summary.workspace_id,
+            project_name=payload.project_name or existing_summary.project_name or payload.project_id,
+            branch_name=payload.branch_name or existing_summary.branch_name or payload.branch_id,
+            latest_revision=payload.to_revision_id or existing_summary.latest_revision,
+            status=MaterializedCacheStatus.READY,
+            message="Applied Cameo plugin delta.",
+            model_count=len(refreshed_models),
+            element_count=self.repo.count_cached_elements_for_branch(server.id, payload.project_id, payload.branch_id),
+            last_job_id=existing_summary.last_job_id,
+            source_kind=payload.source,
+            source_user=payload.source_user,
+            updated_at=ingested_at,
+        )
+        self.repo.upsert_branch_cache_summary(summary)
+        self._invalidate_ingested_branch_caches(source_user, server.id, payload.project_id, payload.branch_id)
+        return summary
+
+    def list_cached_projects_for_user(self, server_id: str, preferred_username: str) -> list[CacheProjectEntry]:
+        self._require_server(server_id, include_disabled=True)
+        user_id = self._user_key(preferred_username)
+        projects: dict[str, CacheProjectEntry] = {}
+        for summary in self.repo.list_branch_cache_summaries(server_id):
+            visible_models = self._visible_cached_models_for_user(user_id, server_id, summary.project_id, summary.branch_id)
+            if not visible_models:
+                continue
+            project_entry = projects.setdefault(
+                summary.project_id,
+                CacheProjectEntry(
+                    project_id=summary.project_id,
+                    project_name=summary.project_name or summary.project_id,
+                    workspace_id=summary.workspace_id,
+                    branches=[],
+                ),
+            )
+            project_entry.branches.append(
+                CacheProjectBranchEntry(
+                    branch_id=summary.branch_id,
+                    branch_name=summary.branch_name or summary.branch_id,
+                    latest_revision=summary.latest_revision,
+                    status=summary.status,
+                    model_count=len(visible_models),
+                    element_count=sum(model.element_count for model in visible_models),
+                    updated_at=summary.updated_at,
+                )
+            )
+        return sorted(projects.values(), key=lambda item: (item.project_name.lower(), item.project_id))
+
+    def get_branch_cache_summary_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+    ) -> BranchCacheSummary | None:
+        self._require_server(server_id, include_disabled=True)
+        visible_models = self._visible_cached_models_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
+        if not visible_models:
+            return None
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if summary is None:
+            return None
+        return summary.model_copy(
+            update={
+                "model_count": len(visible_models),
+                "element_count": sum(model.element_count for model in visible_models),
+            }
+        )
+
+    def get_branch_cache_snapshot_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+    ) -> BranchCacheSnapshot | None:
+        self._require_server(server_id, include_disabled=True)
+        summary = self.get_branch_cache_summary_for_user(server_id, preferred_username, project_id, branch_id)
+        if summary is None:
+            return None
+        user_id = self._user_key(preferred_username)
+        permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
+        models = [
+            CachedModelView(model=model, permissions=permissions.get(model.model_id))
+            for model in self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id)
+        ]
+        return BranchCacheSnapshot(summary=summary, models=models)
+
+    def get_cached_branch_model_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+    ) -> CachedModelView | None:
+        self._require_server(server_id, include_disabled=True)
+        user_id = self._user_key(preferred_username)
+        permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
+        permission = permissions.get(model_id)
+        if permission is None or not permission.accessible or permission.restricted:
+            return None
+        model = self.repo.get_cached_model(server_id, project_id, branch_id, model_id)
+        if model is None:
+            return None
+        return CachedModelView(model=model, permissions=permission)
+
+    def list_cached_branch_elements_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        *,
+        model_id: str | None = None,
+        search: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> CachedElementQueryResponse:
+        self._require_server(server_id, include_disabled=True)
+        user_id = self._user_key(preferred_username)
+        permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
+        visible_models = {
+            permission.model_id
+            for permission in permissions.values()
+            if permission.accessible and not permission.restricted
+        }
+        if model_id is not None and model_id not in visible_models:
+            return CachedElementQueryResponse(total=0, items=[])
+
+        raw = self.repo.list_cached_elements(
+            server_id,
+            project_id,
+            branch_id,
+            model_id=model_id,
+            search=search,
+            limit=limit if model_id is not None else max(limit + offset, 1),
+            offset=offset if model_id is not None else 0,
+        )
+        if model_id is not None:
+            return raw
+        filtered_items = [item for item in raw.items if item.model_id in visible_models]
+        return CachedElementQueryResponse(total=len(filtered_items), items=filtered_items[offset : offset + limit])
+
+    def get_cached_branch_element_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        element_id: str,
+        *,
+        model_id: str | None = None,
+    ) -> CachedElementRecord | None:
+        self._require_server(server_id, include_disabled=True)
+        user_id = self._user_key(preferred_username)
+        permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
+        visible_models = [
+            permission.model_id
+            for permission in permissions.values()
+            if permission.accessible and not permission.restricted
+        ]
+        if model_id is not None:
+            if model_id not in visible_models:
+                return None
+            return self.repo.get_cached_element(server_id, project_id, branch_id, element_id, model_id=model_id)
+        for visible_model_id in visible_models:
+            match = self.repo.get_cached_element(server_id, project_id, branch_id, element_id, model_id=visible_model_id)
             if match is not None:
                 return match
         return None
@@ -2237,6 +2569,293 @@ class PlatformService:
             if project.id == project_id and project.workspace_id:
                 return project.workspace_id
         return None
+
+    def _permissions_by_model_for_user(
+        self,
+        user_id: str,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> dict[str, ModelPermissionSnapshot]:
+        return {
+            item.model_id: item
+            for item in self.repo.list_model_permissions(user_id, server_id, project_id, branch_id)
+        }
+
+    def _visible_cached_models_for_user(
+        self,
+        user_id: str,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> list[CachedModelRecord]:
+        permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
+        return [
+            model
+            for model in self.repo.list_cached_models(server_id, project_id, branch_id)
+            if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
+        ]
+
+    def _resolve_snapshot_model_records(
+        self,
+        server_id: str,
+        payload: BranchSnapshotIngestRequest,
+        source_user: str,
+        ingested_at: datetime,
+    ) -> list[CachedModelRecord]:
+        records: list[CachedModelRecord] = []
+        for model in payload.models:
+            model_name = model.human_name or model.name or model.model_id
+            records.append(
+                CachedModelRecord(
+                    server_id=server_id,
+                    project_id=payload.project_id,
+                    branch_id=payload.branch_id,
+                    model_id=model.model_id,
+                    workspace_id=payload.workspace_id,
+                    latest_revision=payload.revision_id,
+                    name=model_name,
+                    root_ids=list(dict.fromkeys(model.root_element_ids)),
+                    payload={
+                        "model_id": model.model_id,
+                        "name": model.name,
+                        "human_name": model.human_name,
+                        "qualified_name": model.qualified_name,
+                        "owner_id": model.owner_id,
+                        "root_element_ids": model.root_element_ids,
+                    },
+                    element_count=0,
+                    source_user=payload.source_user,
+                    synced_at=ingested_at,
+                )
+            )
+        return records
+
+    def _resolve_snapshot_element_records(
+        self,
+        server_id: str,
+        payload: BranchSnapshotIngestRequest,
+        models: list[CachedModelRecord],
+        source_user: str,
+        ingested_at: datetime,
+    ) -> list[CachedElementRecord]:
+        model_ids = {model.model_id for model in models}
+        root_lookup = {
+            root_id: model.model_id
+            for model in models
+            for root_id in model.root_ids
+            if root_id
+        }
+        owner_lookup = {item.element_id: item.owner_id for item in payload.elements}
+        resolved_by_id: dict[str, str] = {}
+        records: list[CachedElementRecord] = []
+        for element in payload.elements:
+            resolved_model_id = self._resolve_ingest_element_model_id(
+                explicit_model_id=element.model_id,
+                element_id=element.element_id,
+                owner_id=element.owner_id,
+                model_ids=model_ids,
+                root_lookup=root_lookup,
+                owner_lookup=owner_lookup,
+                resolved_by_id=resolved_by_id,
+            )
+            if resolved_model_id is None:
+                raise ValueError(f"Unable to resolve model_id for element {element.element_id}")
+            resolved_by_id[element.element_id] = resolved_model_id
+            records.append(
+                self._cached_element_record_from_ingest(
+                    server_id=server_id,
+                    project_id=payload.project_id,
+                    branch_id=payload.branch_id,
+                    workspace_id=payload.workspace_id,
+                    latest_revision=payload.revision_id,
+                    source_user=payload.source_user,
+                    ingested_at=ingested_at,
+                    resolved_model_id=resolved_model_id,
+                    element=element,
+                )
+            )
+        return records
+
+    def _resolve_delta_model_records(
+        self,
+        server_id: str,
+        payload: BranchDeltaIngestRequest,
+        models: list,
+        source_user: str,
+        ingested_at: datetime,
+    ) -> list[CachedModelRecord]:
+        records: list[CachedModelRecord] = []
+        revision_id = payload.to_revision_id or payload.from_revision_id
+        for model in models:
+            model_name = model.human_name or model.name or model.model_id
+            records.append(
+                CachedModelRecord(
+                    server_id=server_id,
+                    project_id=payload.project_id,
+                    branch_id=payload.branch_id,
+                    model_id=model.model_id,
+                    workspace_id=payload.workspace_id,
+                    latest_revision=revision_id,
+                    name=model_name,
+                    root_ids=list(dict.fromkeys(model.root_element_ids)),
+                    payload={
+                        "model_id": model.model_id,
+                        "name": model.name,
+                        "human_name": model.human_name,
+                        "qualified_name": model.qualified_name,
+                        "owner_id": model.owner_id,
+                        "root_element_ids": model.root_element_ids,
+                    },
+                    element_count=self.repo.count_cached_elements_for_model(server_id, payload.project_id, payload.branch_id, model.model_id),
+                    source_user=payload.source_user,
+                    synced_at=ingested_at,
+                )
+            )
+        return records
+
+    def _resolve_delta_element_records(
+        self,
+        server_id: str,
+        payload: BranchDeltaIngestRequest,
+        elements: list,
+        existing_models: dict[str, CachedModelRecord],
+        source_user: str,
+        ingested_at: datetime,
+    ) -> list[CachedElementRecord]:
+        model_ids = set(existing_models)
+        root_lookup = {
+            root_id: model.model_id
+            for model in existing_models.values()
+            for root_id in model.root_ids
+            if root_id
+        }
+        owner_lookup = {item.element_id: item.owner_id for item in elements}
+        resolved_by_id: dict[str, str] = {}
+        records: list[CachedElementRecord] = []
+        revision_id = payload.to_revision_id or payload.from_revision_id
+        for element in elements:
+            existing = self.repo.get_cached_element(server_id, payload.project_id, payload.branch_id, element.element_id)
+            resolved_model_id = self._resolve_ingest_element_model_id(
+                explicit_model_id=element.model_id or (existing.model_id if existing else None),
+                element_id=element.element_id,
+                owner_id=element.owner_id,
+                model_ids=model_ids,
+                root_lookup=root_lookup,
+                owner_lookup=owner_lookup,
+                resolved_by_id=resolved_by_id,
+            )
+            if resolved_model_id is None:
+                raise ValueError(f"Unable to resolve model_id for delta element {element.element_id}")
+            resolved_by_id[element.element_id] = resolved_model_id
+            records.append(
+                self._cached_element_record_from_ingest(
+                    server_id=server_id,
+                    project_id=payload.project_id,
+                    branch_id=payload.branch_id,
+                    workspace_id=payload.workspace_id,
+                    latest_revision=revision_id,
+                    source_user=payload.source_user,
+                    ingested_at=ingested_at,
+                    resolved_model_id=resolved_model_id,
+                    element=element,
+                )
+            )
+        return records
+
+    def _cached_element_record_from_ingest(
+        self,
+        *,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None,
+        latest_revision: str | None,
+        source_user: str,
+        ingested_at: datetime,
+        resolved_model_id: str,
+        element,
+    ) -> CachedElementRecord:
+        display_name = element.human_name or element.name or element.element_id
+        item_type = element.human_type or element.metaclass or "element"
+        path = element.qualified_name or display_name
+        return CachedElementRecord(
+            server_id=server_id,
+            project_id=project_id,
+            branch_id=branch_id,
+            model_id=resolved_model_id,
+            element_id=element.element_id,
+            workspace_id=workspace_id,
+            latest_revision=latest_revision,
+            name=display_name,
+            item_type=item_type,
+            path=path,
+            child_count=len(element.owned_element_ids),
+            payload={
+                "element_id": element.element_id,
+                "model_id": resolved_model_id,
+                "local_id": element.local_id,
+                "owner_id": element.owner_id,
+                "name": element.name,
+                "human_name": element.human_name,
+                "qualified_name": element.qualified_name,
+                "human_type": element.human_type,
+                "metaclass": element.metaclass,
+                "documentation": element.documentation,
+                "owned_element_ids": element.owned_element_ids,
+                "applied_stereotype_ids": element.applied_stereotype_ids,
+                "attributes": element.attributes,
+                "references": element.references,
+            },
+            source_user=source_user,
+            synced_at=ingested_at,
+        )
+
+    def _resolve_ingest_element_model_id(
+        self,
+        *,
+        explicit_model_id: str | None,
+        element_id: str,
+        owner_id: str | None,
+        model_ids: set[str],
+        root_lookup: dict[str, str],
+        owner_lookup: dict[str, str | None],
+        resolved_by_id: dict[str, str],
+    ) -> str | None:
+        if explicit_model_id and explicit_model_id in model_ids:
+            return explicit_model_id
+        if element_id in root_lookup:
+            return root_lookup[element_id]
+
+        current_owner = owner_id
+        visited: set[str] = set()
+        while current_owner and current_owner not in visited:
+            visited.add(current_owner)
+            if current_owner in model_ids:
+                return current_owner
+            if current_owner in root_lookup:
+                return root_lookup[current_owner]
+            if current_owner in resolved_by_id:
+                return resolved_by_id[current_owner]
+            current_owner = owner_lookup.get(current_owner)
+        return None
+
+    def _invalidate_ingested_branch_caches(
+        self,
+        source_user: str,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> None:
+        self.repo.delete_user_cache(
+            source_user,
+            server_id,
+            self._element_discovery_cache_key(project_id, branch_id),
+        )
+        tree_key = self._tree_cache_key(project_id, branch_id)
+        if tree_key:
+            self.repo.delete_user_cache(source_user, server_id, tree_key)
+        self.repo.delete_user_cache_prefix(source_user, server_id, f"project:{project_id}:branch:{branch_id}:item:")
 
     def _shared_oslc_secret_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"

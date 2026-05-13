@@ -7,9 +7,24 @@ To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` in `backend/.e
 
 OSLC is a separate integration lane. The workbench now includes an OSLC Explorer that discovers `/oslc/api/rootservices`, authorizes through the server's OAuth 1.0a consumer endpoints, executes signed OSLC GET requests with the approved consumer key and secret configured in `backend/.env`, and can generate a consumer key from the root-services registration URL when the server publishes it. Generated keys still require admin approval in Magic Collaboration Studio Settings before OSLC authorization will succeed.
 
+The backend also supports plugin-fed model cache ingestion. Use `CACHE_INGEST_TOKENS` for bearer-authenticated writes into:
+
+- `POST /api/cache-ingest/branch-snapshots`
+- `POST /api/cache-ingest/branch-deltas`
+
+Use `CACHE_API_TOKENS` for bearer-authenticated cache reads through:
+
+- `GET /api/cache/servers/{server_id}/projects`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/summary`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/snapshot`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models/{model_id}`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
+
 Preset-management authorization is derived from Teamwork Cloud user context and trusted upstream role or group headers when they are available. The backend does not keep a separate hardcoded admin-user list.
 
-For Teamwork Cloud 2024x branch caches, the backend now attempts to auto-register branch-scoped webhooks the first time an admin-capable session submits a cache sync for that branch. Those webhooks call back into this app and queue paced cache refresh jobs. This requires `APP_ORIGIN` to resolve to a public HTTPS origin that Teamwork Cloud can reach from the server side.
+Cache refresh is now intentionally view-scoped. Workbench serves cache first, only materializes a full branch cache after a user actually opens that project branch, and only refreshes the actively viewed branch when its revision changes. Automatic webhook-driven background refresh is disabled.
 
 ## Verified Contract Boundary
 
