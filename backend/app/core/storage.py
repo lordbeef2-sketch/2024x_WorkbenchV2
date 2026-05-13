@@ -966,6 +966,7 @@ class SqliteRepository:
 
     def _prune_invalid_app_secrets(self, connection: sqlite3.Connection, valid_server_ids: set[str]) -> None:
         valid_scopes = {self._oslc_shared_scope(server_id) for server_id in valid_server_ids}
+        valid_scopes.add(self._cache_ingest_scope())
         rows = connection.execute("SELECT scope FROM app_secrets").fetchall()
         invalid_scopes = [str(row["scope"]) for row in rows if str(row["scope"]) not in valid_scopes]
         if invalid_scopes:
@@ -1010,6 +1011,9 @@ class SqliteRepository:
 
     def _oslc_shared_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"
+
+    def _cache_ingest_scope(self) -> str:
+        return "cache-ingest-shared"
 
     def list_jobs(self, owner: str | None = None) -> list[JobRecord]:
         query = "SELECT payload FROM jobs"

@@ -25,6 +25,7 @@ Alternative:
 - short-lived scoped token
 
 The ingest token should not be the same thing as the end-user UI token.
+The preferred setup is to generate and rotate this token inside the Workbench admin Settings screen, where it is stored encrypted in app storage. A file-based `.env` token list is only the legacy fallback path.
 
 ### 2. Cached data API authentication
 

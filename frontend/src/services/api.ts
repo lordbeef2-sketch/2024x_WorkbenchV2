@@ -1,6 +1,8 @@
 import {
   AuthOptions,
   BranchSummary,
+  CacheIngestTokenRotateResponse,
+  CacheIngestTokenStatus,
   CapabilitySummary,
   CompareResult,
   DashboardPayload,
@@ -143,6 +145,21 @@ export const api = {
   },
   getOslcStatus() {
     return request<OSLCAuthorizationStatus>("/workspace/oslc/status");
+  },
+  getCacheIngestTokenStatus() {
+    return request<CacheIngestTokenStatus>("/workspace/cache-ingest-token");
+  },
+  rotateCacheIngestToken(csrfToken: string) {
+    return request<CacheIngestTokenRotateResponse>("/workspace/cache-ingest-token/rotate", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
+  clearCacheIngestToken(csrfToken: string) {
+    return request<CacheIngestTokenStatus>("/workspace/cache-ingest-token", {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
+    });
   },
   getSharedOslcConsumer() {
     return request<OSLCSharedConsumerStatus>("/workspace/oslc/shared-consumer");

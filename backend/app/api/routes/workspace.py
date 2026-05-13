@@ -27,6 +27,30 @@ async def dashboard(session=Depends(get_session), container: ApplicationContaine
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
+@router.get("/cache-ingest-token")
+def cache_ingest_token_status(
+    session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.cache_ingest_token_status()
+
+
+@router.post("/cache-ingest-token/rotate")
+def rotate_cache_ingest_token(
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.rotate_cache_ingest_token()
+
+
+@router.delete("/cache-ingest-token")
+def clear_cache_ingest_token(
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.clear_cache_ingest_token()
+
+
 @router.get("/contract")
 def contract_manifest(session=Depends(require_admin), container: ApplicationContainer = Depends(get_container)):
     return container.platform.swagger_contract_manifest()

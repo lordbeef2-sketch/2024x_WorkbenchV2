@@ -413,6 +413,7 @@ export default function WorkspacePage() {
   const [oslcConsumerSecret, setOslcConsumerSecret] = useState("");
   const [oslcManualKey, setOslcManualKey] = useState("");
   const [oslcManualSecret, setOslcManualSecret] = useState("");
+  const [revealedCacheIngestToken, setRevealedCacheIngestToken] = useState("");
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
   const projectContextActive = tab === "models" || tab === "elements" || tab === "details" || tab === "compare";
 
@@ -446,6 +447,15 @@ export default function WorkspacePage() {
     queryKey: ["workspace-oslc-shared-consumer", ...sessionCacheKey],
     queryFn: api.getSharedOslcConsumer,
     enabled: Boolean(session?.server?.id) && isAdmin,
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+
+  const cacheIngestTokenQuery = useQuery({
+    queryKey: ["workspace-cache-ingest-token", ...sessionCacheKey],
+    queryFn: api.getCacheIngestTokenStatus,
+    enabled: isAdmin,
     staleTime: cacheTimeMs,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -558,6 +568,7 @@ export default function WorkspacePage() {
 
   const oslcStatus = oslcStatusQuery.data ?? null;
   const sharedOslcConsumer = sharedOslcConsumerQuery.data ?? null;
+  const cacheIngestTokenStatus = cacheIngestTokenQuery.data ?? null;
 
   useEffect(() => {
     if (oslcConsumerName) {
@@ -936,6 +947,26 @@ export default function WorkspacePage() {
         },
         csrfToken,
       ),
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const rotateCacheIngestTokenMutation = useMutation({
+    mutationFn: () => api.rotateCacheIngestToken(csrfToken),
+    onSuccess: async (result) => {
+      setRevealedCacheIngestToken(result.token);
+      await queryClient.invalidateQueries({ queryKey: ["workspace-cache-ingest-token", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "A new plugin ingest token was generated and stored inside Workbench." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const clearCacheIngestTokenMutation = useMutation({
+    mutationFn: () => api.clearCacheIngestToken(csrfToken),
+    onSuccess: async () => {
+      setRevealedCacheIngestToken("");
+      await queryClient.invalidateQueries({ queryKey: ["workspace-cache-ingest-token", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "The app-managed plugin ingest token was cleared." });
+    },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
@@ -1741,6 +1772,90 @@ export default function WorkspacePage() {
     </Stack>
   );
 
+  const renderCacheIngestToken = () => {
+    const sourceLabel =
+      cacheIngestTokenStatus?.source === "shared"
+        ? "Encrypted app storage"
+        : cacheIngestTokenStatus?.source === "config"
+          ? "Legacy environment fallback"
+          : "Not configured";
+
+    return (
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+            <Box>
+              <Typography variant="h5">Plugin Ingest Token</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Generate the Cameo plugin write token here. Workbench stores the app-managed token encrypted, and the plugin uses it to send model snapshots and deltas into the cache ingest API.
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={1}>
+              <Button
+                variant="outlined"
+                startIcon={<RefreshRoundedIcon />}
+                onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-cache-ingest-token", ...sessionCacheKey] })}
+              >
+                Refresh Token Status
+              </Button>
+            </Stack>
+          </Stack>
+          {cacheIngestTokenQuery.isLoading ? <CircularProgress size={28} /> : null}
+          {cacheIngestTokenQuery.error ? <Alert severity="error">{errorMessage(cacheIngestTokenQuery.error)}</Alert> : null}
+          {cacheIngestTokenStatus ? (
+            <>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <Chip
+                  label={cacheIngestTokenStatus.configured ? "Token configured" : "Token not configured"}
+                  color={cacheIngestTokenStatus.configured ? "success" : "warning"}
+                />
+                <Chip label={sourceLabel} variant="outlined" />
+                {cacheIngestTokenStatus.token_hint ? <Chip label={cacheIngestTokenStatus.token_hint} variant="outlined" /> : null}
+              </Stack>
+              {cacheIngestTokenStatus.message ? <Alert severity={cacheIngestTokenStatus.source === "config" ? "warning" : "info"}>{cacheIngestTokenStatus.message}</Alert> : null}
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+                <Button
+                  variant="contained"
+                  disabled={!csrfToken || rotateCacheIngestTokenMutation.isPending}
+                  onClick={() => rotateCacheIngestTokenMutation.mutate()}
+                >
+                  {cacheIngestTokenStatus.configured ? "Rotate Token" : "Generate Token"}
+                </Button>
+                <Button
+                  variant="text"
+                  color="warning"
+                  disabled={!csrfToken || cacheIngestTokenStatus.source !== "shared" || clearCacheIngestTokenMutation.isPending}
+                  onClick={() => clearCacheIngestTokenMutation.mutate()}
+                >
+                  Clear App-Managed Token
+                </Button>
+                {rotateCacheIngestTokenMutation.isPending || clearCacheIngestTokenMutation.isPending ? <CircularProgress size={24} /> : null}
+              </Stack>
+              {cacheIngestTokenStatus.updated_at ? (
+                <Typography variant="caption" color="text.secondary">
+                  Last updated {new Date(cacheIngestTokenStatus.updated_at).toLocaleString()}.
+                </Typography>
+              ) : null}
+              {revealedCacheIngestToken ? (
+                <>
+                  <Alert severity="success">
+                    Copy this token into the Cameo plugin now. Workbench stores it encrypted and will not show the full value again after you leave this screen.
+                  </Alert>
+                  <TextField
+                    label="New plugin ingest token"
+                    value={revealedCacheIngestToken}
+                    fullWidth
+                    InputProps={{ readOnly: true }}
+                  />
+                </>
+              ) : null}
+            </>
+          ) : null}
+        </Stack>
+      </Paper>
+    );
+  };
+
   const renderOslc = () => {
     const response = oslcRequestMutation.data ?? null;
     const rootservices = oslcStatus?.rootservices ?? null;
@@ -2038,6 +2153,13 @@ export default function WorkspacePage() {
       </Stack>
     );
   };
+
+  const renderAdminSettings = () => (
+    <Stack spacing={2}>
+      {renderCacheIngestToken()}
+      {renderOslc()}
+    </Stack>
+  );
 
   const renderApiExplorer = () => {
     const response = apiOperationMutation.data ?? null;
@@ -2390,8 +2512,11 @@ export default function WorkspacePage() {
         open={settingsOpen}
         preferences={session?.preferences ?? { theme_mode: "system", font_scale: 1, request_timeout_seconds: 30, live_log_poll_interval_ms: 2500, presentation_font_scale: 1.2 }}
         saving={settingsMutation.isPending}
-        extraContent={isAdmin ? renderOslc() : null}
-        onClose={() => setSettingsOpen(false)}
+        extraContent={isAdmin ? renderAdminSettings() : null}
+        onClose={() => {
+          setSettingsOpen(false);
+          setRevealedCacheIngestToken("");
+        }}
         onSave={async (preferences) => {
           await settingsMutation.mutateAsync(preferences);
         }}

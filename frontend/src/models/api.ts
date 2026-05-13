@@ -394,6 +394,18 @@ export interface OSLCSharedConsumerStatus {
   source: "none" | "shared" | "config";
 }
 
+export interface CacheIngestTokenStatus {
+  configured: boolean;
+  source: "none" | "shared" | "config";
+  token_hint?: string | null;
+  updated_at?: string | null;
+  message: string;
+}
+
+export interface CacheIngestTokenRotateResponse extends CacheIngestTokenStatus {
+  token: string;
+}
+
 export interface OSLCStoreConsumerRequest {
   consumer_key: string;
   consumer_secret: string;

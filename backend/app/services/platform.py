@@ -31,6 +31,8 @@ from app.models.domain import (
     BranchSnapshotIngestRequest,
     BranchSummary,
     BranchUpdateRequest,
+    CacheIngestTokenRotateResponse,
+    CacheIngestTokenStatus,
     CacheProjectBranchEntry,
     CacheProjectEntry,
     CapabilityState,
@@ -2859,6 +2861,80 @@ class PlatformService:
 
     def _shared_oslc_secret_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"
+
+    def _shared_cache_ingest_scope(self) -> str:
+        return "cache-ingest-shared"
+
+    def _shared_cache_ingest_token(self) -> tuple[str | None, datetime | None]:
+        stored = self.repo.get_app_secret(self._shared_cache_ingest_scope())
+        if not stored:
+            return None, None
+        encrypted_payload, updated_at_raw = stored
+        try:
+            token = self.sessions.cipher.decrypt_raw(encrypted_payload).decode("utf-8").strip()
+            updated_at = datetime.fromisoformat(updated_at_raw)
+        except Exception:
+            self.repo.delete_app_secret(self._shared_cache_ingest_scope())
+            return None, None
+        if not token:
+            self.repo.delete_app_secret(self._shared_cache_ingest_scope())
+            return None, None
+        return token, updated_at
+
+    def _token_hint(self, token: str) -> str:
+        suffix = token[-6:] if len(token) > 6 else token
+        return f"Ends with {suffix}"
+
+    def cache_ingest_token_status(self) -> CacheIngestTokenStatus:
+        shared_token, updated_at = self._shared_cache_ingest_token()
+        if shared_token:
+            return CacheIngestTokenStatus(
+                configured=True,
+                source="shared",
+                token_hint=self._token_hint(shared_token),
+                updated_at=updated_at,
+                message="Configured in encrypted Workbench app storage.",
+            )
+        if self.settings.cache_ingest_tokens:
+            return CacheIngestTokenStatus(
+                configured=True,
+                source="config",
+                token_hint=f"{len(self.settings.cache_ingest_tokens)} legacy token(s)",
+                message="Using the legacy environment-configured fallback token list.",
+            )
+        return CacheIngestTokenStatus(
+            configured=False,
+            source="none",
+            message="No plugin ingest token has been configured yet.",
+        )
+
+    def rotate_cache_ingest_token(self) -> CacheIngestTokenRotateResponse:
+        token = secrets.token_urlsafe(48)
+        encrypted_payload = self.sessions.cipher.encrypt_raw(token.encode("utf-8"))
+        updated_at = datetime.fromisoformat(
+            self.repo.upsert_app_secret(self._shared_cache_ingest_scope(), encrypted_payload)
+        )
+        return CacheIngestTokenRotateResponse(
+            configured=True,
+            source="shared",
+            token_hint=self._token_hint(token),
+            updated_at=updated_at,
+            message="The plugin ingest token was stored in encrypted Workbench app storage.",
+            token=token,
+        )
+
+    def clear_cache_ingest_token(self) -> CacheIngestTokenStatus:
+        self.repo.delete_app_secret(self._shared_cache_ingest_scope())
+        return self.cache_ingest_token_status()
+
+    def is_valid_cache_ingest_token(self, token: str) -> bool:
+        candidate = token.strip()
+        if not candidate:
+            return False
+        if any(secrets.compare_digest(candidate, configured) for configured in self.settings.cache_ingest_tokens):
+            return True
+        shared_token, _ = self._shared_cache_ingest_token()
+        return bool(shared_token and secrets.compare_digest(candidate, shared_token))
 
     def _shared_oslc_consumer_credentials(self, server_id: str) -> tuple[OSLCConsumerCredentials | None, datetime | None]:
         stored = self.repo.get_app_secret(self._shared_oslc_secret_scope(server_id))

@@ -78,6 +78,8 @@ Copy the staged folder into the Cameo installation `plugins` directory so the fi
 - Uses the TWC resource id as the Workbench `projectId` key so cached data lands under the same project Workbench already exposes
 - Requires `metadata.serverId` to match the Workbench server profile id exactly when posting to Workbench
 
+The ingest bearer token should now be generated from the Workbench admin Settings screen. Workbench stores that token encrypted in app storage and shows the full value only at generation time so it can be pasted into the Cameo dialog.
+
 ## Configure inside Cameo
 
 After the plugin is installed, open the Cameo main menu:
@@ -107,7 +109,9 @@ metadata.workspaceId=...
 metadata.resourceId=...
 ```
 
-On the Workbench backend side, the same write token must exist in:
+On the Workbench side, generate that same write token in the admin Settings screen under `Plugin Ingest Token`. Workbench stores the app-managed token encrypted and reveals the full value only when it is generated or rotated.
+
+`CACHE_INGEST_TOKENS` still exists as a legacy fallback in `backend/.env` if you need file-based bootstrap during migration:
 
 ```env
 CACHE_INGEST_TOKENS=["your-plugin-write-token"]

@@ -884,6 +884,18 @@ class OSLCSharedConsumerStatus(BaseModel):
     source: Literal["none", "shared", "config"] = "none"
 
 
+class CacheIngestTokenStatus(BaseModel):
+    configured: bool
+    source: Literal["none", "shared", "config"] = "none"
+    token_hint: str | None = None
+    updated_at: datetime | None = None
+    message: str = ""
+
+
+class CacheIngestTokenRotateResponse(CacheIngestTokenStatus):
+    token: str
+
+
 class OSLCExecuteRequest(BaseModel):
     path_or_url: str
     accept: str | None = None

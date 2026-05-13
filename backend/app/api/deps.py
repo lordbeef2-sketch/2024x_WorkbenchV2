@@ -63,7 +63,7 @@ def require_cache_ingest_token(
     container: ApplicationContainer = Depends(get_container),
 ):
     token = _extract_bearer_token(request)
-    if not token or token not in set(container.settings.cache_ingest_tokens):
+    if not token or not container.platform.is_valid_cache_ingest_token(token):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Valid cache ingest bearer token required")
     return token
 

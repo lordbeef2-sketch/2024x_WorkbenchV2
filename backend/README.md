@@ -7,7 +7,7 @@ To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` in `backend/.e
 
 OSLC is a separate integration lane. The workbench now includes an OSLC Explorer that discovers `/oslc/api/rootservices`, authorizes through the server's OAuth 1.0a consumer endpoints, executes signed OSLC GET requests with the approved consumer key and secret configured in `backend/.env`, and can generate a consumer key from the root-services registration URL when the server publishes it. Generated keys still require admin approval in Magic Collaboration Studio Settings before OSLC authorization will succeed.
 
-The backend also supports plugin-fed model cache ingestion. Use `CACHE_INGEST_TOKENS` for bearer-authenticated writes into:
+The backend also supports plugin-fed model cache ingestion. The preferred setup is to generate the plugin ingest token inside the admin Settings screen, where Workbench stores it encrypted in app storage. `CACHE_INGEST_TOKENS` remains available as a legacy fallback for bearer-authenticated writes into:
 
 - `POST /api/cache-ingest/branch-snapshots`
 - `POST /api/cache-ingest/branch-deltas`
