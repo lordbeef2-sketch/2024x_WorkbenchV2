@@ -2494,16 +2494,15 @@ class TeamworkAdapter:
             raise PermissionError("The active Teamwork Cloud session is not allowed to read project roles for this branch.")
 
         usergroups = await self._admin_usergroups()
-        usergroups_by_id = {
-            str(group.get("ID")): group
-            for group in usergroups
-            if isinstance(group, dict) and group.get("ID")
-        }
-        usergroups_by_name = {
-            str(group.get("name")): group
-            for group in usergroups
-            if isinstance(group, dict) and group.get("name")
-        }
+        usergroups_by_lookup: dict[str, dict[str, Any]] = {}
+        resolved_usergroups: dict[str, dict[str, Any]] = {}
+        for group in usergroups:
+            if not isinstance(group, dict):
+                continue
+            self._index_usergroup_record(usergroups_by_lookup, group)
+            group_id = _first_text(group.get("ID"), group.get("id"))
+            if group_id:
+                resolved_usergroups[group_id.lower()] = group
 
         aggregated: dict[str, dict[str, Any]] = {}
         for role in roles:
@@ -2531,18 +2530,12 @@ class TeamworkAdapter:
                 )
 
             assigned_groups = await self._project_role_usergroups(project_id, role_id, workspace_id)
-            for group_key in assigned_groups:
-                group = usergroups_by_id.get(group_key) or usergroups_by_name.get(group_key)
-                if group is None and UUID_PATTERN.match(group_key):
-                    group = await self._admin_usergroup(group_key)
-                    if isinstance(group, dict) and group.get("ID"):
-                        usergroups_by_id[str(group["ID"])] = group
-                        if group.get("name"):
-                            usergroups_by_name[str(group["name"])] = group
-                if not isinstance(group, dict):
-                    continue
-                group_name = _first_text(group.get("name"), group_key)
-                usernames = [str(value).strip() for value in _as_list(group.get("usernames")) if str(value).strip()]
+            for assigned_group in assigned_groups:
+                group_name, usernames = await self._expand_usergroup_members(
+                    assigned_group,
+                    usergroups_by_lookup=usergroups_by_lookup,
+                    resolved_usergroups=resolved_usergroups,
+                )
                 for username in usernames:
                     self._merge_branch_access_user(
                         aggregated,
@@ -2666,9 +2659,40 @@ class TeamworkAdapter:
         )
         if not payload or (isinstance(payload, dict) and payload.get("restricted")):
             return []
-        return [str(item).strip() for item in _as_list(payload) if str(item).strip()]
+        items = extract_resource_list(payload)
+        if items is None:
+            items = payload if isinstance(payload, list) else [payload]
 
-    async def _project_role_usergroups(self, project_id: str, role_id: str, workspace_id: str | None) -> list[str]:
+        resolved: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if isinstance(item, dict):
+                identifier = _first_text(
+                    item.get("username"),
+                    item.get("userName"),
+                    item.get("login"),
+                    item.get("preferredUsername"),
+                    item.get("name"),
+                    item.get("id"),
+                    item.get("ID"),
+                )
+            else:
+                identifier = str(item).strip()
+            if not identifier:
+                continue
+            lookup_key = identifier.lower()
+            if lookup_key in seen:
+                continue
+            seen.add(lookup_key)
+            resolved.append(identifier)
+        return resolved
+
+    async def _project_role_usergroups(
+        self,
+        project_id: str,
+        role_id: str,
+        workspace_id: str | None,
+    ) -> list[dict[str, Any]]:
         payload = await self._request_candidates_paged(
             "GET",
             [
@@ -2679,14 +2703,31 @@ class TeamworkAdapter:
         )
         if not payload or (isinstance(payload, dict) and payload.get("restricted")):
             return []
-        resolved: list[str] = []
-        for item in _as_list(payload):
+        items = extract_resource_list(payload)
+        if items is None:
+            items = payload if isinstance(payload, list) else [payload]
+
+        resolved: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in items:
             if isinstance(item, dict):
-                identifier = _first_text(item.get("ID"), item.get("id"), item.get("name"))
+                identifier = _first_text(
+                    item.get("ID"),
+                    item.get("id"),
+                    item.get("name"),
+                    item.get("qualifiedName"),
+                )
+                normalized = {"key": identifier or "", **item}
             else:
                 identifier = str(item).strip()
-            if identifier and identifier not in resolved:
-                resolved.append(identifier)
+                normalized = {"key": identifier}
+            if not identifier:
+                continue
+            lookup_key = identifier.lower()
+            if lookup_key in seen:
+                continue
+            seen.add(lookup_key)
+            resolved.append(normalized)
         return resolved
 
     async def _admin_usergroups(self) -> list[dict[str, Any]]:
@@ -2697,7 +2738,10 @@ class TeamworkAdapter:
         )
         if not payload or (isinstance(payload, dict) and payload.get("restricted")):
             return []
-        return [item for item in _as_list(payload) if isinstance(item, dict)]
+        items = extract_resource_list(payload)
+        if items is None:
+            items = payload if isinstance(payload, list) else [payload]
+        return [item for item in items if isinstance(item, dict)]
 
     async def _admin_usergroup(self, usergroup_id: str) -> dict[str, Any] | None:
         payload = await self._request_candidates_paged(
@@ -2709,6 +2753,180 @@ class TeamworkAdapter:
             return None
         entity = _payload_entity(payload)
         return entity if isinstance(entity, dict) else None
+
+    def _index_usergroup_record(self, lookup: dict[str, dict[str, Any]], group: dict[str, Any]) -> None:
+        for alias in self._usergroup_aliases(group):
+            lookup.setdefault(alias.lower(), group)
+
+    def _usergroup_aliases(self, group: dict[str, Any]) -> list[str]:
+        aliases: list[str] = []
+        seen: set[str] = set()
+        candidates = (
+            group.get("ID"),
+            group.get("id"),
+            group.get("name"),
+            group.get("qualifiedName"),
+            group.get("displayName"),
+            group.get("title"),
+            group.get("key"),
+        )
+        for candidate in candidates:
+            text = _first_text(candidate)
+            lookup_key = text.lower()
+            if text and lookup_key not in seen:
+                seen.add(lookup_key)
+                aliases.append(text)
+        return aliases
+
+    def _usergroup_usernames(self, group: dict[str, Any]) -> list[str]:
+        usernames: list[str] = []
+        seen: set[str] = set()
+
+        def add_username(candidate: Any) -> None:
+            if isinstance(candidate, dict):
+                for key in ("username", "userName", "login", "preferredUsername"):
+                    text = _first_text(candidate.get(key))
+                    if text:
+                        add_username(text)
+                        return
+                return
+            text = str(candidate).strip() if candidate is not None else ""
+            lookup_key = text.lower()
+            if text and lookup_key not in seen:
+                seen.add(lookup_key)
+                usernames.append(text)
+
+        for key in (
+            "usernames",
+            "users",
+            "members",
+            "memberUsers",
+            "groupUsers",
+            "userNames",
+        ):
+            for value in _as_list(group.get(key)):
+                add_username(value)
+
+        return usernames
+
+    def _usergroup_nested_refs(self, group: dict[str, Any]) -> list[dict[str, Any]]:
+        nested: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for key in (
+            "usergroups",
+            "subgroups",
+            "memberGroups",
+            "groups",
+            "nestedGroups",
+            "children",
+        ):
+            for value in _as_list(group.get(key)):
+                if isinstance(value, dict):
+                    identifier = _first_text(value.get("ID"), value.get("id"), value.get("name"), value.get("qualifiedName"))
+                    reference = {"key": identifier or "", **value}
+                else:
+                    identifier = str(value).strip()
+                    reference = {"key": identifier}
+                if not identifier:
+                    continue
+                lookup_key = identifier.lower()
+                if lookup_key in seen:
+                    continue
+                seen.add(lookup_key)
+                nested.append(reference)
+        return nested
+
+    async def _resolve_usergroup_reference(
+        self,
+        reference: dict[str, Any],
+        *,
+        usergroups_by_lookup: dict[str, dict[str, Any]],
+        resolved_usergroups: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        aliases = self._usergroup_aliases(reference)
+        group: dict[str, Any] | None = None
+        for alias in aliases:
+            group = usergroups_by_lookup.get(alias.lower())
+            if isinstance(group, dict):
+                break
+
+        detail_id = _first_text(reference.get("ID"), reference.get("id"))
+        if not detail_id and len(aliases) == 1 and UUID_PATTERN.match(aliases[0]):
+            detail_id = aliases[0]
+        if not detail_id and isinstance(group, dict):
+            detail_id = _first_text(group.get("ID"), group.get("id"))
+
+        if detail_id:
+            cached = resolved_usergroups.get(detail_id.lower())
+            if isinstance(cached, dict):
+                group = cached
+
+        needs_detail = not isinstance(group, dict) or (
+            isinstance(group, dict)
+            and not self._usergroup_usernames(group)
+            and detail_id
+        )
+
+        if needs_detail and detail_id:
+            detail = await self._admin_usergroup(detail_id)
+            if isinstance(detail, dict):
+                group = detail
+                resolved_usergroups[detail_id.lower()] = detail
+                self._index_usergroup_record(usergroups_by_lookup, detail)
+
+        if not isinstance(group, dict):
+            group = reference if isinstance(reference, dict) else None
+        elif isinstance(reference, dict):
+            merged = dict(group)
+            for key, value in reference.items():
+                merged.setdefault(key, value)
+            group = merged
+
+        if isinstance(group, dict):
+            self._index_usergroup_record(usergroups_by_lookup, group)
+        return group
+
+    async def _expand_usergroup_members(
+        self,
+        reference: dict[str, Any],
+        *,
+        usergroups_by_lookup: dict[str, dict[str, Any]],
+        resolved_usergroups: dict[str, dict[str, Any]],
+        visited: set[str] | None = None,
+    ) -> tuple[str, list[str]]:
+        visited = visited or set()
+        group = await self._resolve_usergroup_reference(
+            reference,
+            usergroups_by_lookup=usergroups_by_lookup,
+            resolved_usergroups=resolved_usergroups,
+        )
+        if not isinstance(group, dict):
+            group_name = _first_text(reference.get("name"), reference.get("key"))
+            return group_name, []
+
+        group_name = _first_text(group.get("name"), group.get("displayName"), group.get("key"))
+        group_id = _first_text(group.get("ID"), group.get("id"), group_name)
+        visit_key = group_id.lower()
+        if visit_key in visited:
+            return group_name, []
+        visited.add(visit_key)
+
+        usernames = self._usergroup_usernames(group)
+        seen_usernames = {value.lower() for value in usernames}
+        for nested_reference in self._usergroup_nested_refs(group):
+            _, nested_usernames = await self._expand_usergroup_members(
+                nested_reference,
+                usergroups_by_lookup=usergroups_by_lookup,
+                resolved_usergroups=resolved_usergroups,
+                visited=visited,
+            )
+            for username in nested_usernames:
+                lookup_key = username.lower()
+                if lookup_key not in seen_usernames:
+                    seen_usernames.add(lookup_key)
+                    usernames.append(username)
+
+        return group_name, usernames
 
     async def _user_readonly_branches(self, project_id: str, username: str) -> list[str]:
         encoded_username = quote(username, safe="")
