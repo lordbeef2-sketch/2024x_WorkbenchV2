@@ -32,7 +32,7 @@ public class SnapshotExportService {
 
     public BranchSnapshotPayload capture(Project project, PluginConfig config) {
         BranchSnapshotPayload payload = new BranchSnapshotPayload();
-        String resourceId = config.resourceIdOverride != null ? config.resourceIdOverride : resolveResourceId(project);
+        String resourceId = resolveResourceId(project);
 
         payload.exportedAt = OffsetDateTime.now().toString();
         payload.projectName = project.getName();
@@ -41,7 +41,7 @@ public class SnapshotExportService {
         payload.serverUrl = resolveServerUrl(project);
         payload.serverId = config.serverIdOverride != null ? config.serverIdOverride : payload.serverUrl;
         payload.resourceId = resourceId;
-        payload.workspaceId = config.workspaceIdOverride != null ? config.workspaceIdOverride : resolveWorkspaceId(project);
+        payload.workspaceId = resolveWorkspaceId(project);
         payload.branchName = "trunk";
         payload.branchId = "master";
         payload.revisionId = resolveRevisionId(project);

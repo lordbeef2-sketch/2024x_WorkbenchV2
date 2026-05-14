@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import csv
+import hashlib
 import json
 import secrets
 from contextlib import suppress
@@ -31,8 +32,16 @@ from app.models.domain import (
     BranchSnapshotIngestRequest,
     BranchSummary,
     BranchUpdateRequest,
+    CacheApiKeyCreateResponse,
+    CacheApiKeyRecord,
+    CacheApiKeyScope,
+    CacheApiKeySummary,
+    CacheElementEditRequest,
+    CacheApiManifest,
+    CacheApiTokenIdentity,
     CacheIngestTokenRotateResponse,
     CacheIngestTokenStatus,
+    CacheServerEntry,
     CacheProjectBranchEntry,
     CacheProjectEntry,
     CapabilityState,
@@ -96,6 +105,8 @@ ADMIN_CLAIM_MARKERS = ("admin", "administrator")
 PROJECT_LIST_CACHE_KEY = "projects"
 BRANCH_REVISION_PROBE_TTL_SECONDS = 20
 FAILED_BRANCH_CACHE_RETRY_SECONDS = 300
+PLUGIN_PERMISSION_PROBE_TTL_SECONDS = 60
+PLUGIN_CACHE_SOURCE_KIND = "cameo-plugin"
 
 
 class PlatformService:
@@ -393,6 +404,20 @@ class PlatformService:
                 return cached_tree
 
         if project_id and branch_id:
+            summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+            if self._is_plugin_managed_summary(summary):
+                await self._ensure_plugin_branch_permissions(
+                    session,
+                    project_id,
+                    branch_id,
+                    workspace_id=workspace_id,
+                    summary=summary,
+                    force=refresh,
+                )
+                materialized_tree = self._materialized_model_tree(session, project_id, branch_id)
+                return materialized_tree or []
+            if self._is_plugin_only_target(session.server.id, project_id, branch_id):
+                raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
             await self._schedule_branch_cache_refresh_if_stale(
                 session,
                 project_id,
@@ -425,6 +450,57 @@ class PlatformService:
         cache_key = self._element_discovery_cache_key(project_id, branch_id)
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         resolved_workspace_id = workspace_id or (summary.workspace_id if summary is not None else None)
+        if self._is_plugin_managed_summary(summary):
+            await self._ensure_plugin_branch_permissions(
+                session,
+                project_id,
+                branch_id,
+                workspace_id=resolved_workspace_id,
+                summary=summary,
+                force=refresh,
+            )
+            materialized = self._materialized_element_discovery(session, project_id, branch_id, summary)
+            if materialized is not None:
+                self.repo.upsert_user_cache(
+                    self._user_key(session.user.preferred_username),
+                    session.server.id,
+                    cache_key,
+                    json.loads(materialized.model_dump_json()),
+                )
+                return materialized
+
+            result = ElementDiscoveryResult(
+                project_id=project_id,
+                branch_id=branch_id,
+                workspace_id=resolved_workspace_id,
+                latest_revision=summary.latest_revision if summary is not None else None,
+                seed_source="plugin-model-cache",
+                seed_ids=[],
+                ids=[],
+                entries=[],
+                total_ids=0,
+                traversed_elements=0,
+                hydrated_elements=0,
+                batch_count=0,
+                batch_size=0,
+                cache_status="cache-hit",
+                warnings=[
+                    "This branch is served from the Cameo plugin cache.",
+                    "No accessible cached elements are available for the active TWC session on this branch.",
+                    *([summary.message] if summary and summary.message else []),
+                ],
+            )
+            self.repo.upsert_user_cache(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                cache_key,
+                json.loads(result.model_dump_json()),
+            )
+            return result
+
+        if self._is_plugin_only_target(session.server.id, project_id, branch_id):
+            raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
+
         materialized = self._materialized_element_discovery(session, project_id, branch_id, summary)
 
         sync_job = await self._schedule_branch_cache_refresh_if_stale(
@@ -941,6 +1017,25 @@ class PlatformService:
             )
         return sorted(projects.values(), key=lambda item: (item.project_name.lower(), item.project_id))
 
+    def list_cached_servers_for_user(self, preferred_username: str) -> list[CacheServerEntry]:
+        entries: list[CacheServerEntry] = []
+        for server in self.repo.list_servers(include_disabled=True):
+            projects = self.list_cached_projects_for_user(server.id, preferred_username)
+            if not projects:
+                continue
+            branch_entries = [branch for project in projects for branch in project.branches]
+            latest_updated = max((branch.updated_at for branch in branch_entries), default=None)
+            entries.append(
+                CacheServerEntry(
+                    server_id=server.id,
+                    server_name=server.name,
+                    project_count=len(projects),
+                    branch_count=len(branch_entries),
+                    updated_at=latest_updated,
+                )
+            )
+        return sorted(entries, key=lambda item: (item.server_name.lower(), item.server_id))
+
     def get_branch_cache_summary_for_user(
         self,
         server_id: str,
@@ -1064,6 +1159,80 @@ class PlatformService:
             if match is not None:
                 return match
         return None
+
+    def edit_cached_branch_element_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        element_id: str,
+        payload: CacheElementEditRequest,
+    ) -> CachedElementRecord | None:
+        self._require_server(server_id, include_disabled=True)
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if not self._is_plugin_managed_summary(summary):
+            raise ValueError("Cached element edits are only supported for plugin-backed branches.")
+
+        record = self.get_cached_branch_element_for_user(server_id, preferred_username, project_id, branch_id, element_id)
+        if record is None:
+            return None
+
+        permission = self.repo.get_model_permission(
+            self._user_key(preferred_username),
+            server_id,
+            project_id,
+            branch_id,
+            record.model_id,
+        )
+        if permission is None or not permission.accessible or permission.restricted or not permission.editable:
+            raise PermissionError("The active Workbench user does not have edit access to this cached model.")
+
+        updated_payload = dict(record.payload)
+        if payload.name is not None:
+            updated_payload["name"] = payload.name
+        if payload.human_name is not None:
+            updated_payload["human_name"] = payload.human_name
+        if payload.qualified_name is not None:
+            updated_payload["qualified_name"] = payload.qualified_name
+        if payload.documentation is not None:
+            updated_payload["documentation"] = payload.documentation
+        if payload.attributes is not None:
+            updated_payload["attributes"] = payload.attributes
+        if payload.references is not None:
+            updated_payload["references"] = payload.references
+        if payload.owned_element_ids is not None:
+            updated_payload["owned_element_ids"] = payload.owned_element_ids
+
+        updated_name = (
+            payload.human_name
+            or payload.name
+            or str(updated_payload.get("human_name") or updated_payload.get("name") or record.name)
+        )
+        updated_path = payload.qualified_name or str(updated_payload.get("qualified_name") or updated_name)
+        now = utcnow()
+        updated_record = record.model_copy(
+            update={
+                "name": updated_name,
+                "path": updated_path,
+                "child_count": len(updated_payload.get("owned_element_ids") or []),
+                "payload": updated_payload,
+                "source_user": preferred_username,
+                "synced_at": now,
+            }
+        )
+        self.repo.upsert_cached_elements([updated_record])
+        if summary is not None:
+            self.repo.upsert_branch_cache_summary(
+                summary.model_copy(
+                    update={
+                        "message": f"Cached element {element_id} was edited through the Workbench cache API.",
+                        "updated_at": now,
+                    }
+                )
+            )
+        self._invalidate_shared_branch_caches(server_id, project_id, branch_id)
+        return updated_record
 
     async def _run_branch_cache_sync(
         self,
@@ -1297,6 +1466,9 @@ class PlatformService:
     ) -> JobRecord | None:
         existing_summary = summary or self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         resolved_workspace_id = workspace_id or (existing_summary.workspace_id if existing_summary is not None else None)
+
+        if self._is_plugin_managed_summary(existing_summary):
+            return None
 
         if refresh:
             if resolved_workspace_id is None:
@@ -1813,6 +1985,33 @@ class PlatformService:
                 return cached_item
 
         if project_id and branch_id:
+            summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+            if self._is_plugin_managed_summary(summary):
+                await self._ensure_plugin_branch_permissions(
+                    session,
+                    project_id,
+                    branch_id,
+                    workspace_id=workspace_id,
+                    summary=summary,
+                    force=refresh,
+                )
+                materialized_item = await self._materialized_item_details(session, item_id, project_id, branch_id)
+                if materialized_item is None:
+                    raise KeyError(item_id)
+                self.sessions.add_recent_item(
+                    session,
+                    Bookmark(
+                        title=materialized_item.name,
+                        item_id=materialized_item.id,
+                        item_type=materialized_item.item_type,
+                        path=materialized_item.path,
+                        project_id=materialized_item.project_id,
+                        branch_id=materialized_item.branch_id,
+                    ),
+                )
+                return materialized_item
+            if self._is_plugin_only_target(session.server.id, project_id, branch_id):
+                raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
             await self._schedule_branch_cache_refresh_if_stale(
                 session,
                 project_id,
@@ -2550,6 +2749,24 @@ class PlatformService:
     def _branch_cache_key(self, project_id: str) -> str:
         return f"project:{project_id}:branches"
 
+    def _is_plugin_managed_summary(self, summary: BranchCacheSummary | None) -> bool:
+        return bool(summary is not None and summary.source_kind == PLUGIN_CACHE_SOURCE_KIND)
+
+    def _is_plugin_only_target(self, server_id: str, project_id: str, branch_id: str) -> bool:
+        rule = self.settings.plugin_only_cache_rule_for_server(server_id)
+        if rule is None:
+            return False
+        if project_id in set(rule.project_ids):
+            return True
+        branch_ids = rule.branch_ids.get(project_id) or []
+        return branch_id in set(branch_ids)
+
+    def _plugin_only_cache_message(self, project_id: str, branch_id: str) -> str:
+        return (
+            f"Project {project_id} / branch {branch_id} is configured for plugin-only cache access. "
+            "Publish a Cameo plugin snapshot to Workbench before opening this branch here."
+        )
+
     def _tree_cache_key(self, project_id: str | None, branch_id: str | None) -> str | None:
         if not project_id:
             return None
@@ -2571,6 +2788,85 @@ class PlatformService:
             if project.id == project_id and project.workspace_id:
                 return project.workspace_id
         return None
+
+    async def _ensure_plugin_branch_permissions(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        *,
+        workspace_id: str | None = None,
+        summary: BranchCacheSummary | None = None,
+        force: bool = False,
+    ) -> None:
+        resolved_summary = summary or self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if not self._is_plugin_managed_summary(resolved_summary):
+            return
+
+        models = self.repo.list_cached_models(session.server.id, project_id, branch_id)
+        if not models:
+            return
+
+        user_id = self._user_key(session.user.preferred_username)
+        existing_permissions = {
+            item.model_id: item
+            for item in self.repo.list_model_permissions(
+                user_id,
+                session.server.id,
+                project_id,
+                branch_id,
+            )
+        }
+        expected_revision = resolved_summary.latest_revision
+        refresh_cutoff = utcnow() - timedelta(seconds=PLUGIN_PERMISSION_PROBE_TTL_SECONDS)
+        model_ids = [model.model_id for model in models]
+        needs_refresh = force
+        if not needs_refresh:
+            for model_id in model_ids:
+                permission = existing_permissions.get(model_id)
+                if permission is None:
+                    needs_refresh = True
+                    break
+                if permission.source != "twc-session-probe":
+                    needs_refresh = True
+                    break
+                if (permission.latest_revision or None) != (expected_revision or None):
+                    needs_refresh = True
+                    break
+                if permission.updated_at <= refresh_cutoff:
+                    needs_refresh = True
+                    break
+
+        if not needs_refresh:
+            return
+
+        try:
+            permissions = await self._adapter_for_session(session).probe_model_permissions(
+                user_id,
+                project_id,
+                branch_id,
+                model_ids,
+                latest_revision=expected_revision,
+                workspace_id=workspace_id or resolved_summary.workspace_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "plugin-cache-permission-refresh-failed",
+                server_id=session.server.id,
+                project_id=project_id,
+                branch_id=branch_id,
+                user=session.user.preferred_username,
+                detail=str(exc),
+            )
+            return
+
+        self.repo.replace_model_permissions_for_user_branch(
+            user_id,
+            session.server.id,
+            project_id,
+            branch_id,
+            permissions,
+        )
 
     def _permissions_by_model_for_user(
         self,
@@ -2858,6 +3154,16 @@ class PlatformService:
         if tree_key:
             self.repo.delete_user_cache(source_user, server_id, tree_key)
         self.repo.delete_user_cache_prefix(source_user, server_id, f"project:{project_id}:branch:{branch_id}:item:")
+        self._invalidate_shared_branch_caches(server_id, project_id, branch_id)
+
+    def _invalidate_shared_branch_caches(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> None:
+        prefix = f"project:{project_id}:branch:{branch_id}:"
+        self.repo.delete_user_cache_prefix_for_server(server_id, prefix)
 
     def _shared_oslc_secret_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"
@@ -2885,6 +3191,12 @@ class PlatformService:
         suffix = token[-6:] if len(token) > 6 else token
         return f"Ends with {suffix}"
 
+    def _new_cache_api_token(self) -> str:
+        return f"twcwbk_cache_{secrets.token_urlsafe(36)}"
+
+    def _hash_cache_api_token(self, token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
     def cache_ingest_token_status(self) -> CacheIngestTokenStatus:
         shared_token, updated_at = self._shared_cache_ingest_token()
         if shared_token:
@@ -2910,10 +3222,7 @@ class PlatformService:
 
     def rotate_cache_ingest_token(self) -> CacheIngestTokenRotateResponse:
         token = secrets.token_urlsafe(48)
-        encrypted_payload = self.sessions.cipher.encrypt_raw(token.encode("utf-8"))
-        updated_at = datetime.fromisoformat(
-            self.repo.upsert_app_secret(self._shared_cache_ingest_scope(), encrypted_payload)
-        )
+        updated_at = self._store_shared_cache_ingest_token(token)
         return CacheIngestTokenRotateResponse(
             configured=True,
             source="shared",
@@ -2921,6 +3230,19 @@ class PlatformService:
             updated_at=updated_at,
             message="The plugin ingest token was stored in encrypted Workbench app storage.",
             token=token,
+        )
+
+    def set_cache_ingest_token(self, token: str) -> CacheIngestTokenStatus:
+        candidate = token.strip()
+        if not candidate:
+            raise ValueError("A plugin ingest token is required.")
+        updated_at = self._store_shared_cache_ingest_token(candidate)
+        return CacheIngestTokenStatus(
+            configured=True,
+            source="shared",
+            token_hint=self._token_hint(candidate),
+            updated_at=updated_at,
+            message="The plugin ingest token was saved in encrypted Workbench app storage.",
         )
 
     def clear_cache_ingest_token(self) -> CacheIngestTokenStatus:
@@ -2935,6 +3257,106 @@ class PlatformService:
             return True
         shared_token, _ = self._shared_cache_ingest_token()
         return bool(shared_token and secrets.compare_digest(candidate, shared_token))
+
+    def list_cache_api_keys(self, session: SessionData) -> list[CacheApiKeySummary]:
+        user_id = self._user_key(session.user.preferred_username)
+        return [
+            CacheApiKeySummary(
+                key_id=record.key_id,
+                label=record.label,
+                token_hint=record.token_hint,
+                scopes=record.scopes,
+                created_at=record.created_at,
+                updated_at=record.updated_at,
+                last_used_at=record.last_used_at,
+            )
+            for record in self.repo.list_cache_api_keys(user_id)
+        ]
+
+    def create_cache_api_key(self, session: SessionData, label: str, scopes: list[CacheApiKeyScope]) -> CacheApiKeyCreateResponse:
+        clean_label = label.strip()
+        if not clean_label:
+            raise ValueError("API key label is required.")
+        if len(clean_label) > 120:
+            raise ValueError("API key label must be 120 characters or fewer.")
+        normalized_scopes = list(dict.fromkeys(scopes))
+        if not normalized_scopes:
+            raise ValueError("At least one API key scope is required.")
+        token = self._new_cache_api_token()
+        now = utcnow()
+        record = CacheApiKeyRecord(
+            user_id=self._user_key(session.user.preferred_username),
+            label=clean_label,
+            token_hash=self._hash_cache_api_token(token),
+            token_hint=self._token_hint(token),
+            scopes=normalized_scopes,
+            created_at=now,
+            updated_at=now,
+        )
+        self.repo.upsert_cache_api_key(record)
+        return CacheApiKeyCreateResponse(
+            key_id=record.key_id,
+            label=record.label,
+            token_hint=record.token_hint,
+            scopes=record.scopes,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            last_used_at=record.last_used_at,
+            token=token,
+        )
+
+    def delete_cache_api_key(self, session: SessionData, key_id: str) -> bool:
+        return self.repo.delete_cache_api_key(self._user_key(session.user.preferred_username), key_id)
+
+    def authenticate_cache_api_token(self, token: str) -> CacheApiTokenIdentity | None:
+        candidate = token.strip()
+        if not candidate:
+            return None
+        configured_username = self.settings.cache_api_tokens.get(candidate)
+        if configured_username and configured_username.strip():
+            return CacheApiTokenIdentity(
+                preferred_username=configured_username.strip(),
+                source="config",
+                scopes=[CacheApiKeyScope.READ, CacheApiKeyScope.WRITE, CacheApiKeyScope.EDIT],
+            )
+
+        record = self.repo.get_cache_api_key_by_hash(self._hash_cache_api_token(candidate))
+        if not record:
+            return None
+        self.repo.touch_cache_api_key_last_used(record.key_id, utcnow())
+        return CacheApiTokenIdentity(
+            preferred_username=record.user_id,
+            source="app-key",
+            scopes=record.scopes,
+        )
+
+    def cache_api_manifest(self, preferred_username: str, source: str, scopes: list[CacheApiKeyScope]) -> CacheApiManifest:
+        return CacheApiManifest(
+            preferred_username=preferred_username,
+            source="config" if source == "config" else "app-key",
+            scopes=scopes,
+            message="Use this bearer token against the cache API to read cached project, branch, model, and element data already available to this Workbench user. Write scope allows cache ingest, and edit scope allows cache edits on plugin-backed branches when your TWC visibility snapshot marks the model editable.",
+            available_routes=[
+                "GET /api/cache",
+                "GET /api/cache/servers",
+                "GET /api/cache/servers/{server_id}/projects",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/summary",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/snapshot",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models/{model_id}",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}",
+                "PATCH /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}",
+                "POST /api/cache-ingest/branch-snapshots",
+                "POST /api/cache-ingest/branch-deltas",
+            ],
+        )
+
+    def _store_shared_cache_ingest_token(self, token: str) -> datetime:
+        encrypted_payload = self.sessions.cipher.encrypt_raw(token.encode("utf-8"))
+        return datetime.fromisoformat(
+            self.repo.upsert_app_secret(self._shared_cache_ingest_scope(), encrypted_payload)
+        )
 
     def _shared_oslc_consumer_credentials(self, server_id: str) -> tuple[OSLCConsumerCredentials | None, datetime | None]:
         stored = self.repo.get_app_secret(self._shared_oslc_secret_scope(server_id))

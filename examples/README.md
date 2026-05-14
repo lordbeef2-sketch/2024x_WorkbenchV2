@@ -140,6 +140,42 @@ The numbered files map to those commands one-to-one, with `18_authserver_token_f
 covering the reusable auth-client setup and token metadata. `20_all_elements_list.py`
 and `21_all_elements_payloads.py` cover the no-element-id discovery wrappers.
 
+## Workbench Cache API examples
+
+Workbench now also exposes a cache-first API for plugin-backed model data and
+other cached branch content. Those examples use a bearer API key created from
+Workbench Settings rather than the TWC AuthServer flow above. Keys can carry
+`read`, `write`, and `edit` scopes, and Workbench tracks their labels plus
+last-used timestamps for basic usage audit.
+
+Files:
+
+- `22_workbench_cache_api_manifest.py`
+- `23_workbench_cache_api_list_elements.py`
+- `24_workbench_cache_api_edit_element.py`
+- `25_workbench_cache_api_ingest_snapshot.py`
+
+They read from:
+
+- [workbench_cache_api_config.json](/C:/sand/fresh/New%20Project/examples/workbench_cache_api_config.json)
+
+The helper module is:
+
+- [workbench_cache_api_common.py](/C:/sand/fresh/New%20Project/examples/workbench_cache_api_common.py)
+
+Quick run examples:
+
+```powershell
+python .\22_workbench_cache_api_manifest.py
+python .\23_workbench_cache_api_list_elements.py
+python .\24_workbench_cache_api_edit_element.py
+python .\25_workbench_cache_api_ingest_snapshot.py
+```
+
+More background is in:
+
+- [CACHE_API.md](/C:/sand/fresh/New%20Project/CACHE_API.md)
+
 ## Not included on purpose
 
 - OSLC examples are not in this folder because the app uses OAuth 1.0a for OSLC,

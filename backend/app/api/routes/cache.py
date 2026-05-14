@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import get_container, require_cache_api_token, require_cache_ingest_token
-from app.models.domain import BranchDeltaIngestRequest, BranchSnapshotIngestRequest
+from app.api.deps import get_container, require_cache_api_identity, require_cache_api_scope, require_cache_api_token, require_cache_ingest_token
+from app.models.domain import BranchDeltaIngestRequest, BranchSnapshotIngestRequest, CacheApiKeyScope, CacheElementEditRequest
 from app.services.platform import ApplicationContainer
 
 router = APIRouter(tags=["cache"])
+
+
+@router.get("/cache")
+def cache_manifest(
+    identity=Depends(require_cache_api_identity),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.cache_api_manifest(identity.preferred_username, identity.source, identity.scopes)
 
 
 @router.post("/cache-ingest/branch-snapshots")
@@ -47,6 +55,14 @@ def cached_projects(
         return container.platform.list_cached_projects_for_user(server_id, preferred_username)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+
+
+@router.get("/cache/servers")
+def cached_servers(
+    preferred_username: str = Depends(require_cache_api_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.list_cached_servers_for_user(preferred_username)
 
 
 @router.get("/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/summary")
@@ -166,6 +182,36 @@ def cached_element(
         )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cached element not found")
+    return record
+
+
+@router.patch("/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}")
+def edit_cached_element(
+    server_id: str,
+    project_id: str,
+    branch_id: str,
+    element_id: str,
+    payload: CacheElementEditRequest,
+    identity=Depends(require_cache_api_scope(CacheApiKeyScope.EDIT)),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        record = container.platform.edit_cached_branch_element_for_user(
+            server_id,
+            identity.preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+            payload,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cached element not found")
     return record

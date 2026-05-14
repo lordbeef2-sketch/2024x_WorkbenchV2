@@ -8,9 +8,11 @@ import {
   Button,
   Card,
   CardContent,
+  Checkbox,
   Chip,
   CircularProgress,
   Divider,
+  FormControlLabel,
   IconButton,
   LinearProgress,
   List,
@@ -37,6 +39,8 @@ import CapabilityBadges from "../components/CapabilityBadges";
 import ProjectTree from "../components/ProjectTree";
 import SettingsDialog from "../components/SettingsDialog";
 import {
+  CacheApiKeyScope,
+  CacheApiKeySummary,
   ElementDiscoveryResult,
   ItemReference,
   ItemDetails,
@@ -52,7 +56,7 @@ import {
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
-type WorkspaceTab = "dashboard" | "projects" | "models" | "elements" | "details" | "compare" | "api";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "elements" | "details" | "compare" | "developer" | "api";
 
 function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : "The request failed.";
@@ -388,6 +392,15 @@ export default function WorkspacePage() {
   const cacheTimeMs = 1000 * 60 * 60 * 12;
   const sessionCacheKey = [session?.user?.preferred_username ?? "anonymous", session?.server?.id ?? "no-server"];
 
+  const toggleNewCacheApiKeyScope = (scope: CacheApiKeyScope, checked: boolean) => {
+    setNewCacheApiKeyScopes((current) => {
+      if (checked) {
+        return current.includes(scope) ? current : [...current, scope];
+      }
+      return current.filter((value) => value !== scope);
+    });
+  };
+
   const [tab, setTab] = useState<WorkspaceTab>("dashboard");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -413,7 +426,11 @@ export default function WorkspacePage() {
   const [oslcConsumerSecret, setOslcConsumerSecret] = useState("");
   const [oslcManualKey, setOslcManualKey] = useState("");
   const [oslcManualSecret, setOslcManualSecret] = useState("");
+  const [manualCacheIngestToken, setManualCacheIngestToken] = useState("");
   const [revealedCacheIngestToken, setRevealedCacheIngestToken] = useState("");
+  const [newCacheApiKeyLabel, setNewCacheApiKeyLabel] = useState("");
+  const [revealedCacheApiKey, setRevealedCacheApiKey] = useState("");
+  const [newCacheApiKeyScopes, setNewCacheApiKeyScopes] = useState<CacheApiKeyScope[]>(["read"]);
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
   const projectContextActive = tab === "models" || tab === "elements" || tab === "details" || tab === "compare";
 
@@ -456,6 +473,14 @@ export default function WorkspacePage() {
     queryKey: ["workspace-cache-ingest-token", ...sessionCacheKey],
     queryFn: api.getCacheIngestTokenStatus,
     enabled: isAdmin,
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const cacheApiKeysQuery = useQuery({
+    queryKey: ["workspace-cache-api-keys", ...sessionCacheKey],
+    queryFn: api.listCacheApiKeys,
+    enabled: Boolean(session?.user?.preferred_username),
     staleTime: cacheTimeMs,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -569,6 +594,7 @@ export default function WorkspacePage() {
   const oslcStatus = oslcStatusQuery.data ?? null;
   const sharedOslcConsumer = sharedOslcConsumerQuery.data ?? null;
   const cacheIngestTokenStatus = cacheIngestTokenQuery.data ?? null;
+  const cacheApiKeys = cacheApiKeysQuery.data ?? [];
 
   useEffect(() => {
     if (oslcConsumerName) {
@@ -954,8 +980,25 @@ export default function WorkspacePage() {
     mutationFn: () => api.rotateCacheIngestToken(csrfToken),
     onSuccess: async (result) => {
       setRevealedCacheIngestToken(result.token);
+      setManualCacheIngestToken(result.token);
       await queryClient.invalidateQueries({ queryKey: ["workspace-cache-ingest-token", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "A new plugin ingest token was generated and stored inside Workbench." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const storeCacheIngestTokenMutation = useMutation({
+    mutationFn: () =>
+      api.updateCacheIngestToken(
+        {
+          token: manualCacheIngestToken.trim(),
+        },
+        csrfToken,
+      ),
+    onSuccess: async () => {
+      setRevealedCacheIngestToken("");
+      await queryClient.invalidateQueries({ queryKey: ["workspace-cache-ingest-token", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "The exact plugin ingest token was saved in encrypted Workbench app storage." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -964,8 +1007,40 @@ export default function WorkspacePage() {
     mutationFn: () => api.clearCacheIngestToken(csrfToken),
     onSuccess: async () => {
       setRevealedCacheIngestToken("");
+      setManualCacheIngestToken("");
       await queryClient.invalidateQueries({ queryKey: ["workspace-cache-ingest-token", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "The app-managed plugin ingest token was cleared." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const createCacheApiKeyMutation = useMutation({
+    mutationFn: () =>
+      api.createCacheApiKey(
+        {
+          label: newCacheApiKeyLabel.trim(),
+          scopes: newCacheApiKeyScopes,
+        },
+        csrfToken,
+      ),
+    onSuccess: async (result) => {
+      setRevealedCacheApiKey(result.token);
+      setNewCacheApiKeyLabel("");
+      setNewCacheApiKeyScopes(["read"]);
+      await queryClient.invalidateQueries({ queryKey: ["workspace-cache-api-keys", ...sessionCacheKey] });
+      setNotice({
+        severity: "success",
+        message: "API key created. Copy it now; Workbench will not show the full value again after you leave this screen.",
+      });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const deleteCacheApiKeyMutation = useMutation({
+    mutationFn: (keyId: string) => api.deleteCacheApiKey(keyId, csrfToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["workspace-cache-api-keys", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "API key deleted." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -1772,6 +1847,117 @@ export default function WorkspacePage() {
     </Stack>
   );
 
+  const renderCacheApiKeys = () => (
+    <Paper sx={{ p: 3, borderRadius: 2 }}>
+      <Stack spacing={2}>
+        <Box>
+          <Typography variant="h5">API Access Keys</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Create bearer keys for scripts, AI tools, and integrations that need to work with Workbench data as you. The model data stays shared in one cache copy per branch, while Workbench keeps a separate per-user permission overlay so visibility still follows your TWC access.
+          </Typography>
+        </Box>
+        {cacheApiKeysQuery.isLoading ? <CircularProgress size={28} /> : null}
+        {cacheApiKeysQuery.error ? <Alert severity="error">{errorMessage(cacheApiKeysQuery.error)}</Alert> : null}
+        <Alert severity="info">
+          Use these keys with <code>Authorization: Bearer &lt;key&gt;</code>. Start with <code>GET /api/cache</code> or <code>GET /api/cache/servers</code>, then drill into the project, branch, model, and element routes.
+        </Alert>
+        <Typography variant="caption" color="text.secondary">
+          These keys read the Workbench cache, not live TWC directly. Open a project branch in Workbench first so its cached data and your per-user visibility snapshot are available for scripts and AI tools.
+        </Typography>
+        <TextField
+          label="New API key label"
+          value={newCacheApiKeyLabel}
+          onChange={(event) => setNewCacheApiKeyLabel(event.target.value)}
+          helperText="Example: Local Python extractor, Langflow reader, AI notebook, or nightly report."
+          fullWidth
+        />
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} useFlexGap flexWrap="wrap">
+          <FormControlLabel
+            control={<Checkbox checked={newCacheApiKeyScopes.includes("read")} onChange={(event) => toggleNewCacheApiKeyScope("read", event.target.checked)} />}
+            label="Read"
+          />
+          <FormControlLabel
+            control={<Checkbox checked={newCacheApiKeyScopes.includes("write")} onChange={(event) => toggleNewCacheApiKeyScope("write", event.target.checked)} />}
+            label="Write"
+          />
+          <FormControlLabel
+            control={<Checkbox checked={newCacheApiKeyScopes.includes("edit")} onChange={(event) => toggleNewCacheApiKeyScope("edit", event.target.checked)} />}
+            label="Edit"
+          />
+        </Stack>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+          <Button
+            variant="contained"
+            disabled={!csrfToken || !newCacheApiKeyLabel.trim() || !newCacheApiKeyScopes.length || createCacheApiKeyMutation.isPending}
+            onClick={() => createCacheApiKeyMutation.mutate()}
+          >
+            Create API Key
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshRoundedIcon />}
+            onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-cache-api-keys", ...sessionCacheKey] })}
+          >
+            Refresh Keys
+          </Button>
+          {createCacheApiKeyMutation.isPending || deleteCacheApiKeyMutation.isPending ? <CircularProgress size={24} /> : null}
+        </Stack>
+        {revealedCacheApiKey ? (
+          <>
+            <Alert severity="success">
+              Copy this API key now. Workbench stores only a secure hash and will not reveal the full value again after you leave this screen.
+            </Alert>
+            <TextField label="New cache API key" value={revealedCacheApiKey} fullWidth InputProps={{ readOnly: true }} />
+          </>
+        ) : null}
+        <TextField
+          label="Quick start example"
+          value={'curl -H "Authorization: Bearer <your-key>" https://your-workbench-host/api/cache/servers'}
+          fullWidth
+          multiline
+          minRows={2}
+          InputProps={{ readOnly: true }}
+        />
+        <Stack spacing={1.5}>
+          {cacheApiKeys.length ? (
+            cacheApiKeys.map((key: CacheApiKeySummary) => (
+              <Paper key={key.key_id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+                  <Box>
+                    <Typography variant="subtitle2">{key.label}</Typography>
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
+                      <Chip label={key.token_hint} variant="outlined" size="small" />
+                      {key.scopes.map((scope) => (
+                        <Chip key={`${key.key_id}-${scope}`} label={scope} variant="outlined" size="small" />
+                      ))}
+                      <Chip label={`Created ${new Date(key.created_at).toLocaleString()}`} variant="outlined" size="small" />
+                      <Chip
+                        label={key.last_used_at ? `Last used ${new Date(key.last_used_at).toLocaleString()}` : "Never used"}
+                        color={key.last_used_at ? "success" : "default"}
+                        variant="outlined"
+                        size="small"
+                      />
+                    </Stack>
+                  </Box>
+                  <Button
+                    variant="text"
+                    color="warning"
+                    disabled={!csrfToken || deleteCacheApiKeyMutation.isPending}
+                    onClick={() => deleteCacheApiKeyMutation.mutate(key.key_id)}
+                  >
+                    Delete Key
+                  </Button>
+                </Stack>
+              </Paper>
+            ))
+          ) : (
+            <Typography color="text.secondary">No API keys created yet.</Typography>
+          )}
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+
   const renderCacheIngestToken = () => {
     const sourceLabel =
       cacheIngestTokenStatus?.source === "shared"
@@ -1813,7 +1999,22 @@ export default function WorkspacePage() {
                 {cacheIngestTokenStatus.token_hint ? <Chip label={cacheIngestTokenStatus.token_hint} variant="outlined" /> : null}
               </Stack>
               {cacheIngestTokenStatus.message ? <Alert severity={cacheIngestTokenStatus.source === "config" ? "warning" : "info"}>{cacheIngestTokenStatus.message}</Alert> : null}
+              <TextField
+                label="Save exact plugin ingest token"
+                type="password"
+                value={manualCacheIngestToken}
+                onChange={(event) => setManualCacheIngestToken(event.target.value)}
+                helperText="Use this when the Cameo plugin should start with a known token instead of a randomly generated one."
+                fullWidth
+              />
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+                <Button
+                  variant="outlined"
+                  disabled={!csrfToken || !manualCacheIngestToken.trim() || storeCacheIngestTokenMutation.isPending}
+                  onClick={() => storeCacheIngestTokenMutation.mutate()}
+                >
+                  Save Exact Token
+                </Button>
                 <Button
                   variant="contained"
                   disabled={!csrfToken || rotateCacheIngestTokenMutation.isPending}
@@ -1829,7 +2030,7 @@ export default function WorkspacePage() {
                 >
                   Clear App-Managed Token
                 </Button>
-                {rotateCacheIngestTokenMutation.isPending || clearCacheIngestTokenMutation.isPending ? <CircularProgress size={24} /> : null}
+                {storeCacheIngestTokenMutation.isPending || rotateCacheIngestTokenMutation.isPending || clearCacheIngestTokenMutation.isPending ? <CircularProgress size={24} /> : null}
               </Stack>
               {cacheIngestTokenStatus.updated_at ? (
                 <Typography variant="caption" color="text.secondary">
@@ -2158,6 +2359,54 @@ export default function WorkspacePage() {
     <Stack spacing={2}>
       {renderCacheIngestToken()}
       {renderOslc()}
+    </Stack>
+  );
+
+  const renderDeveloperApi = () => (
+    <Stack spacing={2}>
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Typography variant="h5">Developer API</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Workbench exposes a cache-first API for scripts, notebooks, AI agents, and integration services. Use a personal API key from this page or from Settings, then call the cache manifest first to discover the available route set.
+          </Typography>
+          <Alert severity="info">
+            Plugin-backed branches are the preferred source for designated cache targets. For those branches, Workbench serves the shared cached model data and checks your per-user TWC visibility overlay instead of duplicating the model itself per user.
+          </Alert>
+          <Typography variant="caption" color="text.secondary">
+            API keys are labeled and tracked with last-used timestamps so you can tell which automation key is still alive before rotating or deleting it.
+          </Typography>
+          <TextField
+            label="Read example"
+            value={'curl -H "Authorization: Bearer <your-key>" https://your-workbench-host/api/cache'}
+            fullWidth
+            multiline
+            minRows={2}
+            InputProps={{ readOnly: true }}
+          />
+          <TextField
+            label="Edit example"
+            value={'curl -X PATCH -H "Authorization: Bearer <your-key>" -H "Content-Type: application/json" https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/elements/<element_id> -d "{\"documentation\":\"Updated from automation\"}"'}
+            fullWidth
+            multiline
+            minRows={3}
+            InputProps={{ readOnly: true }}
+          />
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Chip label="read -> cache reads" />
+            <Chip label="write -> cache ingest" variant="outlined" />
+            <Chip label="edit -> plugin-backed cache edits" variant="outlined" />
+          </Stack>
+        </Stack>
+      </Paper>
+      {renderCacheApiKeys()}
+    </Stack>
+  );
+
+  const renderSettingsExtras = () => (
+    <Stack spacing={2}>
+      {renderCacheApiKeys()}
+      {isAdmin ? renderAdminSettings() : null}
     </Stack>
   );
 
@@ -2494,6 +2743,7 @@ export default function WorkspacePage() {
               <Tab label="Element testing" value="elements" />
               <Tab label="Item Details" value="details" />
               <Tab label="Compare" value="compare" />
+              <Tab label="Developer API" value="developer" />
               {isAdmin ? <Tab label="API Explorer" value="api" /> : null}
             </Tabs>
           </Paper>
@@ -2504,6 +2754,7 @@ export default function WorkspacePage() {
             {tab === "elements" ? renderElementTesting() : null}
             {tab === "details" ? renderDetails() : null}
             {tab === "compare" ? renderCompare() : null}
+            {tab === "developer" ? renderDeveloperApi() : null}
             {tab === "api" ? renderApiExplorer() : null}
           </Box>
         </Stack>
@@ -2512,10 +2763,11 @@ export default function WorkspacePage() {
         open={settingsOpen}
         preferences={session?.preferences ?? { theme_mode: "system", font_scale: 1, request_timeout_seconds: 30, live_log_poll_interval_ms: 2500, presentation_font_scale: 1.2 }}
         saving={settingsMutation.isPending}
-        extraContent={isAdmin ? renderAdminSettings() : null}
+        extraContent={renderSettingsExtras()}
         onClose={() => {
           setSettingsOpen(false);
           setRevealedCacheIngestToken("");
+          setRevealedCacheApiKey("");
         }}
         onSave={async (preferences) => {
           await settingsMutation.mutateAsync(preferences);

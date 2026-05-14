@@ -33,6 +33,7 @@ What the launchers do:
 - Both launchers create or reuse the root `.venv`.
 - Both launchers install backend dependencies when `backend/pyproject.toml` changes.
 - Both launchers install frontend dependencies when `frontend/package.json` changes.
+- Both launchers attempt `npm audit fix` after frontend dependency installation and continue with a warning when the npm audit endpoint is unreachable or blocked by local certificate trust.
 - Both launchers rebuild the frontend when source files change.
 - Both launchers set `FRONTEND_ORIGIN` to the backend URL for a single-origin launch.
 - Both launchers start FastAPI so the backend serves both the API and the built frontend.
@@ -95,10 +96,32 @@ Important settings:
 - `TWC_OSLC_ROOTSERVICES_URL`: optional complete OSLC root services URL. Leave blank to derive `https://<selected-twc-host>:8443/oslc/api/rootservices`.
 - `TWC_OSLC_PORT`, `TWC_OSLC_BASE_PATH`: derivation controls for OSLC when the root services URL is not explicitly set.
 - `TWC_OSLC_CALLBACK_PATH`: optional browser-visible callback path for the OSLC OAuth redirect.
+- `CACHE_INGEST_TOKENS`: optional legacy fallback list for plugin write tokens. The preferred path is to manage the plugin ingest token from Workbench admin Settings.
+- `CACHE_API_TOKENS`: optional legacy fallback map of bearer token to Workbench username for cache-read API access. The preferred path is to let users create their own API keys from Workbench Settings.
+- `TWC_PLUGIN_ONLY_CACHE_TARGETS`: optional JSON object keyed by Workbench server id that forces listed project ids or project/branch pairs to use plugin-backed cache only and refuse live `/osmc` fallback until a plugin snapshot exists.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
 Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through `TWC_PRESET_SERVERS`, not through `HOST`.
 
 The launch scripts read `HOST` and `PORT` from `backend/.env` by default. Command-line launch options override them when provided.
+
+## Developer API
+
+Workbench now includes a cache-first developer API for scripts, AI tools, and
+external integrations.
+
+- Users create labeled API keys from the Workbench `Developer API` tab or
+  Settings.
+- Keys support `read`, `write`, and `edit` scopes.
+- The shared model cache is stored once per branch, while Workbench maintains a
+  per-user visibility and editability overlay so TWC access stays user-scoped
+  without caching the same model N times.
+- Plugin-backed branches can be forced to use plugin cache only through
+  `TWC_PLUGIN_ONLY_CACHE_TARGETS`.
+
+See:
+
+- [CACHE_API.md](/C:/sand/fresh/New%20Project/CACHE_API.md)
+- [examples/README.md](/C:/sand/fresh/New%20Project/examples/README.md)
 
 ## Frontend Configuration
 
@@ -146,13 +169,15 @@ cp backend/.env.example backend/.env
 
 1. Install Node.js 20+.
 2. Install frontend dependencies.
-3. Optionally copy `frontend/.env.example` to `frontend/.env`.
+3. Run `npm audit fix`.
+4. Optionally copy `frontend/.env.example` to `frontend/.env`.
 
 Windows example:
 
 ```powershell
 Set-Location frontend
 npm install
+npm audit fix
 Copy-Item .env.example .env
 ```
 
@@ -161,6 +186,7 @@ Linux example:
 ```bash
 cd frontend
 npm install
+npm audit fix
 cp .env.example .env
 ```
 

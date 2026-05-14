@@ -11,7 +11,7 @@ public class ManualSnapshotExportAction extends MDAction {
     private final TWCWorkbenchCameoPlugin plugin;
 
     public ManualSnapshotExportAction(TWCWorkbenchCameoPlugin plugin) {
-        super(ACTION_ID, "Export Current Project Snapshot", null, null);
+        super(ACTION_ID, "Publish Current Project Snapshot", null, null);
         this.plugin = plugin;
     }
 

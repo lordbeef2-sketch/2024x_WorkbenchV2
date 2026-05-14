@@ -26,7 +26,7 @@ public class TWCWorkbenchCameoPlugin extends Plugin {
     public void init() {
         File pluginDirectory = getDescriptor().getPluginDirectory();
         this.config = PluginConfig.load(pluginDirectory);
-        this.ingestClient = new WorkbenchIngestClient(pluginDirectory, config);
+        this.ingestClient = new WorkbenchIngestClient(config);
         this.snapshotExportService = new SnapshotExportService();
         this.deltaExportService = new DeltaExportService();
         this.projectListener = new TWCWorkbenchProjectListener(config, snapshotExportService, deltaExportService, ingestClient);

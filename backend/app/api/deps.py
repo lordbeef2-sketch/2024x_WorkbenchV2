@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import Depends, HTTPException, Request, status
 
+from app.models.domain import CacheApiKeyScope
 from app.security.session import SessionManager
 from app.services.platform import ApplicationContainer
 
@@ -63,9 +64,12 @@ def require_cache_ingest_token(
     container: ApplicationContainer = Depends(get_container),
 ):
     token = _extract_bearer_token(request)
-    if not token or not container.platform.is_valid_cache_ingest_token(token):
+    if token and container.platform.is_valid_cache_ingest_token(token):
+        return token
+    identity = container.platform.authenticate_cache_api_token(token or "")
+    if not identity or CacheApiKeyScope.WRITE not in identity.scopes:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Valid cache ingest bearer token required")
-    return token
+    return identity
 
 
 def require_cache_api_token(
@@ -75,7 +79,31 @@ def require_cache_api_token(
     token = _extract_bearer_token(request)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Valid cache API bearer token required")
-    username = container.settings.cache_api_tokens.get(token)
-    if not username or not username.strip():
+    identity = container.platform.authenticate_cache_api_token(token)
+    if not identity or not identity.preferred_username.strip():
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Valid cache API bearer token required")
-    return username.strip()
+    if CacheApiKeyScope.READ not in identity.scopes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This API key does not allow cache reads.")
+    return identity.preferred_username.strip()
+
+
+def require_cache_api_identity(
+    request: Request,
+    container: ApplicationContainer = Depends(get_container),
+):
+    token = _extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Valid cache API bearer token required")
+    identity = container.platform.authenticate_cache_api_token(token)
+    if not identity or not identity.preferred_username.strip():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Valid cache API bearer token required")
+    return identity
+
+
+def require_cache_api_scope(scope: CacheApiKeyScope):
+    def dependency(identity=Depends(require_cache_api_identity)):
+        if scope not in identity.scopes:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"This API key does not allow {scope.value} access.")
+        return identity
+
+    return dependency

@@ -116,6 +116,19 @@ function Get-LatestWriteTimeUtc {
     return $latest
 }
 
+function Invoke-FrontendAuditFix {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NpmExecutable
+    )
+
+    Write-Phase "Running frontend npm audit fix"
+    & $NpmExecutable audit fix
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "npm audit fix did not complete cleanly. Continuing with the installed dependencies. Check npm registry access and local certificate trust if this keeps happening."
+    }
+}
+
 function Invoke-RepoScriptUnblock {
     param(
         [Parameter(Mandatory = $true)]
@@ -235,6 +248,7 @@ if (-not $SkipInstall) {
         Push-Location $frontendDir
         try {
             & $npmCommand.Source install
+            Invoke-FrontendAuditFix -NpmExecutable $npmCommand.Source
         }
         finally {
             Pop-Location

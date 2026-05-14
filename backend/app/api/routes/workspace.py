@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
 from app.models.domain import (
     BranchCacheSyncRequest,
+    CacheApiKeyCreateRequest,
+    CacheIngestTokenRequest,
     OSLCExecuteRequest,
     OSLCGenerateConsumerRequest,
     OSLCSharedConsumerRequest,
@@ -43,12 +45,56 @@ def rotate_cache_ingest_token(
     return container.platform.rotate_cache_ingest_token()
 
 
+@router.put("/cache-ingest-token")
+def store_cache_ingest_token(
+    payload: CacheIngestTokenRequest,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.set_cache_ingest_token(payload.token)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
 @router.delete("/cache-ingest-token")
 def clear_cache_ingest_token(
     session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     return container.platform.clear_cache_ingest_token()
+
+
+@router.get("/cache-api-keys")
+def list_cache_api_keys(
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.list_cache_api_keys(session)
+
+
+@router.post("/cache-api-keys")
+def create_cache_api_key(
+    payload: CacheApiKeyCreateRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.create_cache_api_key(session, payload.label, payload.scopes)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.delete("/cache-api-keys/{key_id}")
+def delete_cache_api_key(
+    key_id: str,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    deleted = container.platform.delete_cache_api_key(session, key_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+    return {"ok": True}
 
 
 @router.get("/contract")
@@ -251,7 +297,10 @@ async def tree(
     session=Depends(get_session),
     container: ApplicationContainer = Depends(get_container),
 ):
-    return await container.platform.get_model_tree(session, projectId, branchId, workspaceId, refresh=refresh)
+    try:
+        return await container.platform.get_model_tree(session, projectId, branchId, workspaceId, refresh=refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.get("/elements/discovery")
@@ -422,6 +471,8 @@ async def item(
         return await container.platform.get_item(session, item_id, projectId, branchId, workspaceId, refresh=refresh)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.put("/items/{item_id}")

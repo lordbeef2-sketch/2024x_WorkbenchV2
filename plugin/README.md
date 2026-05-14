@@ -5,10 +5,10 @@ This folder now contains a real Cameo plugin project scaffold, not just planning
 The plugin is designed to:
 - load inside Cameo/MagicDraw as a standard `plugin.xml` plugin
 - traverse the currently opened project model through Cameo OpenAPI
-- export a full branch snapshot of model data
+- capture a full recursive branch snapshot of semantic model data from the active primary model
 - compute a branch delta on project close
 - post snapshots and deltas into TWC Workbench through authenticated ingest endpoints
-- fall back to writing JSON payloads locally when the Workbench ingest endpoint is not configured yet
+- fail clearly when Workbench ingest is not configured, instead of drifting into local file exports
 
 ## Folder layout
 
@@ -70,15 +70,17 @@ Copy the staged folder into the Cameo installation `plugins` directory so the fi
 
 - Adds a `TWC Workbench` main-menu category
 - Adds a `Configure Workbench Connection...` action inside Cameo
-- Adds a manual `Export Current Project Snapshot` action
+- Adds a manual `Publish Current Project Snapshot` action
 - Captures a baseline snapshot when a project opens
 - Publishes a full snapshot on project save
 - Publishes a delta on project close when a baseline exists
+- Exports owned elements recursively and includes names, qualified names, stereotypes, documentation, attributes, and cross-element references in the payload sent to Workbench
 - Uses `Authorization: Bearer <token>` for Workbench ingest API access
 - Uses the TWC resource id as the Workbench `projectId` key so cached data lands under the same project Workbench already exposes
+- Resolves workspace and resource ids from the active remote TWC project instead of allowing manual override
 - Requires `metadata.serverId` to match the Workbench server profile id exactly when posting to Workbench
 
-The ingest bearer token should now be generated from the Workbench admin Settings screen. Workbench stores that token encrypted in app storage and shows the full value only at generation time so it can be pasted into the Cameo dialog.
+The plugin now ships with a preset ingest bearer token for your current setup, and Workbench can store that same exact value in encrypted app storage through the admin Settings screen.
 
 ## Configure inside Cameo
 
@@ -98,18 +100,11 @@ Inside the Cameo dialog, fill these at minimum:
 
 ```properties
 workbench.baseUrl=https://your-workbench-host
-workbench.ingestToken=your-plugin-write-token
+workbench.ingestToken=Hnwdujnq@!N)N!)NQOWDN!*@)*#nQ)DN)!!N()@N@N!)NF
 metadata.serverId=twc-2022x
 ```
 
-If the plugin cannot resolve the TWC resource/workspace ids from the open remote project URL, also set:
-
-```properties
-metadata.workspaceId=...
-metadata.resourceId=...
-```
-
-On the Workbench side, generate that same write token in the admin Settings screen under `Plugin Ingest Token`. Workbench stores the app-managed token encrypted and reveals the full value only when it is generated or rotated.
+On the Workbench side, save that same exact write token in the admin Settings screen under `Plugin Ingest Token`. Workbench stores the app-managed token encrypted and can now accept a specific token value, not just a randomly generated one.
 
 `CACHE_INGEST_TOKENS` still exists as a legacy fallback in `backend/.env` if you need file-based bootstrap during migration:
 
@@ -119,5 +114,5 @@ CACHE_INGEST_TOKENS=["your-plugin-write-token"]
 
 ## Notes
 
-- This scaffold is buildable, structured, and plugin-shaped, but it still needs a real Cameo environment to compile and run.
+- The plugin project is built for both 2022x and 2024x, but it still needs a real Cameo/TWC environment for live end-to-end validation.
 - The export model aims to be rich enough for Workbench cache ingestion without forcing us into a fixed third-party file format.

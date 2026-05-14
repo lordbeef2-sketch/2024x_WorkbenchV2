@@ -17,6 +17,13 @@ write_phase() {
   printf '\n==> %s\n' "$1"
 }
 
+run_frontend_audit_fix() {
+  write_phase "Running frontend npm audit fix"
+  if ! npm audit fix; then
+    printf 'Warning: npm audit fix did not complete cleanly. Continuing with installed dependencies. Check npm registry access and local certificate trust if this keeps happening.\n' >&2
+  fi
+}
+
 get_bootstrap_python() {
   local candidate
 
@@ -230,6 +237,7 @@ if [ "$skip_install" -eq 0 ]; then
     (
       cd "$frontend_dir"
       npm install
+      run_frontend_audit_fix
     )
 
     mkdir -p "$frontend_dir/node_modules"

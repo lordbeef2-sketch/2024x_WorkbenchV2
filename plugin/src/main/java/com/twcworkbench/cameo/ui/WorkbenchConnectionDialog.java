@@ -24,9 +24,6 @@ public final class WorkbenchConnectionDialog {
         JTextField baseUrlField = new JTextField(nullToEmpty(config.workbenchBaseUrl), 34);
         JPasswordField ingestTokenField = new JPasswordField(nullToEmpty(config.workbenchIngestToken), 34);
         JTextField serverIdField = new JTextField(nullToEmpty(config.serverIdOverride), 24);
-        JTextField workspaceIdField = new JTextField(nullToEmpty(config.workspaceIdOverride), 24);
-        JTextField resourceIdField = new JTextField(nullToEmpty(config.resourceIdOverride), 24);
-        JTextField exportDirField = new JTextField(config.exportOutputDir == null ? "exports" : config.exportOutputDir, 24);
         JTextField connectTimeoutField = new JTextField(Integer.toString(config.connectTimeoutSeconds), 8);
         JTextField readTimeoutField = new JTextField(Integer.toString(config.readTimeoutSeconds), 8);
         JCheckBox snapshotOnOpenBox = new JCheckBox("Capture baseline on project open", config.snapshotOnOpen);
@@ -44,9 +41,6 @@ public final class WorkbenchConnectionDialog {
         row = addRow(panel, constraints, row, "Workbench Base URL", baseUrlField);
         row = addRow(panel, constraints, row, "Ingest Bearer Token", ingestTokenField);
         row = addRow(panel, constraints, row, "Workbench Server ID", serverIdField);
-        row = addRow(panel, constraints, row, "Workspace ID Override", workspaceIdField);
-        row = addRow(panel, constraints, row, "Resource ID Override", resourceIdField);
-        row = addRow(panel, constraints, row, "Local Export Folder", exportDirField);
         row = addRow(panel, constraints, row, "Connect Timeout (sec)", connectTimeoutField);
         row = addRow(panel, constraints, row, "Read Timeout (sec)", readTimeoutField);
         row = addRow(panel, constraints, row, "", snapshotOnOpenBox);
@@ -56,8 +50,8 @@ public final class WorkbenchConnectionDialog {
         JLabel note = new JLabel("<html><body style='width: 420px'>"
                 + "Workbench Server ID must exactly match the server profile id inside TWC Workbench, "
                 + "such as <b>twc-2022x</b> or <b>twc-2024x</b>. "
-                + "If the open remote project URL already contains workspace and resource identifiers, "
-                + "the plugin can usually resolve those automatically.</body></html>");
+                + "This plugin now performs an exact sync from the currently open remote TWC project and resolves workspace/resource identifiers automatically. "
+                + "It publishes directly into TWC Workbench rather than writing local export files.</body></html>");
         note.setVerticalAlignment(SwingConstants.TOP);
         constraints.gridx = 0;
         constraints.gridy = row;
@@ -83,15 +77,12 @@ public final class WorkbenchConnectionDialog {
                 config.applyEditableSettings(
                         baseUrlField.getText(),
                         new String(ingestTokenField.getPassword()),
-                        exportDirField.getText(),
                         snapshotOnOpenBox.isSelected(),
                         snapshotOnSaveBox.isSelected(),
                         deltaOnCloseBox.isSelected(),
                         connectTimeout,
                         readTimeout,
-                        workspaceIdField.getText(),
-                        serverIdField.getText(),
-                        resourceIdField.getText()
+                        serverIdField.getText()
                 );
                 config.save();
                 return true;

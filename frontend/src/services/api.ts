@@ -1,5 +1,11 @@
 import {
   AuthOptions,
+  CacheApiKeyCreateRequest,
+  CacheApiKeyCreateResponse,
+  CacheApiKeySummary,
+  CacheApiManifest,
+  CacheServerEntry,
+  CacheIngestTokenRequest,
   BranchSummary,
   CacheIngestTokenRotateResponse,
   CacheIngestTokenStatus,
@@ -149,16 +155,51 @@ export const api = {
   getCacheIngestTokenStatus() {
     return request<CacheIngestTokenStatus>("/workspace/cache-ingest-token");
   },
+  listCacheApiKeys() {
+    return request<CacheApiKeySummary[]>("/workspace/cache-api-keys");
+  },
+  createCacheApiKey(payload: CacheApiKeyCreateRequest, csrfToken: string) {
+    return request<CacheApiKeyCreateResponse>("/workspace/cache-api-keys", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteCacheApiKey(keyId: string, csrfToken: string) {
+    return request<{ ok: boolean }>(`/workspace/cache-api-keys/${keyId}`, {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
   rotateCacheIngestToken(csrfToken: string) {
     return request<CacheIngestTokenRotateResponse>("/workspace/cache-ingest-token/rotate", {
       method: "POST",
       headers: jsonHeaders(csrfToken),
     });
   },
+  updateCacheIngestToken(payload: CacheIngestTokenRequest, csrfToken: string) {
+    return request<CacheIngestTokenStatus>("/workspace/cache-ingest-token", {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
   clearCacheIngestToken(csrfToken: string) {
     return request<CacheIngestTokenStatus>("/workspace/cache-ingest-token", {
       method: "DELETE",
       headers: jsonHeaders(csrfToken),
+    });
+  },
+  getCacheApiManifest(token: string) {
+    return request<CacheApiManifest>("/cache", {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "omit",
+    });
+  },
+  getCachedServers(token: string) {
+    return request<CacheServerEntry[]>("/cache/servers", {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "omit",
     });
   },
   getSharedOslcConsumer() {

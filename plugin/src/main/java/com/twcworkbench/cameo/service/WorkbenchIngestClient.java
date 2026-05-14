@@ -6,46 +6,35 @@ import com.twcworkbench.cameo.config.PluginConfig;
 import com.twcworkbench.cameo.model.BranchDeltaPayload;
 import com.twcworkbench.cameo.model.BranchSnapshotPayload;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.time.Duration;
-import java.time.format.DateTimeFormatter;
 
 public class WorkbenchIngestClient {
-    private final File pluginDirectory;
     private final PluginConfig config;
     private final ObjectMapper objectMapper;
 
-    public WorkbenchIngestClient(File pluginDirectory, PluginConfig config) {
-        this.pluginDirectory = pluginDirectory;
+    public WorkbenchIngestClient(PluginConfig config) {
         this.config = config;
         this.objectMapper = new ObjectMapper();
     }
 
     public void publishSnapshot(BranchSnapshotPayload payload, String reason) throws IOException, InterruptedException {
         payload.exportReason = reason;
-        if (config.hasWorkbenchIngestTarget()) {
-            validateSnapshotForWorkbench(payload);
-            postJson("/api/cache-ingest/branch-snapshots", payload);
-            return;
-        }
-        writeLocal("snapshot", payload.projectId, payload.branchId, payload);
+        requireWorkbenchIngestTarget();
+        validateSnapshotForWorkbench(payload);
+        postJson("/api/cache-ingest/branch-snapshots", payload);
     }
 
     public void publishDelta(BranchDeltaPayload payload, String reason) throws IOException, InterruptedException {
         payload.exportReason = reason;
-        if (config.hasWorkbenchIngestTarget()) {
-            validateDeltaForWorkbench(payload);
-            postJson("/api/cache-ingest/branch-deltas", payload);
-            return;
-        }
-        writeLocal("delta", payload.projectId, payload.branchId, payload);
+        requireWorkbenchIngestTarget();
+        validateDeltaForWorkbench(payload);
+        postJson("/api/cache-ingest/branch-deltas", payload);
     }
 
     private void postJson(String path, Object payload) throws IOException, InterruptedException {
@@ -70,25 +59,14 @@ public class WorkbenchIngestClient {
         Application.getInstance().getGUILog().log("[INFO] Posted payload to Workbench ingest endpoint: " + path);
     }
 
-    private void writeLocal(String prefix, String projectId, String branchId, Object payload) throws IOException {
-        File outputDirectory = config.resolveOutputDirectory(pluginDirectory);
-        String safeProject = sanitize(projectId);
-        String safeBranch = sanitize(branchId);
-        String timestamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").format(java.time.LocalDateTime.now());
-        File outputFile = new File(outputDirectory, prefix + "-" + safeProject + "-" + safeBranch + "-" + timestamp + ".json");
-        Files.writeString(outputFile.toPath(), objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(payload), StandardCharsets.UTF_8);
-        Application.getInstance().getGUILog().log("[INFO] Wrote local export payload: " + outputFile.getAbsolutePath());
-    }
-
     private String trimTrailingSlash(String value) {
         return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
     }
 
-    private String sanitize(String value) {
-        if (value == null || value.isBlank()) {
-            return "unknown";
+    private void requireWorkbenchIngestTarget() throws IOException {
+        if (!config.hasWorkbenchIngestTarget()) {
+            throw new IOException("Workbench Base URL and Ingest Bearer Token are required. Configure them from TWC Workbench -> Configure Workbench Connection...");
         }
-        return value.replaceAll("[^A-Za-z0-9._-]", "_");
     }
 
     private void validateSnapshotForWorkbench(BranchSnapshotPayload payload) throws IOException {
@@ -111,7 +89,7 @@ public class WorkbenchIngestClient {
             throw new IOException("Workbench ingest requires config/workbench-plugin.properties metadata.serverId to match the Workbench server profile id.");
         }
         if (isBlank(resourceId)) {
-            throw new IOException("Workbench ingest requires a resolvable TWC resource ID. Open a remote TWC project or set metadata.resourceId.");
+            throw new IOException("Workbench ingest requires a resolvable TWC resource ID from the active remote TWC project.");
         }
         if (isBlank(projectId)) {
             throw new IOException("Workbench ingest requires a project ID. The plugin now uses the TWC resource ID as the Workbench project key.");

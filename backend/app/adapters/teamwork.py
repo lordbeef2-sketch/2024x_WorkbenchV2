@@ -2412,6 +2412,43 @@ class TeamworkAdapter:
             models.append((model_id, detail))
         return latest_revision, models, warnings
 
+    async def probe_model_permissions(
+        self,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        model_ids: list[str],
+        *,
+        latest_revision: str | None = None,
+        workspace_id: str | None = None,
+        request_pacer: Callable[[], Awaitable[None]] | None = None,
+    ) -> list[ModelPermissionSnapshot]:
+        permissions: list[ModelPermissionSnapshot] = []
+        for model_id in dict.fromkeys(model_ids):
+            if request_pacer is not None:
+                await request_pacer()
+            payload = await self._request_candidates_paged(
+                "GET",
+                [
+                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models/{model_id}",) if workspace_id else ()),
+                    f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
+                    f"/osmc/resources/{project_id}/models/{model_id}",
+                ],
+                timeout=30.0,
+            )
+            permissions.append(
+                self.build_model_permission_snapshot(
+                    preferred_username,
+                    project_id,
+                    branch_id,
+                    model_id,
+                    payload,
+                    latest_revision=latest_revision,
+                    workspace_id=workspace_id,
+                )
+            )
+        return permissions
+
     def _model_root_ids(self, payload: Any) -> list[str]:
         entity = _payload_entity(payload)
         if not isinstance(entity, dict):

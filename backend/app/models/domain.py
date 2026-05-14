@@ -892,8 +892,89 @@ class CacheIngestTokenStatus(BaseModel):
     message: str = ""
 
 
+class CacheIngestTokenRequest(BaseModel):
+    token: str
+
+
 class CacheIngestTokenRotateResponse(CacheIngestTokenStatus):
     token: str
+
+
+class CacheApiKeyScope(str, Enum):
+    READ = "read"
+    WRITE = "write"
+    EDIT = "edit"
+
+
+class CacheApiKeyRecord(BaseModel):
+    key_id: str = Field(default_factory=lambda: uuid4().hex)
+    user_id: str
+    label: str
+    token_hash: str
+    token_hint: str
+    scopes: list[CacheApiKeyScope] = Field(default_factory=lambda: [CacheApiKeyScope.READ])
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    last_used_at: datetime | None = None
+
+
+class CacheApiKeySummary(BaseModel):
+    key_id: str
+    label: str
+    token_hint: str
+    scopes: list[CacheApiKeyScope] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime | None = None
+
+
+class CacheApiKeyCreateRequest(BaseModel):
+    label: str
+    scopes: list[CacheApiKeyScope] = Field(default_factory=lambda: [CacheApiKeyScope.READ])
+
+    @field_validator("scopes")
+    @classmethod
+    def require_non_empty_scopes(cls, value: list[CacheApiKeyScope]) -> list[CacheApiKeyScope]:
+        scopes = list(dict.fromkeys(value))
+        if not scopes:
+            raise ValueError("At least one API key scope is required.")
+        return scopes
+
+
+class CacheApiKeyCreateResponse(CacheApiKeySummary):
+    token: str
+
+
+class CacheApiTokenIdentity(BaseModel):
+    preferred_username: str
+    source: Literal["app-key", "config"] = "app-key"
+    scopes: list[CacheApiKeyScope] = Field(default_factory=list)
+
+
+class CacheServerEntry(BaseModel):
+    server_id: str
+    server_name: str
+    project_count: int = 0
+    branch_count: int = 0
+    updated_at: datetime | None = None
+
+
+class CacheApiManifest(BaseModel):
+    preferred_username: str
+    source: Literal["app-key", "config"] = "app-key"
+    scopes: list[CacheApiKeyScope] = Field(default_factory=list)
+    message: str = ""
+    available_routes: list[str] = Field(default_factory=list)
+
+
+class CacheElementEditRequest(BaseModel):
+    name: str | None = None
+    human_name: str | None = None
+    qualified_name: str | None = None
+    documentation: str | None = None
+    attributes: dict[str, Any] | None = None
+    references: dict[str, list[str]] | None = None
+    owned_element_ids: list[str] | None = None
 
 
 class OSLCExecuteRequest(BaseModel):

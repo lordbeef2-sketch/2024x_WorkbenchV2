@@ -9,6 +9,7 @@ from typing import Iterable
 from app.models.domain import (
     BranchWebhookRegistration,
     BranchCacheSummary,
+    CacheApiKeyRecord,
     CachedElementQueryResponse,
     CachedElementRecord,
     CachedModelRecord,
@@ -83,6 +84,27 @@ class SqliteRepository:
                     payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_api_keys (
+                    key_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    token_hint TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_used_at TEXT,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_cache_api_keys_user
+                ON cache_api_keys (user_id, created_at)
                 """
             )
             connection.execute(
@@ -355,6 +377,14 @@ class SqliteRepository:
             )
             connection.commit()
 
+    def delete_user_cache_prefix_for_server(self, server_id: str, cache_key_prefix: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM user_data_cache WHERE server_id = ? AND cache_key LIKE ?",
+                (server_id, f"{cache_key_prefix}%"),
+            )
+            connection.commit()
+
     def get_app_secret(self, scope: str) -> tuple[str, str] | None:
         with self._lock, self._connect() as connection:
             row = connection.execute("SELECT payload, updated_at FROM app_secrets WHERE scope = ?", (scope,)).fetchone()
@@ -376,6 +406,83 @@ class SqliteRepository:
         with self._lock, self._connect() as connection:
             connection.execute("DELETE FROM app_secrets WHERE scope = ?", (scope,))
             connection.commit()
+
+    def list_cache_api_keys(self, user_id: str) -> list[CacheApiKeyRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM cache_api_keys WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+        return [CacheApiKeyRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def get_cache_api_key_by_hash(self, token_hash: str) -> CacheApiKeyRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM cache_api_keys WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+        if not row:
+            return None
+        return CacheApiKeyRecord.model_validate_json(row["payload"])
+
+    def upsert_cache_api_key(self, record: CacheApiKeyRecord) -> CacheApiKeyRecord:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO cache_api_keys (
+                    key_id, user_id, label, token_hash, token_hint,
+                    created_at, updated_at, last_used_at, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.key_id,
+                    record.user_id,
+                    record.label,
+                    record.token_hash,
+                    record.token_hint,
+                    record.created_at.isoformat(),
+                    record.updated_at.isoformat(),
+                    record.last_used_at.isoformat() if record.last_used_at else None,
+                    record.model_dump_json(),
+                ),
+            )
+            connection.commit()
+        return record
+
+    def delete_cache_api_key(self, user_id: str, key_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM cache_api_keys WHERE user_id = ? AND key_id = ?",
+                (user_id, key_id),
+            )
+            connection.commit()
+        return cursor.rowcount > 0
+
+    def touch_cache_api_key_last_used(self, key_id: str, last_used_at) -> CacheApiKeyRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM cache_api_keys WHERE key_id = ?",
+                (key_id,),
+            ).fetchone()
+            if not row:
+                return None
+            record = CacheApiKeyRecord.model_validate_json(row["payload"])
+            record.last_used_at = last_used_at
+            connection.execute(
+                """
+                UPDATE cache_api_keys
+                SET last_used_at = ?, payload = ?
+                WHERE key_id = ?
+                """,
+                (
+                    last_used_at.isoformat(),
+                    record.model_dump_json(),
+                    key_id,
+                ),
+            )
+            connection.commit()
+        return record
 
     def get_branch_webhook_registration(
         self,

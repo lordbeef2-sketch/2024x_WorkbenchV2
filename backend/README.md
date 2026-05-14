@@ -12,8 +12,10 @@ The backend also supports plugin-fed model cache ingestion. The preferred setup 
 - `POST /api/cache-ingest/branch-snapshots`
 - `POST /api/cache-ingest/branch-deltas`
 
-Use `CACHE_API_TOKENS` for bearer-authenticated cache reads through:
+Users can now create their own cache API keys from Workbench Settings for scripts, AI tools, and other integrations. Each key carries explicit `read`, `write`, and `edit` scopes. `CACHE_API_TOKENS` remains available as a legacy fallback for environment-managed bearer tokens. Cache access is exposed through:
 
+- `GET /api/cache`
+- `GET /api/cache/servers`
 - `GET /api/cache/servers/{server_id}/projects`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/summary`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/snapshot`
@@ -21,6 +23,20 @@ Use `CACHE_API_TOKENS` for bearer-authenticated cache reads through:
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models/{model_id}`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
+- `PATCH /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
+
+Use `Authorization: Bearer <api-key>` on those requests. The API key identity maps back to the Workbench user who created it, so cache reads stay scoped to that user's cached visibility instead of becoming a server-wide bypass.
+`write` scope also allows `POST /api/cache-ingest/branch-snapshots` and `POST /api/cache-ingest/branch-deltas`. `edit` scope allows cache edits on plugin-backed branches when the user's TWC model permission overlay marks that model editable.
+Key labels, creation time, and last-used time are stored for light auditability, while the full secret is only shown once at creation time.
+
+Use `TWC_PLUGIN_ONLY_CACHE_TARGETS` when you want specific server/project/branch combinations to refuse live `/osmc` fallback and require a Cameo plugin snapshot first.
+
+The cache API stores the shared branch model payload once and keeps per-user
+permission overlays separately. That avoids duplicating the same branch model
+for every user while still keeping visibility scoped to the TWC-backed
+Workbench user identity.
+
+See the developer-facing cache API guide in [CACHE_API.md](/C:/sand/fresh/New%20Project/CACHE_API.md) and the runnable examples in [examples/README.md](/C:/sand/fresh/New%20Project/examples/README.md).
 
 Preset-management authorization is derived from Teamwork Cloud user context and trusted upstream role or group headers when they are available. The backend does not keep a separate hardcoded admin-user list.
 

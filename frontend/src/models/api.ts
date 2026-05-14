@@ -4,6 +4,7 @@ export type CapabilityState = "ready" | "restricted" | "not_available" | "unknow
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type JobType = "simulation" | "publish" | "export" | "model_cache";
 export type ExportFormat = "json" | "csv" | "markdown" | "html" | "pdf";
+export type CacheApiKeyScope = "read" | "write" | "edit";
 
 export interface ServerProfile {
   id: string;
@@ -402,8 +403,47 @@ export interface CacheIngestTokenStatus {
   message: string;
 }
 
+export interface CacheIngestTokenRequest {
+  token: string;
+}
+
 export interface CacheIngestTokenRotateResponse extends CacheIngestTokenStatus {
   token: string;
+}
+
+export interface CacheApiKeySummary {
+  key_id: string;
+  label: string;
+  token_hint: string;
+  scopes: CacheApiKeyScope[];
+  created_at: string;
+  updated_at: string;
+  last_used_at?: string | null;
+}
+
+export interface CacheApiKeyCreateRequest {
+  label: string;
+  scopes: CacheApiKeyScope[];
+}
+
+export interface CacheApiKeyCreateResponse extends CacheApiKeySummary {
+  token: string;
+}
+
+export interface CacheServerEntry {
+  server_id: string;
+  server_name: string;
+  project_count: number;
+  branch_count: number;
+  updated_at?: string | null;
+}
+
+export interface CacheApiManifest {
+  preferred_username: string;
+  source: "app-key" | "config";
+  scopes: CacheApiKeyScope[];
+  message: string;
+  available_routes: string[];
 }
 
 export interface OSLCStoreConsumerRequest {
