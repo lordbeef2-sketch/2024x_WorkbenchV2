@@ -1256,7 +1256,7 @@ export default function WorkspacePage() {
         <Box>
           <Typography variant="h5">Project Browser</Typography>
           <Typography variant="body2" color="text.secondary">
-            Pick a project here. Branch and model context load after selection in Model Browser.
+            Pick from projects that have already been published into Workbench. Branch and model context load from cached plugin data after selection in Model Browser.
           </Typography>
         </Box>
         <Button
@@ -1282,9 +1282,9 @@ export default function WorkspacePage() {
                     </Typography>
                   </Stack>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip label="Repository Resource" variant="outlined" />
+                    <Chip label="Workbench cached project" variant="outlined" />
                     {project.workspace_id ? <Chip label="Workspace-scoped" variant="outlined" /> : null}
-                    <Chip label="Select to load branches and models" variant="outlined" />
+                    <Chip label="Select to load cached branches and models" variant="outlined" />
                     {selectedProjectId === project.id ? <Chip label="Selected project" color="primary" /> : null}
                   </Stack>
                   <Button variant="contained" onClick={() => openProjectInModelBrowser(project.id)}>
@@ -1325,7 +1325,7 @@ export default function WorkspacePage() {
               {selectedProject.description || "Use the branch selector in the left panel to change the current model context."}
             </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-              <Chip label="Repository Resource" variant="outlined" />
+              <Chip label="Workbench cached project" variant="outlined" />
               {selectedProject.workspace_id ? <Chip label="Workspace-scoped" variant="outlined" /> : null}
               <Chip
                 label={
@@ -1414,7 +1414,7 @@ export default function WorkspacePage() {
         <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
           <Typography variant="h5">Select a branch</Typography>
           <Typography color="text.secondary" sx={{ mt: 1 }}>
-            This tab walks the real TWC element graph for one branch at a time.
+            This tab works against the cached branch model published into Workbench for one branch at a time.
           </Typography>
         </Paper>
       );
@@ -1426,7 +1426,7 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Element Testing</Typography>
             <Typography variant="body2" color="text.secondary">
-              Discover reachable elements for {selectedProject?.name ?? "the selected project"} / {branchLabel(selectedProjectBranches, selectedBranchId)} by traversing Swagger-backed model roots and recursively following <code>ldp:contains</code>.
+              Discover reachable elements for {selectedProject?.name ?? "the selected project"} / {branchLabel(selectedProjectBranches, selectedBranchId)} from the cached plugin-backed branch model already published into Workbench.
             </Typography>
           </Box>
           <Button
@@ -1517,7 +1517,7 @@ export default function WorkspacePage() {
         <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
           <Typography variant="h5">Select a model item</Typography>
           <Typography color="text.secondary" sx={{ mt: 1 }}>
-            Use the model tree or Model Browser to open details from the Swagger-backed element/model endpoints.
+            Use the model tree or Model Browser to open details from the cached branch model already published into Workbench.
           </Typography>
         </Paper>
       );

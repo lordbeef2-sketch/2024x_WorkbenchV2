@@ -26,12 +26,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.function.Consumer;
 
 public class SnapshotExportService {
     private static final Pattern WORKSPACE_RESOURCE_PATTERN = Pattern.compile("/workspaces/([^/]+)/resources/([^/]+)");
 
     public BranchSnapshotPayload capture(Project project, PluginConfig config) {
+        return capture(project, config, null);
+    }
+
+    public BranchSnapshotPayload capture(Project project, PluginConfig config, Consumer<String> progress) {
         BranchSnapshotPayload payload = new BranchSnapshotPayload();
+        report(progress, "Resolving project and branch identity...");
         String resourceId = resolveResourceId(project);
 
         payload.exportedAt = OffsetDateTime.now().toString();
@@ -56,17 +62,21 @@ public class SnapshotExportService {
 
         Element primaryModel = project.getPrimaryModel();
         if (primaryModel != null) {
+            report(progress, "Preparing primary model snapshot...");
             ModelRecord modelRecord = mapModel(primaryModel);
             payload.models.add(modelRecord);
-            payload.elements.addAll(traverseElements(primaryModel, modelRecord.modelId));
+            payload.elements.addAll(traverseElements(primaryModel, modelRecord.modelId, progress));
         }
+        report(progress, "Snapshot capture complete.");
         return payload;
     }
 
-    private List<ElementRecord> traverseElements(Element primaryModel, String modelId) {
+    private List<ElementRecord> traverseElements(Element primaryModel, String modelId, Consumer<String> progress) {
         Map<String, ElementRecord> recordsById = new LinkedHashMap<>();
         Deque<Element> queue = new ArrayDeque<>();
         queue.add(primaryModel);
+        int visitedCount = 0;
+        report(progress, "Traversing owned elements recursively...");
 
         while (!queue.isEmpty()) {
             Element current = queue.removeFirst();
@@ -77,6 +87,10 @@ public class SnapshotExportService {
 
             ElementRecord record = mapElement(current, modelId);
             recordsById.put(currentId, record);
+            visitedCount += 1;
+            if (visitedCount == 1 || visitedCount % 250 == 0) {
+                report(progress, "Captured " + visitedCount + " elements so far...");
+            }
 
             for (Element child : current.getOwnedElement()) {
                 String childId = safeId(child);
@@ -87,6 +101,12 @@ public class SnapshotExportService {
             }
         }
         return new ArrayList<>(recordsById.values());
+    }
+
+    private void report(Consumer<String> progress, String message) {
+        if (progress != null) {
+            progress.accept(message);
+        }
     }
 
     private ModelRecord mapModel(Element model) {

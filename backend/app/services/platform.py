@@ -355,7 +355,7 @@ class PlatformService:
         )
 
     async def list_projects(self, session: SessionData, refresh: bool = False):
-        projects = await self._adapter_for_session(session).list_projects(include_branches=False)
+        projects = self._project_summaries_from_cache_for_user(session)
         self.repo.delete_user_cache(
             self._user_key(session.user.preferred_username),
             session.server.id,
@@ -371,7 +371,7 @@ class PlatformService:
             if cached_branches is not None:
                 return cached_branches
 
-        branches = await self._adapter_for_session(session).list_project_branches(project_id, workspace_id)
+        branches = self._branch_summaries_from_cache_for_user(session, project_id)
         self.repo.upsert_user_cache(
             self._user_key(session.user.preferred_username),
             session.server.id,
@@ -387,6 +387,43 @@ class PlatformService:
             delivered_count=len(branches),
         )
         return branches
+
+    def _project_summaries_from_cache_for_user(self, session: SessionData) -> list[ProjectSummary]:
+        cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
+        return [
+            ProjectSummary(
+                id=project.project_id,
+                name=project.project_name,
+                description="Plugin-backed Workbench project cache",
+                favorite=False,
+                branches=[
+                    BranchSummary(
+                        id=branch.branch_id,
+                        name=branch.branch_name,
+                        description=f"Cached branch ({branch.status.value})",
+                    )
+                    for branch in sorted(project.branches, key=lambda item: ((item.branch_name or item.branch_id).lower(), item.branch_id))
+                ],
+                workspace_id=project.workspace_id,
+                resource_id=project.project_id,
+            )
+            for project in cached_projects
+        ]
+
+    def _branch_summaries_from_cache_for_user(self, session: SessionData, project_id: str) -> list[BranchSummary]:
+        cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
+        for project in cached_projects:
+            if project.project_id != project_id:
+                continue
+            return [
+                BranchSummary(
+                    id=branch.branch_id,
+                    name=branch.branch_name,
+                    description=f"Cached branch ({branch.status.value})",
+                )
+                for branch in sorted(project.branches, key=lambda item: ((item.branch_name or item.branch_id).lower(), item.branch_id))
+            ]
+        return []
 
     async def get_model_tree(
         self,

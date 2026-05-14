@@ -21,6 +21,7 @@ import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.security.cert.X509Certificate;
+import java.util.function.Consumer;
 
 public class WorkbenchIngestClient {
     private final PluginConfig config;
@@ -32,20 +33,29 @@ public class WorkbenchIngestClient {
     }
 
     public void publishSnapshot(BranchSnapshotPayload payload, String reason) throws IOException, InterruptedException {
+        publishSnapshot(payload, reason, null);
+    }
+
+    public void publishSnapshot(BranchSnapshotPayload payload, String reason, Consumer<String> progress) throws IOException, InterruptedException {
         payload.exportReason = reason;
         requireWorkbenchIngestTarget();
         validateSnapshotForWorkbench(payload);
-        postJson("/api/cache-ingest/branch-snapshots", payload);
+        postJson("/api/cache-ingest/branch-snapshots", payload, progress);
     }
 
     public void publishDelta(BranchDeltaPayload payload, String reason) throws IOException, InterruptedException {
+        publishDelta(payload, reason, null);
+    }
+
+    public void publishDelta(BranchDeltaPayload payload, String reason, Consumer<String> progress) throws IOException, InterruptedException {
         payload.exportReason = reason;
         requireWorkbenchIngestTarget();
         validateDeltaForWorkbench(payload);
-        postJson("/api/cache-ingest/branch-deltas", payload);
+        postJson("/api/cache-ingest/branch-deltas", payload, progress);
     }
 
-    private void postJson(String path, Object payload) throws IOException, InterruptedException {
+    private void postJson(String path, Object payload, Consumer<String> progress) throws IOException, InterruptedException {
+        report(progress, "Serializing snapshot payload for Workbench...");
         byte[] body = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(payload);
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(trimTrailingSlash(config.workbenchBaseUrl) + path))
@@ -57,11 +67,13 @@ public class WorkbenchIngestClient {
                 .build();
 
         HttpClient httpClient = createHttpClient();
+        report(progress, "Posting payload to Workbench: " + path);
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         int statusCode = response.statusCode();
         if (statusCode < 200 || statusCode >= 300) {
             throw new IOException("Workbench ingest failed with status " + statusCode + ": " + response.body());
         }
+        report(progress, "Workbench ingest accepted the payload.");
         Application.getInstance().getGUILog().log("[INFO] Posted payload to Workbench ingest endpoint: " + path);
     }
 
@@ -149,5 +161,11 @@ public class WorkbenchIngestClient {
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private void report(Consumer<String> progress, String message) {
+        if (progress != null) {
+            progress.accept(message);
+        }
     }
 }

@@ -11,9 +11,11 @@ import com.twcworkbench.cameo.model.BranchSnapshotPayload;
 import com.twcworkbench.cameo.service.DeltaExportService;
 import com.twcworkbench.cameo.service.SnapshotExportService;
 import com.twcworkbench.cameo.service.WorkbenchIngestClient;
+import com.twcworkbench.cameo.ui.PluginProgressDialog;
 import com.twcworkbench.cameo.ui.WorkbenchConnectionDialog;
 
 import java.io.File;
+import javax.swing.SwingWorker;
 
 public class TWCWorkbenchCameoPlugin extends Plugin {
     private PluginConfig config;
@@ -52,16 +54,48 @@ public class TWCWorkbenchCameoPlugin extends Plugin {
             Application.getInstance().getGUILog().log("[WARNING] No active project is open.");
             return;
         }
-        try {
-            BranchSnapshotPayload payload = snapshotExportService.capture(project, config);
-            ingestClient.publishSnapshot(payload, "manual");
-            projectListener.rememberBaseline(project, payload);
-            Application.getInstance().getGUILog().log("[INFO] Exported snapshot for " + payload.projectName + " [" + payload.branchName + "].");
-        }
-        catch (Exception exception) {
-            Application.getInstance().getGUILog().log("[ERROR] Manual snapshot export failed: " + exception.getMessage());
-            exception.printStackTrace();
-        }
+        PluginProgressDialog progressDialog = new PluginProgressDialog(Application.getInstance().getMainFrame(), "Publishing Workbench Snapshot");
+        progressDialog.appendMessage("Starting manual snapshot publish...");
+        progressDialog.showDialog();
+
+        SwingWorker<BranchSnapshotPayload, String> worker = new SwingWorker<>() {
+            @Override
+            protected BranchSnapshotPayload doInBackground() throws Exception {
+                java.util.function.Consumer<String> reporter = message -> super.publish(message);
+                reporter.accept("[INFO] Capturing current project snapshot...");
+                BranchSnapshotPayload payload = snapshotExportService.capture(project, config, reporter);
+                reporter.accept("[INFO] Sending snapshot to Workbench...");
+                ingestClient.publishSnapshot(payload, "manual", reporter);
+                projectListener.rememberBaseline(project, payload);
+                return payload;
+            }
+
+            @Override
+            protected void process(java.util.List<String> chunks) {
+                for (String message : chunks) {
+                    progressDialog.appendMessage(message);
+                    Application.getInstance().getGUILog().log("[INFO] " + message);
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    BranchSnapshotPayload payload = get();
+                    String success = "Published snapshot for " + payload.projectName + " [" + payload.branchName + "].";
+                    progressDialog.markSuccess(success);
+                    Application.getInstance().getGUILog().log("[INFO] " + success);
+                }
+                catch (Exception exception) {
+                    Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+                    String failure = "Manual snapshot export failed: " + cause.getMessage();
+                    progressDialog.markFailure(failure);
+                    Application.getInstance().getGUILog().log("[ERROR] " + failure);
+                    cause.printStackTrace();
+                }
+            }
+        };
+        worker.execute();
     }
 
     public void configureWorkbenchConnection() {
