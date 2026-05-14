@@ -112,16 +112,16 @@ public class SnapshotExportService {
     private ModelRecord mapModel(Element model) {
         ModelRecord record = new ModelRecord();
         record.modelId = safeId(model);
-        record.humanName = model.getHumanName();
+        record.humanName = safeString(model.getHumanName());
         record.ownerId = model.getOwner() != null ? safeId(model.getOwner()) : null;
         if (model instanceof NamedElement) {
             NamedElement namedModel = (NamedElement) model;
-            record.name = namedModel.getName();
-            record.qualifiedName = namedModel.getQualifiedName();
+            record.name = safeString(namedModel.getName());
+            record.qualifiedName = firstNonBlank(namedModel.getQualifiedName(), record.name, record.humanName);
         }
         else {
-            record.name = model.getHumanName();
-            record.qualifiedName = model.getHumanName();
+            record.name = record.humanName;
+            record.qualifiedName = firstNonBlank(record.humanName, record.modelId);
         }
         record.rootElementIds.add(record.modelId);
         return record;
@@ -133,15 +133,19 @@ public class SnapshotExportService {
         record.modelId = modelId;
         record.localId = safeInvokeString(element, "getLocalID");
         record.ownerId = element.getOwner() != null ? safeId(element.getOwner()) : null;
-        record.humanName = element.getHumanName();
-        record.humanType = element.getHumanType();
-        record.metaclass = element.eClass().getName();
-        record.documentation = ModelHelper.getComment(element);
+        record.humanName = safeString(element.getHumanName());
+        record.humanType = firstNonBlank(element.getHumanType(), "element");
+        record.metaclass = firstNonBlank(element.eClass().getName(), "Element");
+        record.documentation = safeString(ModelHelper.getComment(element));
 
         if (element instanceof NamedElement) {
             NamedElement namedElement = (NamedElement) element;
-            record.name = namedElement.getName();
-            record.qualifiedName = namedElement.getQualifiedName();
+            record.name = safeString(namedElement.getName());
+            record.qualifiedName = firstNonBlank(namedElement.getQualifiedName(), record.name, record.humanName, record.elementId);
+        }
+        else {
+            record.name = record.humanName;
+            record.qualifiedName = firstNonBlank(record.humanName, record.elementId);
         }
 
         for (Stereotype stereotype : StereotypesHelper.getStereotypes(element)) {
@@ -309,5 +313,18 @@ public class SnapshotExportService {
         catch (Exception ignored) {
             return null;
         }
+    }
+
+    private String safeString(String value) {
+        return value == null ? "" : value;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
     }
 }

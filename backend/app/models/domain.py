@@ -633,6 +633,15 @@ class IngestModelRecord(BaseModel):
     owner_id: str | None = Field(default=None, alias="ownerId")
     root_element_ids: list[str] = Field(default_factory=list, alias="rootElementIds")
 
+    @field_validator("name", "human_name", "qualified_name", mode="before")
+    @classmethod
+    def normalize_nullable_strings(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return str(value)
+
 
 class IngestElementRecord(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -651,6 +660,15 @@ class IngestElementRecord(BaseModel):
     applied_stereotype_ids: list[str] = Field(default_factory=list, alias="appliedStereotypeIds")
     attributes: dict[str, Any] = Field(default_factory=dict)
     references: dict[str, list[str]] = Field(default_factory=dict)
+
+    @field_validator("name", "human_name", "qualified_name", "human_type", "metaclass", "documentation", mode="before")
+    @classmethod
+    def normalize_nullable_strings(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return str(value)
 
 
 class BranchSnapshotIngestRequest(BaseModel):
