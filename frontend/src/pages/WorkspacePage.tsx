@@ -825,7 +825,7 @@ export default function WorkspacePage() {
     mutationFn: () => api.getProjects(true),
     onSuccess: (projects) => {
       queryClient.setQueryData(["workspace-projects", ...sessionCacheKey], projects);
-      setNotice({ severity: "success", message: "Project catalog refreshed." });
+      setNotice({ severity: "success", message: "Cached project catalog reloaded." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -849,7 +849,7 @@ export default function WorkspacePage() {
         queryClient.setQueryData(["workspace-tree", ...sessionCacheKey, selectedProjectId, branchId], tree ?? []);
         setSelectedBranchId(branchId);
       }
-      setNotice({ severity: "success", message: "Selected project data refreshed." });
+      setNotice({ severity: "success", message: "Cached project data reloaded and permissions rechecked." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -870,7 +870,7 @@ export default function WorkspacePage() {
     onSuccess: (item) => {
       queryClient.setQueryData(["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId], item);
       setItemDraft(item);
-      setNotice({ severity: "success", message: "Model item refreshed." });
+      setNotice({ severity: "success", message: "Cached model item reloaded and permissions rechecked." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -887,7 +887,7 @@ export default function WorkspacePage() {
         ["workspace-elements", ...sessionCacheKey, selectedProjectId, selectedBranchId, selectedProject?.workspace_id],
         result,
       );
-      setNotice({ severity: "success", message: "Element discovery refreshed for the selected branch." });
+      setNotice({ severity: "success", message: "Cached branch elements reloaded and permissions rechecked." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -1296,6 +1296,14 @@ export default function WorkspacePage() {
           </Grid>
         ))}
       </Grid>
+      {!projectsQuery.isLoading && !projects.length ? (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h6">No published projects yet</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            Workbench only lists projects that have been published from the Cameo plugin into snapshot storage.
+          </Typography>
+        </Paper>
+      ) : null}
     </Stack>
   );
 
@@ -1314,7 +1322,7 @@ export default function WorkspacePage() {
           onClick={() => refreshSelectedProjectMutation.mutate()}
           disabled={!selectedProjectId || refreshSelectedProjectMutation.isPending}
         >
-          Refresh Selected Project
+          Reload Cached Project
         </Button>
       </Stack>
       {selectedProject ? (
@@ -1395,8 +1403,8 @@ export default function WorkspacePage() {
   const renderElementTesting = () => {
     const elementDiscoveryLoading = elementDiscoveryQuery.isLoading || refreshElementDiscoveryMutation.isPending;
     const elementDiscoveryLoadingMessage = elementDiscovery
-      ? "Refreshing the branch cache and applying changed elements only."
-      : "Building the branch element cache for the first load.";
+      ? "Reloading the cached branch snapshot and rechecking your permissions."
+      : "Loading the first published branch snapshot from Workbench.";
 
     if (!selectedProjectId) {
       return (
@@ -1435,7 +1443,7 @@ export default function WorkspacePage() {
             onClick={() => refreshElementDiscoveryMutation.mutate()}
             disabled={!selectedProjectId || !selectedBranchId || refreshElementDiscoveryMutation.isPending}
           >
-            Refresh Elements
+            Reload Cached Elements
           </Button>
         </Stack>
         {elementDiscoveryLoading ? (

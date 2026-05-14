@@ -53,13 +53,30 @@ public class TWCWorkbenchProjectListener extends ProjectEventListenerAdapter {
             return;
         }
         try {
-            BranchSnapshotPayload payload = snapshotExportService.capture(project, config);
-            ingestClient.publishSnapshot(payload, "save");
-            baselines.put(projectKey(project), payload);
-            Application.getInstance().getGUILog().log("[INFO] Published save snapshot for " + payload.projectName + " [" + payload.branchName + "].");
+            String key = projectKey(project);
+            BranchSnapshotPayload previous = baselines.get(key);
+            BranchSnapshotPayload current = snapshotExportService.capture(project, config);
+
+            if (previous == null) {
+                ingestClient.publishSnapshot(current, "save");
+                baselines.put(key, current);
+                Application.getInstance().getGUILog().log("[INFO] Published save snapshot for " + current.projectName + " [" + current.branchName + "] because no baseline was available.");
+                return;
+            }
+
+            BranchDeltaPayload delta = deltaExportService.createDelta(previous, current);
+            if (!delta.hasChanges()) {
+                baselines.put(key, current);
+                Application.getInstance().getGUILog().log("[INFO] Save produced no model changes for " + current.projectName + " [" + current.branchName + "]; skipped publish.");
+                return;
+            }
+
+            ingestClient.publishDelta(delta, "save");
+            baselines.put(key, current);
+            Application.getInstance().getGUILog().log("[INFO] Published save delta for " + current.projectName + " [" + current.branchName + "].");
         }
         catch (Exception exception) {
-            Application.getInstance().getGUILog().log("[ERROR] Failed to publish project-save snapshot: " + exception.getMessage());
+            Application.getInstance().getGUILog().log("[ERROR] Failed to publish project-save delta: " + exception.getMessage());
         }
     }
 
@@ -74,6 +91,11 @@ public class TWCWorkbenchProjectListener extends ProjectEventListenerAdapter {
             }
             BranchSnapshotPayload current = snapshotExportService.capture(project, config);
             BranchDeltaPayload delta = deltaExportService.createDelta(previous, current);
+            if (!delta.hasChanges()) {
+                baselines.remove(key);
+                Application.getInstance().getGUILog().log("[INFO] Project close produced no unpublished model changes for " + current.projectName + " [" + current.branchName + "].");
+                return;
+            }
             ingestClient.publishDelta(delta, "close");
             baselines.remove(key);
             Application.getInstance().getGUILog().log("[INFO] Published close delta for " + current.projectName + " [" + current.branchName + "].");

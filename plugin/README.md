@@ -72,7 +72,7 @@ Copy the staged folder into the Cameo installation `plugins` directory so the fi
 - Adds a `Configure Workbench Connection...` action inside Cameo
 - Adds a manual `Publish Current Project Snapshot` action
 - Captures a baseline snapshot when a project opens
-- Publishes a full snapshot on project save
+- Publishes a delta on project save, falling back to a full snapshot only when no baseline is available yet
 - Publishes a delta on project close when a baseline exists
 - Exports owned elements recursively and includes names, qualified names, stereotypes, documentation, attributes, and cross-element references in the payload sent to Workbench
 - Uses `Authorization: Bearer <token>` for Workbench ingest API access

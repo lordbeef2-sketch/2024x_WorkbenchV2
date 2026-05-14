@@ -25,4 +25,13 @@ public class BranchDeltaPayload {
     public List<ElementRecord> addedElements = new ArrayList<>();
     public List<ElementRecord> updatedElements = new ArrayList<>();
     public List<String> removedElementIds = new ArrayList<>();
+
+    public boolean hasChanges() {
+        return !addedModels.isEmpty()
+                || !updatedModels.isEmpty()
+                || !removedModelIds.isEmpty()
+                || !addedElements.isEmpty()
+                || !updatedElements.isEmpty()
+                || !removedElementIds.isEmpty();
+    }
 }

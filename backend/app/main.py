@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.auth import router as auth_router
@@ -49,4 +50,11 @@ app.include_router(workspace_router, prefix=api_prefix)
 
 frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if frontend_dist.exists():
+    spa_index = frontend_dist / "index.html"
+
+    @app.get("/workspace")
+    @app.get("/workspace/{full_path:path}")
+    def workspace_spa_fallback(full_path: str = ""):
+        return FileResponse(spa_index)
+
     app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")

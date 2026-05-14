@@ -28,7 +28,7 @@ public final class WorkbenchConnectionDialog {
         JTextField readTimeoutField = new JTextField(Integer.toString(config.readTimeoutSeconds), 8);
         JCheckBox insecureTlsBox = new JCheckBox("Disable TLS verification for Workbench HTTPS", config.insecureTls);
         JCheckBox snapshotOnOpenBox = new JCheckBox("Capture baseline on project open", config.snapshotOnOpen);
-        JCheckBox snapshotOnSaveBox = new JCheckBox("Publish full snapshot on project save", config.snapshotOnSave);
+        JCheckBox snapshotOnSaveBox = new JCheckBox("Publish delta on project save (fallback to full snapshot if needed)", config.snapshotOnSave);
         JCheckBox deltaOnCloseBox = new JCheckBox("Publish delta on project close", config.deltaOnClose);
 
         JPanel panel = new JPanel(new GridBagLayout());

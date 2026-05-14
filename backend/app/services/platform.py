@@ -433,6 +433,8 @@ class PlatformService:
         workspace_id: str | None = None,
         refresh: bool = False,
     ):
+        if not project_id or not branch_id:
+            return []
         cache_key = self._tree_cache_key(project_id, branch_id)
         use_branch_materialized_cache = bool(project_id and branch_id)
         if cache_key and not refresh and not use_branch_materialized_cache:
@@ -440,41 +442,20 @@ class PlatformService:
             if cached_tree is not None:
                 return cached_tree
 
-        if project_id and branch_id:
-            summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
-            if self._is_plugin_managed_summary(summary):
-                await self._ensure_plugin_branch_permissions(
-                    session,
-                    project_id,
-                    branch_id,
-                    workspace_id=workspace_id,
-                    summary=summary,
-                    force=refresh,
-                )
-                materialized_tree = self._materialized_model_tree(session, project_id, branch_id)
-                return materialized_tree or []
-            if self._is_plugin_only_target(session.server.id, project_id, branch_id):
-                raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
-            await self._schedule_branch_cache_refresh_if_stale(
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            await self._ensure_plugin_branch_permissions(
                 session,
                 project_id,
                 branch_id,
                 workspace_id=workspace_id,
-                refresh=refresh,
+                summary=summary,
+                force=refresh,
             )
             materialized_tree = self._materialized_model_tree(session, project_id, branch_id)
-            if materialized_tree is not None:
-                return materialized_tree
+            return materialized_tree or []
 
-        tree = await self._adapter_for_session(session).get_model_tree(project_id, branch_id)
-        if cache_key and not use_branch_materialized_cache:
-            self.repo.upsert_user_cache(
-                self._user_key(session.user.preferred_username),
-                session.server.id,
-                cache_key,
-                [json.loads(node.model_dump_json()) for node in tree],
-            )
-        return tree
+        raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
 
     async def discover_elements(
         self,
@@ -535,91 +516,12 @@ class PlatformService:
             )
             return result
 
-        if self._is_plugin_only_target(session.server.id, project_id, branch_id):
-            raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
-
-        materialized = self._materialized_element_discovery(session, project_id, branch_id, summary)
-
-        sync_job = await self._schedule_branch_cache_refresh_if_stale(
-            session,
-            project_id,
-            branch_id,
-            workspace_id=resolved_workspace_id,
-            refresh=refresh,
-            summary=summary,
-        )
-
-        if materialized is not None and sync_job is None:
-            self.repo.upsert_user_cache(
-                self._user_key(session.user.preferred_username),
-                session.server.id,
-                cache_key,
-                json.loads(materialized.model_dump_json()),
-            )
-            return materialized
-
-        if materialized is not None:
-            sync_note = (
-                "Syncs run one at a time per server."
-                if MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS <= 0
-                else f"Syncs run one at a time per server and keep at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests."
-            )
-            refreshed = materialized.model_copy(
-                update={
-                    "warnings": [
-                        *materialized.warnings,
-                        (
-                            f"Background model cache sync started as job {sync_job.id}; cached results remain available while the branch refreshes. "
-                            f"{sync_note}"
-                        ),
-                    ][-50:],
-                    "cache_status": "cache-hit",
-                }
-            )
-            self.repo.upsert_user_cache(
-                self._user_key(session.user.preferred_username),
-                session.server.id,
-                cache_key,
-                json.loads(refreshed.model_dump_json()),
-            )
-            return refreshed
-
-        result = ElementDiscoveryResult(
-            project_id=project_id,
-            branch_id=branch_id,
-            workspace_id=resolved_workspace_id,
-            latest_revision=summary.latest_revision if summary is not None else None,
-            seed_source="materialized-model-cache",
-            seed_ids=[],
-            ids=[],
-            entries=[],
-            total_ids=0,
-            traversed_elements=0,
-            hydrated_elements=0,
-            batch_count=0,
-            batch_size=0,
-            cache_status="full-refresh",
-            warnings=[
-                (
-                    f"Branch cache warm-up started as job {sync_job.id}. Track it with the jobs API and retry when the sync completes. "
-                    + (
-                        "Syncs run one at a time per server."
-                        if MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS <= 0
-                        else f"Syncs run one at a time per server and keep at least {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s between upstream requests."
-                    )
-                ),
-                "Element discovery now serves from the local materialized cache instead of walking Teamwork Cloud live.",
-            ],
-        )
-        self.repo.upsert_user_cache(
-            self._user_key(session.user.preferred_username),
-            session.server.id,
-            cache_key,
-            json.loads(result.model_dump_json()),
-        )
-        return result
+        raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
 
     async def submit_branch_cache_sync(self, session: SessionData, request: BranchCacheSyncRequest) -> JobRecord:
+        raise RuntimeError(
+            "Live Teamwork Cloud branch cache sync is disabled. Publish a Cameo plugin snapshot to Workbench for this project branch instead."
+        )
         resolved_workspace_id = request.workspace_id or await self._workspace_id_for_project(session, request.project_id)
         active_job = self._active_branch_cache_job(session, request.project_id, request.branch_id)
         if active_job is not None:
@@ -2047,50 +1949,9 @@ class PlatformService:
                     ),
                 )
                 return materialized_item
-            if self._is_plugin_only_target(session.server.id, project_id, branch_id):
-                raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
-            await self._schedule_branch_cache_refresh_if_stale(
-                session,
-                project_id,
-                branch_id,
-                workspace_id=workspace_id,
-                refresh=refresh,
-            )
-            materialized_item = await self._materialized_item_details(session, item_id, project_id, branch_id)
-            if materialized_item is not None:
-                self.sessions.add_recent_item(
-                    session,
-                    Bookmark(
-                        title=materialized_item.name,
-                        item_id=materialized_item.id,
-                        item_type=materialized_item.item_type,
-                        path=materialized_item.path,
-                        project_id=materialized_item.project_id,
-                        branch_id=materialized_item.branch_id,
-                    ),
-                )
-                return materialized_item
+            raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
 
-        item = await self._adapter_for_session(session).get_item(item_id, project_id, branch_id)
-        if cache_key and not use_branch_materialized_cache:
-            self.repo.upsert_user_cache(
-                self._user_key(session.user.preferred_username),
-                session.server.id,
-                cache_key,
-                json.loads(item.model_dump_json()),
-            )
-        self.sessions.add_recent_item(
-            session,
-            Bookmark(
-                title=item.name,
-                item_id=item.id,
-                item_type=item.item_type,
-                path=item.path,
-                project_id=item.project_id,
-                branch_id=item.branch_id,
-            ),
-        )
-        return item
+        raise RuntimeError("Select a cached project branch that has been published into Workbench before opening item details.")
 
     async def update_item(
         self,
@@ -2800,7 +2661,7 @@ class PlatformService:
 
     def _plugin_only_cache_message(self, project_id: str, branch_id: str) -> str:
         return (
-            f"Project {project_id} / branch {branch_id} is configured for plugin-only cache access. "
+            f"Project {project_id} / branch {branch_id} is snapshot-only in TWC Workbench. "
             "Publish a Cameo plugin snapshot to Workbench before opening this branch here."
         )
 
