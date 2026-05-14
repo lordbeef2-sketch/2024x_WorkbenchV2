@@ -7,13 +7,14 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 import httpx
 import structlog
 
 from app.models.domain import (
+    BranchAccessRecord,
     BranchWebhookRegistration,
     CachedElementRecord,
     CachedModelRecord,
@@ -2449,6 +2450,139 @@ class TeamworkAdapter:
             )
         return permissions
 
+    async def probe_plugin_branch_permissions(
+        self,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        model_ids: list[str],
+        *,
+        latest_revision: str | None = None,
+        workspace_id: str | None = None,
+        request_pacer: Callable[[], Awaitable[None]] | None = None,
+    ) -> list[ModelPermissionSnapshot]:
+        if request_pacer is not None:
+            await request_pacer()
+        payload = await self._request_candidates_paged(
+            "GET",
+            self.branch_candidates(project_id, branch_id, workspace_id),
+            timeout=30.0,
+        )
+        return [
+            self.build_model_permission_snapshot(
+                preferred_username,
+                project_id,
+                branch_id,
+                model_id,
+                payload,
+                latest_revision=latest_revision,
+                workspace_id=workspace_id,
+            )
+            for model_id in dict.fromkeys(model_ids)
+        ]
+
+    async def build_plugin_branch_access_manifest(
+        self,
+        project_id: str,
+        branch_id: str,
+        *,
+        latest_revision: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[BranchAccessRecord]:
+        roles = await self._project_roles(project_id, workspace_id)
+        if roles is None:
+            raise PermissionError("The active Teamwork Cloud session is not allowed to read project roles for this branch.")
+
+        usergroups = await self._admin_usergroups()
+        usergroups_by_id = {
+            str(group.get("ID")): group
+            for group in usergroups
+            if isinstance(group, dict) and group.get("ID")
+        }
+        usergroups_by_name = {
+            str(group.get("name")): group
+            for group in usergroups
+            if isinstance(group, dict) and group.get("name")
+        }
+
+        aggregated: dict[str, dict[str, Any]] = {}
+        for role in roles:
+            if not isinstance(role, dict):
+                continue
+            role_id = _first_text(role.get("ID"))
+            if not role_id:
+                continue
+            role_name = _first_text(role.get("name"), role_id)
+            role_description = _first_text(role.get("description"))
+            can_view, can_edit, can_admin = self._role_access_flags(role)
+            if not can_view:
+                continue
+
+            direct_users = await self._project_role_users(project_id, role_id, workspace_id)
+            for username in direct_users:
+                self._merge_branch_access_user(
+                    aggregated,
+                    username,
+                    role_name=role_name,
+                    via_group=None,
+                    can_edit=can_edit,
+                    can_admin=can_admin,
+                    role_description=role_description,
+                )
+
+            assigned_groups = await self._project_role_usergroups(project_id, role_id, workspace_id)
+            for group_key in assigned_groups:
+                group = usergroups_by_id.get(group_key) or usergroups_by_name.get(group_key)
+                if group is None and UUID_PATTERN.match(group_key):
+                    group = await self._admin_usergroup(group_key)
+                    if isinstance(group, dict) and group.get("ID"):
+                        usergroups_by_id[str(group["ID"])] = group
+                        if group.get("name"):
+                            usergroups_by_name[str(group["name"])] = group
+                if not isinstance(group, dict):
+                    continue
+                group_name = _first_text(group.get("name"), group_key)
+                usernames = [str(value).strip() for value in _as_list(group.get("usernames")) if str(value).strip()]
+                for username in usernames:
+                    self._merge_branch_access_user(
+                        aggregated,
+                        username,
+                        role_name=role_name,
+                        via_group=group_name,
+                        can_edit=can_edit,
+                        can_admin=can_admin,
+                        role_description=role_description,
+                    )
+
+        records: list[BranchAccessRecord] = []
+        for username, details in aggregated.items():
+            readonly_branch_ids = await self._user_readonly_branches(project_id, username)
+            read_only = branch_id in readonly_branch_ids
+            payload = {
+                "roles": details["roles"],
+                "via_groups": details["via_groups"],
+                "readonly_branch_ids": readonly_branch_ids,
+                "role_descriptions": details["role_descriptions"],
+            }
+            records.append(
+                BranchAccessRecord(
+                    user_id=username.strip().lower(),
+                    server_id=self.context.server.id,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    workspace_id=workspace_id,
+                    latest_revision=latest_revision,
+                    accessible=True,
+                    editable=bool(details["editable"] and not read_only),
+                    admin_access=bool(details["admin_access"]),
+                    roles=list(details["roles"]),
+                    via_groups=list(details["via_groups"]),
+                    source="twc-access-manifest",
+                    payload=payload,
+                )
+            )
+        return sorted(records, key=lambda item: item.user_id)
+
     def _model_root_ids(self, payload: Any) -> list[str]:
         entity = _payload_entity(payload)
         if not isinstance(entity, dict):
@@ -2507,6 +2641,154 @@ class TeamworkAdapter:
             editable=editable,
             payload=permission_payload,
         )
+
+    async def _project_roles(self, project_id: str, workspace_id: str | None) -> list[dict[str, Any]] | None:
+        payload = await self._request_candidates_paged(
+            "GET",
+            [
+                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/roles",) if workspace_id else ()),
+                f"/osmc/resources/{project_id}/roles",
+            ],
+            timeout=30.0,
+        )
+        if not payload or (isinstance(payload, dict) and payload.get("restricted")):
+            return None
+        return [item for item in _as_list(payload) if isinstance(item, dict)]
+
+    async def _project_role_users(self, project_id: str, role_id: str, workspace_id: str | None) -> list[str]:
+        payload = await self._request_candidates_paged(
+            "GET",
+            [
+                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/roles/{role_id}/users",) if workspace_id else ()),
+                f"/osmc/resources/{project_id}/roles/{role_id}/users",
+            ],
+            timeout=30.0,
+        )
+        if not payload or (isinstance(payload, dict) and payload.get("restricted")):
+            return []
+        return [str(item).strip() for item in _as_list(payload) if str(item).strip()]
+
+    async def _project_role_usergroups(self, project_id: str, role_id: str, workspace_id: str | None) -> list[str]:
+        payload = await self._request_candidates_paged(
+            "GET",
+            [
+                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/roles/{role_id}/usergroups",) if workspace_id else ()),
+                f"/osmc/resources/{project_id}/roles/{role_id}/usergroups",
+            ],
+            timeout=30.0,
+        )
+        if not payload or (isinstance(payload, dict) and payload.get("restricted")):
+            return []
+        resolved: list[str] = []
+        for item in _as_list(payload):
+            if isinstance(item, dict):
+                identifier = _first_text(item.get("ID"), item.get("id"), item.get("name"))
+            else:
+                identifier = str(item).strip()
+            if identifier and identifier not in resolved:
+                resolved.append(identifier)
+        return resolved
+
+    async def _admin_usergroups(self) -> list[dict[str, Any]]:
+        payload = await self._request_candidates_paged(
+            "GET",
+            ["/osmc/admin/usergroups"],
+            timeout=30.0,
+        )
+        if not payload or (isinstance(payload, dict) and payload.get("restricted")):
+            return []
+        return [item for item in _as_list(payload) if isinstance(item, dict)]
+
+    async def _admin_usergroup(self, usergroup_id: str) -> dict[str, Any] | None:
+        payload = await self._request_candidates_paged(
+            "GET",
+            [f"/osmc/admin/usergroups/{usergroup_id}"],
+            timeout=30.0,
+        )
+        if not payload or (isinstance(payload, dict) and payload.get("restricted")):
+            return None
+        entity = _payload_entity(payload)
+        return entity if isinstance(entity, dict) else None
+
+    async def _user_readonly_branches(self, project_id: str, username: str) -> list[str]:
+        encoded_username = quote(username, safe="")
+        payload = await self._request_candidates_paged(
+            "GET",
+            [f"/osmc/admin/user/resources/{project_id}/branches/readonly?username={encoded_username}&resolve=true"],
+            timeout=30.0,
+        )
+        if not payload or (isinstance(payload, dict) and payload.get("restricted")):
+            return []
+        return [str(item).strip() for item in _as_list(payload) if str(item).strip()]
+
+    def _role_access_flags(self, role: dict[str, Any]) -> tuple[bool, bool, bool]:
+        permissions = [item for item in _as_list(role.get("permissions")) if isinstance(item, dict)]
+        role_text = " ".join(
+            value.lower()
+            for value in (
+                _first_text(role.get("name")),
+                _first_text(role.get("description")),
+            )
+            if value
+        )
+
+        can_view = bool(permissions) or bool(role_text)
+        can_edit = False
+        can_admin = False
+        for permission in permissions:
+            permission_text = " ".join(
+                value.lower()
+                for value in (
+                    _first_text(permission.get("name")),
+                    _first_text(permission.get("operationName")),
+                    _first_text(permission.get("operationDisplayName")),
+                )
+                if value
+            )
+            if any(keyword in permission_text for keyword in ("write", "update", "modify", "create", "delete", "lock", "commit", "merge")):
+                can_edit = True
+            if any(keyword in permission_text for keyword in ("admin", "administrator", "assign", "permission", "role", "release.resource.locks", "release project locks")):
+                can_admin = True
+        if any(keyword in role_text for keyword in ("editor", "writer", "contributor", "developer")):
+            can_edit = True
+        if any(keyword in role_text for keyword in ("admin", "administrator", "owner", "manager")):
+            can_admin = True
+        if can_admin:
+            can_edit = True
+        return can_view, can_edit, can_admin
+
+    def _merge_branch_access_user(
+        self,
+        aggregated: dict[str, dict[str, Any]],
+        username: str,
+        *,
+        role_name: str,
+        via_group: str | None,
+        can_edit: bool,
+        can_admin: bool,
+        role_description: str,
+    ) -> None:
+        user_key = username.strip().lower()
+        if not user_key:
+            return
+        state = aggregated.setdefault(
+            user_key,
+            {
+                "roles": [],
+                "via_groups": [],
+                "editable": False,
+                "admin_access": False,
+                "role_descriptions": [],
+            },
+        )
+        if role_name and role_name not in state["roles"]:
+            state["roles"].append(role_name)
+        if via_group and via_group not in state["via_groups"]:
+            state["via_groups"].append(via_group)
+        if role_description and role_description not in state["role_descriptions"]:
+            state["role_descriptions"].append(role_description)
+        state["editable"] = bool(state["editable"] or can_edit)
+        state["admin_access"] = bool(state["admin_access"] or can_admin)
 
     async def materialize_model_snapshot(
         self,

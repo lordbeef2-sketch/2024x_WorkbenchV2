@@ -438,6 +438,22 @@ export interface CacheServerEntry {
   updated_at?: string | null;
 }
 
+export interface BranchAccessManifestStatus {
+  server_id: string;
+  project_id: string;
+  branch_id: string;
+  workspace_id?: string | null;
+  branch_name: string;
+  latest_revision?: string | null;
+  accessible_user_count: number;
+  editable_user_count: number;
+  admin_user_count: number;
+  updated_at?: string | null;
+  source: string;
+  file_path?: string | null;
+  message: string;
+}
+
 export interface CacheApiManifest {
   preferred_username: string;
   source: "app-key" | "config";

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 
 from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
 from app.models.domain import (
+    BranchAccessManifestStatus,
     BranchCacheSyncRequest,
     CacheApiKeyCreateRequest,
     CacheIngestTokenRequest,
@@ -388,6 +389,33 @@ def model_cache_summary(
     container: ApplicationContainer = Depends(get_container),
 ):
     return container.platform.get_branch_cache_summary(session, projectId, branchId)
+
+
+@router.get("/model-cache/access-map", response_model=BranchAccessManifestStatus)
+def model_cache_access_map_status(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.get_branch_access_manifest_status(session, projectId, branchId)
+
+
+@router.post("/model-cache/access-map/refresh", response_model=BranchAccessManifestStatus)
+async def refresh_model_cache_access_map(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.refresh_branch_access_manifest(session, projectId, branchId)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
 @router.get("/model-cache/snapshot")

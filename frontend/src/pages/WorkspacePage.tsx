@@ -39,6 +39,7 @@ import CapabilityBadges from "../components/CapabilityBadges";
 import ProjectTree from "../components/ProjectTree";
 import SettingsDialog from "../components/SettingsDialog";
 import {
+  BranchAccessManifestStatus,
   CacheApiKeyScope,
   CacheApiKeySummary,
   ElementDiscoveryResult,
@@ -561,7 +562,16 @@ export default function WorkspacePage() {
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
   });
+  const branchAccessManifestQuery = useQuery({
+    queryKey: ["workspace-access-map", ...sessionCacheKey, selectedProjectId, selectedBranchId],
+    queryFn: () => api.getBranchAccessManifestStatus(selectedProjectId, selectedBranchId),
+    enabled: Boolean(selectedProjectId) && Boolean(selectedBranchId),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
   const elementDiscovery: ElementDiscoveryResult | null = elementDiscoveryQuery.data ?? null;
+  const branchAccessManifestStatus: BranchAccessManifestStatus | null = branchAccessManifestQuery.data ?? null;
   const contractManifest = contractQuery.data ?? null;
   const apiTags = useMemo(
     () => Object.keys(contractManifest?.tag_counts ?? {}).sort((left, right) => left.localeCompare(right)),
@@ -888,6 +898,33 @@ export default function WorkspacePage() {
         result,
       );
       setNotice({ severity: "success", message: "Cached branch elements reloaded and permissions rechecked." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const refreshBranchAccessManifestMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedProjectId || !selectedBranchId) {
+        throw new Error("Select a project branch before refreshing access.");
+      }
+      return api.refreshBranchAccessManifest(selectedProjectId, selectedBranchId, csrfToken);
+    },
+    onSuccess: async (status) => {
+      queryClient.setQueryData(["workspace-access-map", ...sessionCacheKey, selectedProjectId, selectedBranchId], status);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["workspace-projects", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-branches", ...sessionCacheKey, selectedProjectId, selectedProject?.workspace_id] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId] }),
+        queryClient.invalidateQueries({
+          queryKey: ["workspace-elements", ...sessionCacheKey, selectedProjectId, selectedBranchId, selectedProject?.workspace_id],
+        }),
+        selectedItemId
+          ? queryClient.invalidateQueries({
+              queryKey: ["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId],
+            })
+          : Promise.resolve(),
+      ]);
+      setNotice({ severity: "success", message: "Shared access map refreshed from Teamwork Cloud." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -1437,14 +1474,24 @@ export default function WorkspacePage() {
               Discover reachable elements for {selectedProject?.name ?? "the selected project"} / {branchLabel(selectedProjectBranches, selectedBranchId)} from the cached plugin-backed branch model already published into Workbench.
             </Typography>
           </Box>
-          <Button
-            variant="outlined"
-            startIcon={<RefreshRoundedIcon />}
-            onClick={() => refreshElementDiscoveryMutation.mutate()}
-            disabled={!selectedProjectId || !selectedBranchId || refreshElementDiscoveryMutation.isPending}
-          >
-            Reload Cached Elements
-          </Button>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              onClick={() => refreshBranchAccessManifestMutation.mutate()}
+              disabled={!csrfToken || !selectedProjectId || !selectedBranchId || refreshBranchAccessManifestMutation.isPending}
+            >
+              Refresh Shared Access Map
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              onClick={() => refreshElementDiscoveryMutation.mutate()}
+              disabled={!selectedProjectId || !selectedBranchId || refreshElementDiscoveryMutation.isPending}
+            >
+              Reload Cached Elements
+            </Button>
+          </Stack>
         </Stack>
         {elementDiscoveryLoading ? (
           <Paper sx={{ p: 2.5, borderRadius: 2 }}>
@@ -1474,10 +1521,29 @@ export default function WorkspacePage() {
                   <Chip label={`${elementDiscovery.batch_count} gap-fill batches`} variant="outlined" />
                   <Chip label={elementDiscovery.seed_source || "model-roots"} variant="outlined" />
                   {elementDiscovery.cache_status ? <Chip label={humanizeFieldLabel(elementDiscovery.cache_status)} variant="outlined" /> : null}
+                  {branchAccessManifestStatus ? (
+                    <>
+                      <Chip label={`${branchAccessManifestStatus.accessible_user_count} viewers`} variant="outlined" />
+                      <Chip label={`${branchAccessManifestStatus.editable_user_count} editors`} variant="outlined" />
+                      <Chip label={`${branchAccessManifestStatus.admin_user_count} admins`} variant="outlined" />
+                    </>
+                  ) : null}
                 </Stack>
                 <Typography variant="body2" color="text.secondary">
                   This run stays inside the Swagger contract: seed roots come from the selected branch models, each discovered element is fetched through the branch element endpoint, and the branch-level element POST is now reserved for smaller gap-fill batches of up to {elementDiscovery.batch_size} elements when traversal payloads are missing.
                 </Typography>
+                {branchAccessManifestQuery.error ? <Alert severity="error">{errorMessage(branchAccessManifestQuery.error)}</Alert> : null}
+                {branchAccessManifestStatus?.message ? (
+                  <Alert severity={branchAccessManifestStatus.accessible_user_count ? "info" : "warning"}>
+                    {branchAccessManifestStatus.message}
+                    {branchAccessManifestStatus.updated_at
+                      ? ` Last refreshed ${new Date(branchAccessManifestStatus.updated_at).toLocaleString()}.`
+                      : ""}
+                  </Alert>
+                ) : null}
+                {refreshBranchAccessManifestMutation.isPending ? (
+                  <Alert severity="info">Refreshing the shared access map from Teamwork Cloud permissions.</Alert>
+                ) : null}
                 {elementDiscovery.warnings.map((warning) => (
                   <Alert severity="warning" key={warning}>
                     {warning}
@@ -1487,9 +1553,21 @@ export default function WorkspacePage() {
             </Paper>
             <Paper sx={{ p: 3, borderRadius: 2 }}>
               <Stack spacing={2}>
-                <Typography variant="h6">Discovered Elements</Typography>
+                <Typography variant="h6">Published Model Tree</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Browse the cached snapshot as a real model tree. Selecting any node opens its cached item details in Workbench.
+                </Typography>
+                {treeNodes.length ? (
+                  <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, maxHeight: 720, overflow: "auto" }}>
+                    <ProjectTree nodes={treeNodes} selectedId={selectedItemId} filter="" onSelect={openNode} />
+                  </Paper>
+                ) : (
+                  <Typography color="text.secondary">No published model tree is available for this branch yet.</Typography>
+                )}
+                <Divider />
+                <Typography variant="h6">Element Index</Typography>
                 {elementDiscovery.entries.length ? (
-                  <List dense disablePadding sx={{ maxHeight: 640, overflow: "auto" }}>
+                  <List dense disablePadding sx={{ maxHeight: 420, overflow: "auto" }}>
                     {elementDiscovery.entries.map((entry) => (
                       <ListItemButton key={entry.id} alignItems="flex-start" onClick={() => openElementId(entry.id)}>
                         <ListItemText
@@ -1506,7 +1584,7 @@ export default function WorkspacePage() {
                     ))}
                   </List>
                 ) : (
-                  <Typography color="text.secondary">No elements were discovered for this branch.</Typography>
+                  <Typography color="text.secondary">No element index entries are available for this branch.</Typography>
                 )}
               </Stack>
             </Paper>

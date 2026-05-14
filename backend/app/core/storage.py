@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 from app.models.domain import (
+    BranchAccessRecord,
     BranchWebhookRegistration,
     BranchCacheSummary,
     CacheApiKeyRecord,
@@ -149,6 +150,29 @@ class SqliteRepository:
                     payload TEXT NOT NULL,
                     PRIMARY KEY (user_id, server_id, project_id, branch_id, model_id)
                 )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS twc_branch_access_records (
+                    user_id TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    branch_id TEXT NOT NULL,
+                    accessible INTEGER NOT NULL,
+                    editable INTEGER NOT NULL,
+                    admin_access INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    PRIMARY KEY (user_id, server_id, project_id, branch_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_twc_branch_access_records_branch
+                ON twc_branch_access_records (server_id, project_id, branch_id, user_id)
                 """
             )
             connection.execute(
@@ -669,6 +693,42 @@ class SqliteRepository:
             return None
         return ModelPermissionSnapshot.model_validate_json(row["payload"])
 
+    def get_branch_access_record(
+        self,
+        user_id: str,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> BranchAccessRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload FROM twc_branch_access_records
+                WHERE user_id = ? AND server_id = ? AND project_id = ? AND branch_id = ?
+                """,
+                (user_id, server_id, project_id, branch_id),
+            ).fetchone()
+        if not row:
+            return None
+        return BranchAccessRecord.model_validate_json(row["payload"])
+
+    def list_branch_access_records(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> list[BranchAccessRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload FROM twc_branch_access_records
+                WHERE server_id = ? AND project_id = ? AND branch_id = ?
+                ORDER BY user_id
+                """,
+                (server_id, project_id, branch_id),
+            ).fetchall()
+        return [BranchAccessRecord.model_validate_json(row["payload"]) for row in rows]
+
     def list_model_permissions(
         self,
         user_id: str,
@@ -755,6 +815,80 @@ class SqliteRepository:
                             int(item.restricted),
                             int(item.editable),
                             item.updated_at.isoformat(),
+                            item.model_dump_json(),
+                        )
+                        for item in items
+                    ],
+                )
+            connection.commit()
+
+    def upsert_branch_access_records(self, records: Iterable[BranchAccessRecord]) -> None:
+        items = list(records)
+        if not items:
+            return
+        with self._lock, self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT OR REPLACE INTO twc_branch_access_records (
+                    user_id, server_id, project_id, branch_id,
+                    accessible, editable, admin_access, updated_at, source, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.user_id,
+                        item.server_id,
+                        item.project_id,
+                        item.branch_id,
+                        int(item.accessible),
+                        int(item.editable),
+                        int(item.admin_access),
+                        item.updated_at.isoformat(),
+                        item.source,
+                        item.model_dump_json(),
+                    )
+                    for item in items
+                ],
+            )
+            connection.commit()
+
+    def replace_branch_access_records_for_branch(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        records: Iterable[BranchAccessRecord],
+    ) -> None:
+        items = list(records)
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM twc_branch_access_records
+                WHERE server_id = ? AND project_id = ? AND branch_id = ?
+                """,
+                (server_id, project_id, branch_id),
+            )
+            if items:
+                connection.executemany(
+                    """
+                    INSERT OR REPLACE INTO twc_branch_access_records (
+                        user_id, server_id, project_id, branch_id,
+                        accessible, editable, admin_access, updated_at, source, payload
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            item.user_id,
+                            item.server_id,
+                            item.project_id,
+                            item.branch_id,
+                            int(item.accessible),
+                            int(item.editable),
+                            int(item.admin_access),
+                            item.updated_at.isoformat(),
+                            item.source,
                             item.model_dump_json(),
                         )
                         for item in items
@@ -1086,6 +1220,7 @@ class SqliteRepository:
         placeholders = ", ".join("?" for _ in valid_server_ids)
         for table in (
             "twc_branch_cache",
+            "twc_branch_access_records",
             "twc_cached_models",
             "twc_cached_model_permissions",
             "twc_cached_elements",
@@ -1099,6 +1234,7 @@ class SqliteRepository:
     def _delete_materialized_cache_for_server(self, connection: sqlite3.Connection, server_id: str) -> None:
         for table in (
             "twc_branch_cache",
+            "twc_branch_access_records",
             "twc_cached_models",
             "twc_cached_model_permissions",
             "twc_cached_elements",
@@ -1109,6 +1245,7 @@ class SqliteRepository:
     def _delete_materialized_cache_for_all_servers(self, connection: sqlite3.Connection) -> None:
         for table in (
             "twc_branch_cache",
+            "twc_branch_access_records",
             "twc_cached_models",
             "twc_cached_model_permissions",
             "twc_cached_elements",

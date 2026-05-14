@@ -23,6 +23,8 @@ from app.integrations.publisher import PublisherAdapter, build_publisher
 from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
     AuthorizationContext,
+    BranchAccessManifestStatus,
+    BranchAccessRecord,
     Bookmark,
     BranchDeltaIngestRequest,
     BranchWebhookRegistration,
@@ -106,6 +108,7 @@ PROJECT_LIST_CACHE_KEY = "projects"
 BRANCH_REVISION_PROBE_TTL_SECONDS = 20
 FAILED_BRANCH_CACHE_RETRY_SECONDS = 300
 PLUGIN_PERMISSION_PROBE_TTL_SECONDS = 60
+PLUGIN_ACCESS_MANIFEST_TTL_SECONDS = 300
 PLUGIN_CACHE_SOURCE_KIND = "cameo-plugin"
 
 
@@ -355,6 +358,7 @@ class PlatformService:
         )
 
     async def list_projects(self, session: SessionData, refresh: bool = False):
+        await self._ensure_plugin_listing_permissions(session)
         projects = self._project_summaries_from_cache_for_user(session)
         self.repo.delete_user_cache(
             self._user_key(session.user.preferred_username),
@@ -370,6 +374,8 @@ class PlatformService:
             cached_branches = self._cached_model_list(session, cache_key, BranchSummary)
             if cached_branches is not None:
                 return cached_branches
+
+        await self._ensure_plugin_listing_permissions(session, project_id=project_id)
 
         branches = self._branch_summaries_from_cache_for_user(session, project_id)
         self.repo.upsert_user_cache(
@@ -613,6 +619,22 @@ class PlatformService:
     def get_branch_cache_summary(self, session: SessionData, project_id: str, branch_id: str) -> BranchCacheSummary:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         if summary is not None:
+            if self._is_plugin_managed_summary(summary):
+                visible_summary = self.get_branch_cache_summary_for_user(
+                    session.server.id,
+                    session.user.preferred_username,
+                    project_id,
+                    branch_id,
+                )
+                if visible_summary is not None:
+                    return visible_summary
+                return summary.model_copy(
+                    update={
+                        "model_count": 0,
+                        "element_count": 0,
+                        "message": "The active Workbench user does not have access to this cached branch.",
+                    }
+                )
             return summary
         return self._branch_cache_summary(
             session,
@@ -624,21 +646,15 @@ class PlatformService:
 
     def get_branch_cache_snapshot(self, session: SessionData, project_id: str, branch_id: str) -> BranchCacheSnapshot:
         summary = self.get_branch_cache_summary(session, project_id, branch_id)
-        permissions = {
-            item.model_id: item
-            for item in self.repo.list_model_permissions(
-                self._user_key(session.user.preferred_username),
-                session.server.id,
-                project_id,
-                branch_id,
-            )
-        }
-        models = [
-            CachedModelView(model=model, permissions=permissions.get(model.model_id))
-            for model in self.repo.list_cached_models(session.server.id, project_id, branch_id)
-            if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
-        ]
-        return BranchCacheSnapshot(summary=summary, models=models)
+        snapshot = self.get_branch_cache_snapshot_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+        )
+        if snapshot is not None:
+            return snapshot
+        return BranchCacheSnapshot(summary=summary, models=[])
 
     def get_cached_branch_model(
         self,
@@ -647,19 +663,13 @@ class PlatformService:
         branch_id: str,
         model_id: str,
     ) -> CachedModelView | None:
-        model = self.repo.get_cached_model(session.server.id, project_id, branch_id, model_id)
-        if model is None:
-            return None
-        permission = self.repo.get_model_permission(
-            self._user_key(session.user.preferred_username),
+        return self.get_cached_branch_model_for_user(
             session.server.id,
+            session.user.preferred_username,
             project_id,
             branch_id,
             model_id,
         )
-        if permission is None or not permission.accessible or permission.restricted:
-            return None
-        return CachedModelView(model=model, permissions=permission)
 
     def list_cached_branch_elements(
         self,
@@ -672,42 +682,15 @@ class PlatformService:
         limit: int = 200,
         offset: int = 0,
     ) -> CachedElementQueryResponse:
-        permissions = {
-            item.model_id: item
-            for item in self.repo.list_model_permissions(
-                self._user_key(session.user.preferred_username),
-                session.server.id,
-                project_id,
-                branch_id,
-            )
-        }
-        visible_models = [
-            model
-            for model in self.repo.list_cached_models(session.server.id, project_id, branch_id)
-            if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
-        ]
-        visible_model_ids = {
-            permission.model_id for permission in permissions.values() if permission.accessible and not permission.restricted
-        }
-        if model_id is not None and model_id not in visible_model_ids:
-            return CachedElementQueryResponse(total=0, items=[])
-
-        raw = self.repo.list_cached_elements(
+        return self.list_cached_branch_elements_for_user(
             session.server.id,
+            session.user.preferred_username,
             project_id,
             branch_id,
             model_id=model_id,
             search=search,
-            limit=limit if model_id is not None else max(limit + offset, sum(model.element_count for model in visible_models), 1),
-            offset=offset if model_id is not None else 0,
-        )
-        if model_id is not None:
-            return raw
-
-        filtered_items = [item for item in raw.items if item.model_id in visible_model_ids]
-        return CachedElementQueryResponse(
-            total=len(filtered_items),
-            items=filtered_items[offset : offset + limit],
+            limit=limit,
+            offset=offset,
         )
 
     def get_cached_branch_element(
@@ -719,39 +702,14 @@ class PlatformService:
         *,
         model_id: str | None = None,
     ) -> CachedElementRecord | None:
-        permissions = {
-            item.model_id: item
-            for item in self.repo.list_model_permissions(
-                self._user_key(session.user.preferred_username),
-                session.server.id,
-                project_id,
-                branch_id,
-            )
-        }
-        visible_model_ids = [
-            permission.model_id for permission in permissions.values() if permission.accessible and not permission.restricted
-        ]
-        if model_id is not None:
-            if model_id not in visible_model_ids:
-                return None
-            return self.repo.get_cached_element(
-                session.server.id,
-                project_id,
-                branch_id,
-                element_id,
-                model_id=model_id,
-            )
-        for visible_model_id in visible_model_ids:
-            match = self.repo.get_cached_element(
-                session.server.id,
-                project_id,
-                branch_id,
-                element_id,
-                model_id=visible_model_id,
-            )
-            if match is not None:
-                return match
-        return None
+        return self.get_cached_branch_element_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+            model_id=model_id,
+        )
 
     def ingest_branch_snapshot(self, payload: BranchSnapshotIngestRequest) -> BranchCacheSummary:
         server = self._require_server(payload.server_id, include_disabled=True)
@@ -786,6 +744,24 @@ class PlatformService:
             )
             for model in finalized_models
         ]
+        access_records = [
+            BranchAccessRecord(
+                user_id=source_user,
+                server_id=server.id,
+                project_id=payload.project_id,
+                branch_id=payload.branch_id,
+                workspace_id=payload.workspace_id,
+                branch_name=payload.branch_name or payload.branch_id,
+                latest_revision=payload.revision_id,
+                accessible=True,
+                editable=True,
+                admin_access=True,
+                roles=["Snapshot Publisher"],
+                source="cameo-plugin-ingest",
+                payload={"source_user": payload.source_user, "source": payload.source},
+                updated_at=ingested_at,
+            )
+        ]
 
         self.repo.delete_branch_models_except(
             server.id,
@@ -801,6 +777,7 @@ class PlatformService:
             payload.branch_id,
             permissions,
         )
+        self.repo.upsert_branch_access_records(access_records)
         for model in finalized_models:
             model_elements = [item for item in resolved_elements if item.model_id == model.model_id]
             self.repo.replace_cached_elements(server.id, payload.project_id, payload.branch_id, model.model_id, model_elements)
@@ -822,6 +799,10 @@ class PlatformService:
             updated_at=ingested_at,
         )
         self.repo.upsert_branch_cache_summary(summary)
+        self._write_branch_access_manifest(
+            summary,
+            self.repo.list_branch_access_records(server.id, payload.project_id, payload.branch_id),
+        )
         self._invalidate_ingested_branch_caches(source_user, server.id, payload.project_id, payload.branch_id)
         return summary
 
@@ -904,6 +885,26 @@ class PlatformService:
             payload.branch_id,
             permissions,
         )
+        self.repo.upsert_branch_access_records(
+            [
+                BranchAccessRecord(
+                    user_id=source_user,
+                    server_id=server.id,
+                    project_id=payload.project_id,
+                    branch_id=payload.branch_id,
+                    workspace_id=payload.workspace_id or existing_summary.workspace_id,
+                    branch_name=payload.branch_name or existing_summary.branch_name or payload.branch_id,
+                    latest_revision=payload.to_revision_id or existing_summary.latest_revision,
+                    accessible=True,
+                    editable=True,
+                    admin_access=True,
+                    roles=["Snapshot Publisher"],
+                    source="cameo-plugin-ingest",
+                    payload={"source_user": payload.source_user, "source": payload.source},
+                    updated_at=ingested_at,
+                )
+            ]
+        )
 
         summary = BranchCacheSummary(
             server_id=server.id,
@@ -923,6 +924,10 @@ class PlatformService:
             updated_at=ingested_at,
         )
         self.repo.upsert_branch_cache_summary(summary)
+        self._write_branch_access_manifest(
+            summary,
+            self.repo.list_branch_access_records(server.id, payload.project_id, payload.branch_id),
+        )
         self._invalidate_ingested_branch_caches(source_user, server.id, payload.project_id, payload.branch_id)
         return summary
 
@@ -931,9 +936,18 @@ class PlatformService:
         user_id = self._user_key(preferred_username)
         projects: dict[str, CacheProjectEntry] = {}
         for summary in self.repo.list_branch_cache_summaries(server_id):
-            visible_models = self._visible_cached_models_for_user(user_id, server_id, summary.project_id, summary.branch_id)
-            if not visible_models:
-                continue
+            if self._is_plugin_managed_summary(summary):
+                branch_access = self._branch_access_for_user(user_id, server_id, summary.project_id, summary.branch_id)
+                if branch_access is None or not branch_access.accessible:
+                    continue
+                visible_model_count = summary.model_count
+                visible_element_count = summary.element_count
+            else:
+                visible_models = self._visible_cached_models_for_user(user_id, server_id, summary.project_id, summary.branch_id)
+                if not visible_models:
+                    continue
+                visible_model_count = len(visible_models)
+                visible_element_count = sum(model.element_count for model in visible_models)
             project_entry = projects.setdefault(
                 summary.project_id,
                 CacheProjectEntry(
@@ -949,8 +963,8 @@ class PlatformService:
                     branch_name=summary.branch_name or summary.branch_id,
                     latest_revision=summary.latest_revision,
                     status=summary.status,
-                    model_count=len(visible_models),
-                    element_count=sum(model.element_count for model in visible_models),
+                    model_count=visible_model_count,
+                    element_count=visible_element_count,
                     updated_at=summary.updated_at,
                 )
             )
@@ -975,6 +989,80 @@ class PlatformService:
             )
         return sorted(entries, key=lambda item: (item.server_name.lower(), item.server_id))
 
+    def get_branch_access_manifest_status(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+    ) -> BranchAccessManifestStatus:
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if summary is None:
+            return BranchAccessManifestStatus(
+                server_id=session.server.id,
+                project_id=project_id,
+                branch_id=branch_id,
+                source="none",
+                message="No plugin snapshot is cached for this branch yet.",
+            )
+        records = self.repo.list_branch_access_records(session.server.id, project_id, branch_id)
+        status = self._branch_access_manifest_status_from_records(summary, records)
+        if not self._is_plugin_managed_summary(summary):
+            return status.model_copy(update={"message": "This branch is not plugin-backed."})
+        if not records:
+            return status.model_copy(update={"message": "No shared access map has been generated for this branch yet."})
+        return status
+
+    async def refresh_branch_access_manifest(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+    ) -> BranchAccessManifestStatus:
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if not self._is_plugin_managed_summary(summary):
+            raise ValueError("Shared access maps can only be generated for plugin-backed branches.")
+        records = await self._adapter_for_session(session).build_plugin_branch_access_manifest(
+            project_id,
+            branch_id,
+            latest_revision=summary.latest_revision,
+            workspace_id=summary.workspace_id,
+        )
+        refreshed_at = utcnow()
+        normalized_records = [
+            record.model_copy(
+                update={
+                    "server_id": session.server.id,
+                    "project_id": project_id,
+                    "branch_id": branch_id,
+                    "workspace_id": summary.workspace_id,
+                    "branch_name": summary.branch_name or branch_id,
+                    "latest_revision": summary.latest_revision,
+                    "updated_at": refreshed_at,
+                }
+            )
+            for record in records
+        ]
+        self.repo.replace_branch_access_records_for_branch(session.server.id, project_id, branch_id, normalized_records)
+        current_user_access = next((record for record in normalized_records if record.user_id == self._user_key(session.user.preferred_username)), None)
+        models = self.repo.list_cached_models(session.server.id, project_id, branch_id)
+        self.repo.replace_model_permissions_for_user_branch(
+            self._user_key(session.user.preferred_username),
+            session.server.id,
+            project_id,
+            branch_id,
+            [
+                self._plugin_permission_snapshot_from_branch_access(current_user_access, model)
+                for model in models
+            ]
+            if current_user_access is not None
+            else [],
+        )
+        self._write_branch_access_manifest(summary, normalized_records)
+        self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
+        return self._branch_access_manifest_status_from_records(summary, normalized_records).model_copy(
+            update={"message": f"Generated shared access map for {len(normalized_records)} users."}
+        )
+
     def get_branch_cache_summary_for_user(
         self,
         server_id: str,
@@ -983,11 +1071,16 @@ class PlatformService:
         branch_id: str,
     ) -> BranchCacheSummary | None:
         self._require_server(server_id, include_disabled=True)
-        visible_models = self._visible_cached_models_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
-        if not visible_models:
-            return None
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         if summary is None:
+            return None
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
+            if branch_access is None or not branch_access.accessible:
+                return None
+            return summary
+        visible_models = self._visible_cached_models_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
+        if not visible_models:
             return None
         return summary.model_copy(
             update={
@@ -1008,6 +1101,18 @@ class PlatformService:
         if summary is None:
             return None
         user_id = self._user_key(preferred_username)
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            if branch_access is None or not branch_access.accessible:
+                return None
+            models = [
+                CachedModelView(
+                    model=model,
+                    permissions=self._plugin_permission_snapshot_from_branch_access(branch_access, model),
+                )
+                for model in self.repo.list_cached_models(server_id, project_id, branch_id)
+            ]
+            return BranchCacheSnapshot(summary=summary, models=models)
         permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
         models = [
             CachedModelView(model=model, permissions=permissions.get(model.model_id))
@@ -1025,6 +1130,15 @@ class PlatformService:
     ) -> CachedModelView | None:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            if branch_access is None or not branch_access.accessible:
+                return None
+            model = self.repo.get_cached_model(server_id, project_id, branch_id, model_id)
+            if model is None:
+                return None
+            return CachedModelView(model=model, permissions=self._plugin_permission_snapshot_from_branch_access(branch_access, model))
         permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
         permission = permissions.get(model_id)
         if permission is None or not permission.accessible or permission.restricted:
@@ -1048,6 +1162,20 @@ class PlatformService:
     ) -> CachedElementQueryResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            if branch_access is None or not branch_access.accessible:
+                return CachedElementQueryResponse(total=0, items=[])
+            return self.repo.list_cached_elements(
+                server_id,
+                project_id,
+                branch_id,
+                model_id=model_id,
+                search=search,
+                limit=limit,
+                offset=offset,
+            )
         permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
         visible_models = {
             permission.model_id
@@ -1083,6 +1211,18 @@ class PlatformService:
     ) -> CachedElementRecord | None:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            if branch_access is None or not branch_access.accessible:
+                return None
+            if model_id is not None:
+                return self.repo.get_cached_element(server_id, project_id, branch_id, element_id, model_id=model_id)
+            for model in self.repo.list_cached_models(server_id, project_id, branch_id):
+                match = self.repo.get_cached_element(server_id, project_id, branch_id, element_id, model_id=model.model_id)
+                if match is not None:
+                    return match
+            return None
         permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
         visible_models = [
             permission.model_id
@@ -1117,15 +1257,9 @@ class PlatformService:
         if record is None:
             return None
 
-        permission = self.repo.get_model_permission(
-            self._user_key(preferred_username),
-            server_id,
-            project_id,
-            branch_id,
-            record.model_id,
-        )
-        if permission is None or not permission.accessible or permission.restricted or not permission.editable:
-            raise PermissionError("The active Workbench user does not have edit access to this cached model.")
+        branch_access = self._branch_access_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
+        if branch_access is None or not branch_access.accessible or not branch_access.editable:
+            raise PermissionError("The active Workbench user does not have edit access to this cached branch.")
 
         updated_payload = dict(record.payload)
         if payload.name is not None:
@@ -1668,13 +1802,19 @@ class PlatformService:
         if cached_record is None:
             return None
 
-        permission = self.repo.get_model_permission(
-            self._user_key(session.user.preferred_username),
-            session.server.id,
-            project_id,
-            branch_id,
-            cached_record.model_id,
-        )
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_session(session, project_id, branch_id)
+            editable = bool(branch_access.editable) if branch_access and branch_access.accessible else False
+        else:
+            permission = self.repo.get_model_permission(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                project_id,
+                branch_id,
+                cached_record.model_id,
+            )
+            editable = bool(permission.editable) if permission else False
         adapter = self._adapter_for_session(session)
         resolved_payloads: dict[str, Any] = {}
         for reference_id in adapter.reference_resolution_ids(cached_record.payload):
@@ -1688,7 +1828,7 @@ class PlatformService:
             project_id,
             branch_id,
             resolved_payloads=resolved_payloads,
-            editable=bool(permission.editable) if permission else False,
+            editable=editable,
             version=cached_record.latest_revision or cached_record.synced_at.isoformat(),
         )
 
@@ -1698,6 +1838,12 @@ class PlatformService:
         project_id: str,
         branch_id: str,
     ) -> list[CachedModelRecord]:
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_session(session, project_id, branch_id)
+            if branch_access is None or not branch_access.accessible:
+                return []
+            return self.repo.list_cached_models(session.server.id, project_id, branch_id)
         permissions = {
             item.model_id: item
             for item in self.repo.list_model_permissions(
@@ -1718,21 +1864,35 @@ class PlatformService:
         if not models:
             return None
 
+        records_by_model = {
+            model.model_id: {
+                record.element_id: record
+                for record in self.repo.list_cached_elements(
+                    session.server.id,
+                    project_id,
+                    branch_id,
+                    model_id=model.model_id,
+                    limit=max(1, model.element_count or 1),
+                    offset=0,
+                ).items
+            }
+            for model in models
+        }
+
         nodes: list[TreeNode] = []
         for model in models:
             model_name = model.name or model.model_id
             model_path = f"{project_id}/{branch_id}/{model_name}"
-            children: list[TreeNode] = []
-            for root_id in model.root_ids:
-                root_record = self.get_cached_branch_element(session, project_id, branch_id, root_id, model_id=model.model_id)
-                root_name = root_record.name if root_record is not None else root_id
-                root_type = root_record.item_type if root_record is not None else "model_root"
-                children.append(
-                    TreeNode(
-                        id=root_id,
-                        label=root_name,
-                        node_type=root_type,
-                        path=f"{model_path}/{root_name}",
+            model_records = records_by_model.get(model.model_id, {})
+
+            def build_element_node(element_id: str, parent_path: str, trail: tuple[str, ...]) -> TreeNode:
+                record = model_records.get(element_id)
+                if record is None:
+                    return TreeNode(
+                        id=element_id,
+                        label=element_id,
+                        node_type="element",
+                        path=f"{parent_path}/{element_id}",
                         children=[],
                         metadata={
                             "project_id": project_id,
@@ -1740,7 +1900,41 @@ class PlatformService:
                             "model_id": model.model_id,
                         },
                     )
+
+                node_name = record.name or record.element_id
+                node_path = f"{parent_path}/{node_name}"
+                if element_id in trail:
+                    return TreeNode(
+                        id=record.element_id,
+                        label=node_name,
+                        node_type=record.item_type,
+                        path=node_path,
+                        children=[],
+                        metadata={
+                            "project_id": project_id,
+                            "branch_id": branch_id,
+                            "model_id": model.model_id,
+                            "cycle_detected": "true",
+                        },
+                    )
+
+                child_ids = [str(value) for value in record.payload.get("owned_element_ids") or [] if str(value)]
+                return TreeNode(
+                    id=record.element_id,
+                    label=node_name,
+                    node_type=record.item_type,
+                    path=node_path,
+                    children=[build_element_node(child_id, node_path, (*trail, element_id)) for child_id in child_ids],
+                    metadata={
+                        "project_id": project_id,
+                        "branch_id": branch_id,
+                        "model_id": model.model_id,
+                    },
                 )
+
+            children: list[TreeNode] = []
+            for root_id in model.root_ids:
+                children.append(build_element_node(root_id, model_path, (model.model_id,)))
             nodes.append(
                 TreeNode(
                     id=model.model_id,
@@ -1769,18 +1963,26 @@ class PlatformService:
         models = self.repo.list_cached_models(session.server.id, project_id, branch_id)
         if not models:
             return None
-        permissions = {
-            item.model_id: item
-            for item in self.repo.list_model_permissions(
-                self._user_key(session.user.preferred_username),
-                session.server.id,
-                project_id,
-                branch_id,
-            )
-        }
-        accessible_models = [
-            model for model in models if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
-        ]
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_session(session, project_id, branch_id)
+            if branch_access is None or not branch_access.accessible:
+                return None
+            accessible_models = models
+        else:
+            permissions = {
+                item.model_id: item
+                for item in self.repo.list_model_permissions(
+                    self._user_key(session.user.preferred_username),
+                    session.server.id,
+                    project_id,
+                    branch_id,
+                )
+            }
+            accessible_models = [
+                model
+                for model in models
+                if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
+            ]
         if not accessible_models:
             return None
 
@@ -2687,6 +2889,86 @@ class PlatformService:
                 return project.workspace_id
         return None
 
+    def _branch_access_manifest_file_path(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> Path:
+        return (
+            self.settings.resolved_data_dir
+            / "access-manifests"
+            / server_id
+            / project_id
+            / f"{branch_id}.json"
+        )
+
+    def _write_branch_access_manifest(
+        self,
+        summary: BranchCacheSummary,
+        records: list[BranchAccessRecord],
+    ) -> None:
+        manifest_path = self._branch_access_manifest_file_path(summary.server_id, summary.project_id, summary.branch_id)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "server_id": summary.server_id,
+            "project_id": summary.project_id,
+            "branch_id": summary.branch_id,
+            "workspace_id": summary.workspace_id,
+            "project_name": summary.project_name,
+            "branch_name": summary.branch_name,
+            "latest_revision": summary.latest_revision,
+            "updated_at": max((record.updated_at for record in records), default=summary.updated_at).isoformat(),
+            "source": records[0].source if records else "none",
+            "records": [record.model_dump(mode="json") for record in records],
+        }
+        manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _branch_access_manifest_status_from_records(
+        self,
+        summary: BranchCacheSummary,
+        records: list[BranchAccessRecord],
+    ) -> BranchAccessManifestStatus:
+        manifest_path = self._branch_access_manifest_file_path(summary.server_id, summary.project_id, summary.branch_id)
+        updated_at = max((record.updated_at for record in records), default=None)
+        source = records[0].source if records else "none"
+        return BranchAccessManifestStatus(
+            server_id=summary.server_id,
+            project_id=summary.project_id,
+            branch_id=summary.branch_id,
+            workspace_id=summary.workspace_id,
+            branch_name=summary.branch_name or summary.branch_id,
+            latest_revision=summary.latest_revision,
+            accessible_user_count=sum(1 for record in records if record.accessible),
+            editable_user_count=sum(1 for record in records if record.accessible and record.editable),
+            admin_user_count=sum(1 for record in records if record.admin_access),
+            updated_at=updated_at,
+            source=source,
+            file_path=str(manifest_path) if manifest_path.exists() else None,
+            message="",
+        )
+
+    async def _ensure_plugin_listing_permissions(
+        self,
+        session: SessionData,
+        *,
+        project_id: str | None = None,
+    ) -> None:
+        summaries = self.repo.list_branch_cache_summaries(session.server.id)
+        for summary in summaries:
+            if not self._is_plugin_managed_summary(summary):
+                continue
+            if project_id and summary.project_id != project_id:
+                continue
+            await self._ensure_plugin_branch_permissions(
+                session,
+                summary.project_id,
+                summary.branch_id,
+                workspace_id=summary.workspace_id,
+                summary=summary,
+                force=False,
+            )
+
     async def _ensure_plugin_branch_permissions(
         self,
         session: SessionData,
@@ -2706,40 +2988,92 @@ class PlatformService:
             return
 
         user_id = self._user_key(session.user.preferred_username)
-        existing_permissions = {
-            item.model_id: item
-            for item in self.repo.list_model_permissions(
-                user_id,
-                session.server.id,
-                project_id,
-                branch_id,
-            )
-        }
         expected_revision = resolved_summary.latest_revision
-        refresh_cutoff = utcnow() - timedelta(seconds=PLUGIN_PERMISSION_PROBE_TTL_SECONDS)
+        refresh_cutoff = utcnow() - timedelta(seconds=PLUGIN_ACCESS_MANIFEST_TTL_SECONDS)
         model_ids = [model.model_id for model in models]
-        needs_refresh = force
-        if not needs_refresh:
-            for model_id in model_ids:
-                permission = existing_permissions.get(model_id)
-                if permission is None:
-                    needs_refresh = True
-                    break
-                if permission.source != "twc-session-probe":
-                    needs_refresh = True
-                    break
-                if (permission.latest_revision or None) != (expected_revision or None):
-                    needs_refresh = True
-                    break
-                if permission.updated_at <= refresh_cutoff:
-                    needs_refresh = True
-                    break
+        existing_access = self._branch_access_for_user(user_id, session.server.id, project_id, branch_id)
+        needs_refresh = force or existing_access is None
+        if not needs_refresh and existing_access is not None:
+            needs_refresh = (
+                (existing_access.latest_revision or None) != (expected_revision or None)
+                or existing_access.updated_at <= refresh_cutoff
+            )
 
         if not needs_refresh:
             return
 
         try:
-            permissions = await self._adapter_for_session(session).probe_model_permissions(
+            manifest_records = await self._adapter_for_session(session).build_plugin_branch_access_manifest(
+                project_id,
+                branch_id,
+                latest_revision=expected_revision,
+                workspace_id=workspace_id or resolved_summary.workspace_id,
+            )
+            refreshed_at = utcnow()
+            normalized_records = [
+                record.model_copy(
+                    update={
+                        "server_id": session.server.id,
+                        "project_id": project_id,
+                        "branch_id": branch_id,
+                        "workspace_id": resolved_summary.workspace_id or workspace_id,
+                        "branch_name": resolved_summary.branch_name or branch_id,
+                        "latest_revision": expected_revision,
+                        "updated_at": refreshed_at,
+                    }
+                )
+                for record in manifest_records
+            ]
+            self.repo.replace_branch_access_records_for_branch(
+                session.server.id,
+                project_id,
+                branch_id,
+                normalized_records,
+            )
+            self._write_branch_access_manifest(resolved_summary, normalized_records)
+            current_user_access = self._branch_access_for_user(user_id, session.server.id, project_id, branch_id)
+            if current_user_access is not None:
+                self.repo.replace_model_permissions_for_user_branch(
+                    user_id,
+                    session.server.id,
+                    project_id,
+                    branch_id,
+                    [
+                        self._plugin_permission_snapshot_from_branch_access(current_user_access, model)
+                        for model in models
+                    ],
+                )
+            else:
+                self.repo.replace_model_permissions_for_user_branch(
+                    user_id,
+                    session.server.id,
+                    project_id,
+                    branch_id,
+                    [],
+                )
+            self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
+            return
+        except PermissionError as exc:
+            logger.info(
+                "plugin-cache-access-manifest-not-allowed",
+                server_id=session.server.id,
+                project_id=project_id,
+                branch_id=branch_id,
+                user=session.user.preferred_username,
+                detail=str(exc),
+            )
+        except Exception as exc:
+            logger.warning(
+                "plugin-cache-access-manifest-refresh-failed",
+                server_id=session.server.id,
+                project_id=project_id,
+                branch_id=branch_id,
+                user=session.user.preferred_username,
+                detail=str(exc),
+            )
+
+        try:
+            permissions = await self._adapter_for_session(session).probe_plugin_branch_permissions(
                 user_id,
                 project_id,
                 branch_id,
@@ -2765,6 +3099,33 @@ class PlatformService:
             branch_id,
             permissions,
         )
+        accessible = any(permission.accessible and not permission.restricted for permission in permissions)
+        editable = any(
+            permission.accessible and not permission.restricted and permission.editable for permission in permissions
+        )
+        fallback_record = BranchAccessRecord(
+            user_id=user_id,
+            server_id=session.server.id,
+            project_id=project_id,
+            branch_id=branch_id,
+            workspace_id=resolved_summary.workspace_id or workspace_id,
+            branch_name=resolved_summary.branch_name or branch_id,
+            latest_revision=expected_revision,
+            accessible=accessible,
+            editable=editable,
+            admin_access=False,
+            roles=[],
+            via_groups=[],
+            source="twc-session-probe",
+            payload={"model_ids": model_ids},
+            updated_at=utcnow(),
+        )
+        self.repo.upsert_branch_access_records([fallback_record])
+        self._write_branch_access_manifest(
+            resolved_summary,
+            self.repo.list_branch_access_records(session.server.id, project_id, branch_id),
+        )
+        self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
 
     def _permissions_by_model_for_user(
         self,
@@ -2778,6 +3139,54 @@ class PlatformService:
             for item in self.repo.list_model_permissions(user_id, server_id, project_id, branch_id)
         }
 
+    def _branch_access_for_user(
+        self,
+        user_id: str,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> BranchAccessRecord | None:
+        return self.repo.get_branch_access_record(user_id, server_id, project_id, branch_id)
+
+    def _branch_access_for_session(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+    ) -> BranchAccessRecord | None:
+        return self._branch_access_for_user(
+            self._user_key(session.user.preferred_username),
+            session.server.id,
+            project_id,
+            branch_id,
+        )
+
+    def _plugin_permission_snapshot_from_branch_access(
+        self,
+        branch_access: BranchAccessRecord,
+        model: CachedModelRecord,
+    ) -> ModelPermissionSnapshot:
+        return ModelPermissionSnapshot(
+            user_id=branch_access.user_id,
+            server_id=branch_access.server_id,
+            project_id=branch_access.project_id,
+            branch_id=branch_access.branch_id,
+            model_id=model.model_id,
+            workspace_id=branch_access.workspace_id or model.workspace_id,
+            latest_revision=branch_access.latest_revision or model.latest_revision,
+            accessible=branch_access.accessible,
+            restricted=not branch_access.accessible,
+            editable=branch_access.editable,
+            source=branch_access.source,
+            payload={
+                "roles": branch_access.roles,
+                "via_groups": branch_access.via_groups,
+                "branch_access": True,
+                **(branch_access.payload or {}),
+            },
+            updated_at=branch_access.updated_at,
+        )
+
     def _visible_cached_models_for_user(
         self,
         user_id: str,
@@ -2785,6 +3194,12 @@ class PlatformService:
         project_id: str,
         branch_id: str,
     ) -> list[CachedModelRecord]:
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            if branch_access is None or not branch_access.accessible:
+                return []
+            return self.repo.list_cached_models(server_id, project_id, branch_id)
         permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
         return [
             model
@@ -3062,6 +3477,7 @@ class PlatformService:
     ) -> None:
         prefix = f"project:{project_id}:branch:{branch_id}:"
         self.repo.delete_user_cache_prefix_for_server(server_id, prefix)
+        self.repo.delete_user_cache_prefix_for_server(server_id, self._branch_cache_key(project_id))
 
     def _shared_oslc_secret_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"

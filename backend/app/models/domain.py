@@ -540,6 +540,40 @@ class BranchCacheSummary(BaseModel):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class BranchAccessRecord(BaseModel):
+    user_id: str
+    server_id: str
+    project_id: str
+    branch_id: str
+    workspace_id: str | None = None
+    branch_name: str = ""
+    latest_revision: str | None = None
+    accessible: bool = False
+    editable: bool = False
+    admin_access: bool = False
+    roles: list[str] = Field(default_factory=list)
+    via_groups: list[str] = Field(default_factory=list)
+    source: str = "twc-session-probe"
+    payload: dict[str, Any] = Field(default_factory=dict)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class BranchAccessManifestStatus(BaseModel):
+    server_id: str
+    project_id: str
+    branch_id: str
+    workspace_id: str | None = None
+    branch_name: str = ""
+    latest_revision: str | None = None
+    accessible_user_count: int = 0
+    editable_user_count: int = 0
+    admin_user_count: int = 0
+    updated_at: datetime | None = None
+    source: str = "none"
+    file_path: str | None = None
+    message: str = ""
+
+
 class BranchWebhookRegistration(BaseModel):
     registration_id: str = Field(default_factory=lambda: uuid4().hex)
     server_id: str

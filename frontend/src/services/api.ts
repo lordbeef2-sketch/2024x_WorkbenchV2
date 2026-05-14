@@ -1,5 +1,6 @@
 import {
   AuthOptions,
+  BranchAccessManifestStatus,
   CacheApiKeyCreateRequest,
   CacheApiKeyCreateResponse,
   CacheApiKeySummary,
@@ -327,6 +328,17 @@ export const api = {
       params.set("refresh", "true");
     }
     return request<ElementDiscoveryResult>(`/workspace/elements/discovery?${params.toString()}`);
+  },
+  getBranchAccessManifestStatus(projectId: string, branchId: string) {
+    const params = new URLSearchParams({ projectId, branchId });
+    return request<BranchAccessManifestStatus>(`/workspace/model-cache/access-map?${params.toString()}`);
+  },
+  refreshBranchAccessManifest(projectId: string, branchId: string, csrfToken: string) {
+    const params = new URLSearchParams({ projectId, branchId });
+    return request<BranchAccessManifestStatus>(`/workspace/model-cache/access-map/refresh?${params.toString()}`, {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+    });
   },
   getItem(itemId: string, projectId?: string, branchId?: string, workspaceId?: string, refresh = false) {
     const params = new URLSearchParams();
