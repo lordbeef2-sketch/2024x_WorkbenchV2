@@ -652,6 +652,16 @@ class CachedElementQueryResponse(BaseModel):
     items: list[CachedElementRecord] = Field(default_factory=list)
 
 
+class StereotypeElementSearchResponse(BaseModel):
+    stereotype: str
+    include_details: bool = False
+    total: int = 0
+    matched_stereotype_ids: list[str] = Field(default_factory=list)
+    matched_stereotype_names: list[str] = Field(default_factory=list)
+    items: list[CachedElementRecord] = Field(default_factory=list)
+    details: list[ItemDetails] = Field(default_factory=list)
+
+
 class BranchCacheSnapshot(BaseModel):
     summary: BranchCacheSummary
     models: list[CachedModelView] = Field(default_factory=list)

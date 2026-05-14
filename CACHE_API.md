@@ -90,6 +90,7 @@ scoped to that user's cached visibility.
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models/{model_id}`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/by-stereotype`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
 
 ### Plugin/cache write endpoints
@@ -127,6 +128,17 @@ curl -H "Authorization: Bearer <key>" \
   https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/elements
 ```
 
+### Search cached elements by stereotype
+
+```bash
+curl -H "Authorization: Bearer <key>" \
+  "https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/elements/by-stereotype?stereotype=Block&includeDetails=true"
+```
+
+Use either a stereotype id or a stereotype name fragment in `stereotype`. Set
+`includeDetails=true` when you want full cached item details back instead of
+just the lightweight cached element records.
+
 ### Publish a snapshot
 
 ```bash
@@ -155,4 +167,5 @@ See:
 - [examples/23_workbench_cache_api_list_elements.py](/C:/sand/fresh/New%20Project/examples/23_workbench_cache_api_list_elements.py)
 - [examples/24_workbench_cache_api_edit_element.py](/C:/sand/fresh/New%20Project/examples/24_workbench_cache_api_edit_element.py)
 - [examples/25_workbench_cache_api_ingest_snapshot.py](/C:/sand/fresh/New%20Project/examples/25_workbench_cache_api_ingest_snapshot.py)
+- [examples/26_workbench_cache_api_search_by_stereotype.py](/C:/sand/fresh/New%20Project/examples/26_workbench_cache_api_search_by_stereotype.py)
 - [examples/workbench_cache_api_config.json](/C:/sand/fresh/New%20Project/examples/workbench_cache_api_config.json)

@@ -94,6 +94,7 @@ from app.models.domain import (
     UserServerState,
     UserContext,
     WebhookRegistrationStatus,
+    StereotypeElementSearchResponse,
     utcnow,
 )
 from app.security.session import SessionManager
@@ -110,6 +111,10 @@ FAILED_BRANCH_CACHE_RETRY_SECONDS = 300
 PLUGIN_PERMISSION_PROBE_TTL_SECONDS = 60
 PLUGIN_ACCESS_MANIFEST_TTL_SECONDS = 300
 PLUGIN_CACHE_SOURCE_KIND = "cameo-plugin"
+
+
+def normalize_lookup_key(value: str) -> str:
+    return value.strip().lower()
 
 
 class PlatformService:
@@ -1199,6 +1204,85 @@ class PlatformService:
         filtered_items = [item for item in raw.items if item.model_id in visible_models]
         return CachedElementQueryResponse(total=len(filtered_items), items=filtered_items[offset : offset + limit])
 
+    def search_cached_branch_elements_by_stereotype_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        stereotype: str,
+        *,
+        include_details: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> StereotypeElementSearchResponse:
+        self._require_server(server_id, include_disabled=True)
+        query = stereotype.strip()
+        if not query:
+            return StereotypeElementSearchResponse(stereotype=stereotype, include_details=include_details)
+
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if summary is None:
+            return StereotypeElementSearchResponse(stereotype=stereotype, include_details=include_details)
+
+        visible_elements = self.list_cached_branch_elements_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            limit=max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1),
+            offset=0,
+        ).items
+        visible_by_id = {item.element_id: item for item in visible_elements}
+        query_normalized = normalize_lookup_key(query)
+
+        matched_stereotype_ids: set[str] = set()
+        matched_stereotype_names: set[str] = set()
+        matched_elements: list[CachedElementRecord] = []
+        for element in visible_elements:
+            applied_ids = [
+                str(value).strip()
+                for value in (element.payload.get("applied_stereotype_ids") or [])
+                if str(value).strip()
+            ]
+            if not applied_ids:
+                continue
+            element_matches: list[tuple[str, str | None]] = []
+            for stereotype_id in applied_ids:
+                stereotype_record = visible_by_id.get(stereotype_id)
+                stereotype_name = stereotype_record.name.strip() if stereotype_record and stereotype_record.name else None
+                if normalize_lookup_key(stereotype_id) == query_normalized:
+                    element_matches.append((stereotype_id, stereotype_name))
+                    continue
+                if stereotype_name and query_normalized in normalize_lookup_key(stereotype_name):
+                    element_matches.append((stereotype_id, stereotype_name))
+            if not element_matches:
+                continue
+            matched_elements.append(element)
+            for matched_id, matched_name in element_matches:
+                matched_stereotype_ids.add(matched_id)
+                if matched_name:
+                    matched_stereotype_names.add(matched_name)
+
+        paged_items = matched_elements[offset : offset + limit]
+        details: list[ItemDetails] = []
+        if include_details:
+            details = [
+                detail
+                for element in paged_items
+                if (detail := self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element.element_id)) is not None
+            ]
+
+        return StereotypeElementSearchResponse(
+            stereotype=stereotype,
+            include_details=include_details,
+            total=len(matched_elements),
+            matched_stereotype_ids=sorted(matched_stereotype_ids, key=str.lower),
+            matched_stereotype_names=sorted(matched_stereotype_names, key=str.lower),
+            items=paged_items,
+            details=details,
+        )
+
     def get_cached_branch_element_for_user(
         self,
         server_id: str,
@@ -1238,6 +1322,56 @@ class PlatformService:
             if match is not None:
                 return match
         return None
+
+    def _cached_item_details_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        element_id: str,
+    ) -> ItemDetails | None:
+        record = self.get_cached_branch_element_for_user(server_id, preferred_username, project_id, branch_id, element_id)
+        if record is None:
+            return None
+
+        branch_access = self._branch_access_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
+        editable = False
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            editable = bool(branch_access.editable) if branch_access and branch_access.accessible else False
+        else:
+            permission = self.repo.get_model_permission(
+                self._user_key(preferred_username),
+                server_id,
+                project_id,
+                branch_id,
+                record.model_id,
+            )
+            editable = bool(permission.editable) if permission else False
+
+        server = self._require_server(server_id, include_disabled=True)
+        adapter = create_adapter(server, {}, self.settings.resolved_data_dir)
+        resolved_payloads: dict[str, Any] = {}
+        for reference_id in adapter.reference_resolution_ids(record.payload):
+            referenced_record = self.get_cached_branch_element_for_user(
+                server_id,
+                preferred_username,
+                project_id,
+                branch_id,
+                reference_id,
+            )
+            if referenced_record is not None and isinstance(referenced_record.payload, dict):
+                resolved_payloads[reference_id] = referenced_record.payload
+        return adapter.build_item_details_from_payload(
+            record.payload,
+            element_id,
+            project_id,
+            branch_id,
+            resolved_payloads=resolved_payloads,
+            editable=editable,
+            version=record.latest_revision or record.synced_at.isoformat(),
+        )
 
     def edit_cached_branch_element_for_user(
         self,
@@ -3659,6 +3793,7 @@ class PlatformService:
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models/{model_id}",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/by-stereotype",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}",
                 "PATCH /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}",
                 "POST /api/cache-ingest/branch-snapshots",

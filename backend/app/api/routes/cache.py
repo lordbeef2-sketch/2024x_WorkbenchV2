@@ -3,7 +3,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_container, require_cache_api_identity, require_cache_api_scope, require_cache_api_token, require_cache_ingest_token
-from app.models.domain import BranchDeltaIngestRequest, BranchSnapshotIngestRequest, CacheApiKeyScope, CacheElementEditRequest
+from app.models.domain import (
+    BranchDeltaIngestRequest,
+    BranchSnapshotIngestRequest,
+    CacheApiKeyScope,
+    CacheElementEditRequest,
+    StereotypeElementSearchResponse,
+)
 from app.services.platform import ApplicationContainer
 
 router = APIRouter(tags=["cache"])
@@ -154,6 +160,36 @@ def cached_elements(
             branch_id,
             model_id=modelId,
             search=search,
+            limit=limit,
+            offset=offset,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+
+
+@router.get(
+    "/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/by-stereotype",
+    response_model=StereotypeElementSearchResponse,
+)
+def cached_elements_by_stereotype(
+    server_id: str,
+    project_id: str,
+    branch_id: str,
+    stereotype: str = Query(..., min_length=1),
+    includeDetails: bool = Query(default=False),
+    limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    preferred_username: str = Depends(require_cache_api_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.search_cached_branch_elements_by_stereotype_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            stereotype,
+            include_details=includeDetails,
             limit=limit,
             offset=offset,
         )

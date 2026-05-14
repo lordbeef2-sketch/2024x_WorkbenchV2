@@ -236,6 +236,22 @@ function humanReadableValue(value: unknown, lookup: Record<string, string>): str
   return JSON.stringify(resolved, null, 2);
 }
 
+function hasMeaningfulValue(value: unknown): boolean {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  if (typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>).length > 0;
+  }
+  return true;
+}
+
 function defaultParameterValue(parameter: SwaggerParameterSpec): string {
   if (parameter.default === null || parameter.default === undefined) {
     return "";
@@ -1293,64 +1309,7 @@ export default function WorkspacePage() {
         <Box>
           <Typography variant="h5">Project Browser</Typography>
           <Typography variant="body2" color="text.secondary">
-            Pick from projects that have already been published into Workbench. Branch and model context load from cached plugin data after selection in Model Browser.
-          </Typography>
-        </Box>
-        <Button
-          variant="outlined"
-          startIcon={<RefreshRoundedIcon />}
-          onClick={() => refreshProjectsMutation.mutate()}
-          disabled={refreshProjectsMutation.isPending}
-        >
-          Refresh Catalog
-        </Button>
-      </Stack>
-      {projectsQuery.isLoading ? <CircularProgress size={28} /> : null}
-      <Grid container spacing={2}>
-        {projects.map((project) => (
-          <Grid item xs={12} md={6} key={project.id}>
-            <Card variant={selectedProjectId === project.id ? "elevation" : "outlined"} sx={{ height: "100%", borderRadius: 2 }}>
-              <CardContent>
-                <Stack spacing={2}>
-                  <Stack spacing={0.5}>
-                    <Typography variant="h6">{project.name}</Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {projectSummaryText(project)}
-                    </Typography>
-                  </Stack>
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip label="Workbench cached project" variant="outlined" />
-                    {project.workspace_id ? <Chip label="Workspace-scoped" variant="outlined" /> : null}
-                    <Chip label="Select to load cached branches and models" variant="outlined" />
-                    {selectedProjectId === project.id ? <Chip label="Selected project" color="primary" /> : null}
-                  </Stack>
-                  <Button variant="contained" onClick={() => openProjectInModelBrowser(project.id)}>
-                    Open in Model Browser
-                  </Button>
-                </Stack>
-              </CardContent>
-            </Card>
-          </Grid>
-        ))}
-      </Grid>
-      {!projectsQuery.isLoading && !projects.length ? (
-        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
-          <Typography variant="h6">No published projects yet</Typography>
-          <Typography color="text.secondary" sx={{ mt: 1 }}>
-            Workbench only lists projects that have been published from the Cameo plugin into snapshot storage.
-          </Typography>
-        </Paper>
-      ) : null}
-    </Stack>
-  );
-
-  const renderModels = () => (
-    <Stack spacing={2}>
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
-        <Box>
-          <Typography variant="h5">Model Browser</Typography>
-          <Typography variant="body2" color="text.secondary">
-            {selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : "Select a project to load models."}
+            Browse the published content for the selected project and branch from the Workbench snapshot cache.
           </Typography>
         </Box>
         <Button
@@ -1362,12 +1321,20 @@ export default function WorkspacePage() {
           Reload Cached Project
         </Button>
       </Stack>
+      {!selectedProject ? (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h5">Select a project</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            Use the selector on the left to choose which published project snapshot you want to browse.
+          </Typography>
+        </Paper>
+      ) : null}
       {selectedProject ? (
         <Paper sx={{ p: 3, borderRadius: 2 }}>
           <Stack spacing={1.5}>
             <Typography variant="h6">{selectedProject.name}</Typography>
             <Typography variant="body2" color="text.secondary">
-              {selectedProject.description || "Use the branch selector in the left panel to change the current model context."}
+              {selectedProject.description || "Browse the current branch snapshot as cards for quick scanning and jumping into details."}
             </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
               <Chip label="Workbench cached project" variant="outlined" />
@@ -1429,10 +1396,176 @@ export default function WorkspacePage() {
           </Grid>
         ))}
       </Grid>
-      {!treeQuery.isLoading && !flatNodes.length ? (
+      {!treeQuery.isLoading && selectedProjectId && !flatNodes.length ? (
         <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
           <Typography color="text.secondary">No model entries were returned for the selected project and branch.</Typography>
         </Paper>
+      ) : null}
+    </Stack>
+  );
+
+  const renderModels = () => (
+    <Stack spacing={2}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+        <Box>
+          <Typography variant="h5">Model Browser</Typography>
+          <Typography variant="body2" color="text.secondary">
+            {selectedProject
+              ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}`
+              : "Select a project to inspect its published branch tree and properties."}
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshRoundedIcon />}
+            onClick={() => refreshSelectedProjectMutation.mutate()}
+            disabled={!selectedProjectId || refreshSelectedProjectMutation.isPending}
+          >
+            Reload Cached Project
+          </Button>
+          <Button
+            variant="contained"
+            disabled={!selectedItemId}
+            onClick={() => setTab("details")}
+          >
+            Open Full Details
+          </Button>
+        </Stack>
+      </Stack>
+      {!selectedProject ? (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h5">Select a project</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            Choose a published project snapshot from the selector on the left to inspect the full branch model tree.
+          </Typography>
+        </Paper>
+      ) : null}
+      {selectedProject && !selectedBranchId && !branchesQuery.isLoading ? (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h5">Select a branch</Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }}>
+            Model Browser follows one published branch snapshot at a time so we can keep the full tree and properties coherent.
+          </Typography>
+        </Paper>
+      ) : null}
+      {branchesQuery.isLoading && selectedProjectId ? <CircularProgress size={28} /> : null}
+      {branchesQuery.error ? <Alert severity="error">{errorMessage(branchesQuery.error)}</Alert> : null}
+      {treeQuery.isLoading ? <CircularProgress size={28} /> : null}
+      {treeQuery.error ? <Alert severity="error">{errorMessage(treeQuery.error)}</Alert> : null}
+      {selectedProject && selectedBranchId ? (
+        <Grid container spacing={2}>
+          <Grid item xs={12} lg={5}>
+            <Paper sx={{ p: 3, borderRadius: 2, height: "100%" }}>
+              <Stack spacing={2}>
+                <Typography variant="h6">Full Branch Tree</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  This is the full top-down tree from the published branch snapshot. Select any element, table, package, or diagram to inspect its properties on the right.
+                </Typography>
+                {treeNodes.length ? (
+                  <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, maxHeight: 860, overflow: "auto" }}>
+                    <ProjectTree
+                      nodes={treeNodes}
+                      selectedId={selectedItemId}
+                      filter={treeFilter}
+                      onSelect={(node) => setSelectedItemId(node.id)}
+                    />
+                  </Paper>
+                ) : (
+                  <Typography color="text.secondary">No model tree is available for the selected branch snapshot yet.</Typography>
+                )}
+              </Stack>
+            </Paper>
+          </Grid>
+          <Grid item xs={12} lg={7}>
+            {selectedWorkspaceItem ? (
+              <Paper sx={{ p: 3, borderRadius: 2 }}>
+                <Stack spacing={2}>
+                  <Stack spacing={0.75}>
+                    <Typography variant="h6">{selectedWorkspaceItemName}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {selectedWorkspaceItemPath || `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}`}
+                    </Typography>
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                      <Chip label={humanizeFieldLabel(selectedWorkspaceItem.item_type)} />
+                      <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
+                      {selectedWorkspaceItem.editable && canEdit ? <Chip label="Editable" color="success" variant="outlined" /> : null}
+                    </Stack>
+                  </Stack>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} md={6}>
+                      <TextField label="Name" value={selectedWorkspaceItem.name} fullWidth InputProps={{ readOnly: true }} />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField label="Type" value={humanizeFieldLabel(selectedWorkspaceItem.item_type)} fullWidth InputProps={{ readOnly: true }} />
+                    </Grid>
+                    <Grid item xs={12}>
+                      <TextField label="Path" value={selectedWorkspaceItemPath} fullWidth InputProps={{ readOnly: true }} />
+                    </Grid>
+                    <Grid item xs={12}>
+                      <TextField
+                        label="Description"
+                        value={selectedWorkspaceItem.description}
+                        fullWidth
+                        multiline
+                        minRows={2}
+                        InputProps={{ readOnly: true }}
+                      />
+                    </Grid>
+                    <Grid item xs={12}>
+                      <TextField
+                        label="Documentation"
+                        value={selectedWorkspaceItem.documentation_markdown}
+                        fullWidth
+                        multiline
+                        minRows={4}
+                        InputProps={{ readOnly: true }}
+                      />
+                    </Grid>
+                    <Grid item xs={12}>
+                      <TextField
+                        label="Properties"
+                        value={humanReadableValue(
+                          {
+                            metadata: selectedWorkspaceItem.metadata,
+                            raw_types: selectedWorkspaceItem.raw_types,
+                            stereotypes: selectedWorkspaceItem.stereotypes,
+                            owner: selectedWorkspaceItem.owner,
+                            contained_elements: selectedWorkspaceItem.contained_elements,
+                            related_items: selectedWorkspaceItem.related_items,
+                          },
+                          referenceNameById,
+                        )}
+                        fullWidth
+                        multiline
+                        minRows={12}
+                        InputProps={{ readOnly: true }}
+                      />
+                    </Grid>
+                  </Grid>
+                  <Stack direction="row" spacing={1}>
+                    <Button size="small" variant="contained" onClick={() => setTab("details")}>
+                      Open Full Details
+                    </Button>
+                    <Button size="small" onClick={() => pickCompareSide("left", selectedWorkspaceItem.id)}>
+                      Compare Left
+                    </Button>
+                    <Button size="small" onClick={() => pickCompareSide("right", selectedWorkspaceItem.id)}>
+                      Compare Right
+                    </Button>
+                  </Stack>
+                </Stack>
+              </Paper>
+            ) : (
+              <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+                <Typography variant="h6">Select a model item</Typography>
+                <Typography color="text.secondary" sx={{ mt: 1 }}>
+                  Pick any node from the published branch tree to inspect its properties here without leaving Model Browser.
+                </Typography>
+              </Paper>
+            )}
+          </Grid>
+        </Grid>
       ) : null}
     </Stack>
   );
@@ -1613,6 +1746,39 @@ export default function WorkspacePage() {
       return <CircularProgress size={28} />;
     }
 
+    const sourcePayload = itemDraft.source_payload ?? {};
+    const payloadAttributes =
+      sourcePayload.attributes && typeof sourcePayload.attributes === "object" && !Array.isArray(sourcePayload.attributes)
+        ? (sourcePayload.attributes as Record<string, unknown>)
+        : {};
+    const payloadReferences =
+      sourcePayload.references && typeof sourcePayload.references === "object" && !Array.isArray(sourcePayload.references)
+        ? (sourcePayload.references as Record<string, unknown>)
+        : {};
+    const payloadSections = Object.entries(sourcePayload).filter(([key, value]) => {
+      if (
+        [
+          "element_id",
+          "model_id",
+          "local_id",
+          "owner_id",
+          "name",
+          "human_name",
+          "qualified_name",
+          "human_type",
+          "metaclass",
+          "documentation",
+          "owned_element_ids",
+          "applied_stereotype_ids",
+          "attributes",
+          "references",
+        ].includes(key)
+      ) {
+        return false;
+      }
+      return hasMeaningfulValue(value);
+    });
+
     return (
         <Stack spacing={2}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
@@ -1685,13 +1851,66 @@ export default function WorkspacePage() {
                   helperText="Generated from the RealSwagger element/model payload."
                   fullWidth
                   multiline
-                  minRows={8}
+                  minRows={6}
                 />
+                {Object.entries(payloadAttributes).length ? (
+                  <TextField
+                    label="Element Properties"
+                    value={humanReadableValue(payloadAttributes, referenceNameById)}
+                    disabled
+                    helperText="Structured properties captured for this selected model item."
+                    fullWidth
+                    multiline
+                    minRows={8}
+                  />
+                ) : null}
+                {Object.entries(payloadReferences).length ? (
+                  <TextField
+                    label="Reference Map"
+                    value={humanReadableValue(payloadReferences, referenceNameById)}
+                    disabled
+                    helperText="Resolved reference buckets captured for this selected model item."
+                    fullWidth
+                    multiline
+                    minRows={6}
+                  />
+                ) : null}
+                {hasMeaningfulValue(sourcePayload.owned_element_ids) ? (
+                  <TextField
+                    label="Owned Element IDs"
+                    value={humanReadableValue(sourcePayload.owned_element_ids, referenceNameById)}
+                    disabled
+                    fullWidth
+                    multiline
+                    minRows={4}
+                  />
+                ) : null}
+                {hasMeaningfulValue(sourcePayload.applied_stereotype_ids) ? (
+                  <TextField
+                    label="Applied Stereotype IDs"
+                    value={humanReadableValue(sourcePayload.applied_stereotype_ids, referenceNameById)}
+                    disabled
+                    fullWidth
+                    multiline
+                    minRows={3}
+                  />
+                ) : null}
+                {payloadSections.map(([key, value]) => (
+                  <TextField
+                    key={key}
+                    label={humanizeFieldLabel(key)}
+                    value={humanReadableValue(value, referenceNameById)}
+                    disabled
+                    fullWidth
+                    multiline
+                    minRows={4}
+                  />
+                ))}
                 <TextField
-                  label="Source Payload"
-                  value={humanReadableValue(itemDraft.source_payload ?? {}, referenceNameById)}
+                  label="Full Source Payload"
+                  value={humanReadableValue(sourcePayload, referenceNameById)}
                   disabled
-                  helperText="Read-only viewer for the cached Teamwork Cloud payload behind this model item."
+                  helperText="Read-only viewer for the full cached Teamwork Cloud payload behind this selected model item."
                   fullWidth
                   multiline
                   minRows={12}
