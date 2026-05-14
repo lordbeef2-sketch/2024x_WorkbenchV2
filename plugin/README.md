@@ -106,6 +106,20 @@ metadata.serverId=twc-2022x
 
 On the Workbench side, save that same exact write token in the admin Settings screen under `Plugin Ingest Token`. Workbench stores the app-managed token encrypted and can now accept a specific token value, not just a randomly generated one.
 
+If the Cameo JVM does not trust the Workbench HTTPS certificate and snapshot
+publishing fails with a `PKIX path building failed` error, either:
+
+- install your organization CA certificate into the JVM trust store used by Cameo, or
+- temporarily enable:
+
+```properties
+http.insecureTls=true
+```
+
+from `TWC Workbench -> Configure Workbench Connection...`
+
+Use the TLS bypass only for controlled internal environments.
+
 `CACHE_INGEST_TOKENS` still exists as a legacy fallback in `backend/.env` if you need file-based bootstrap during migration:
 
 ```env

@@ -16,6 +16,7 @@ public class PluginConfig {
     public boolean snapshotOnOpen;
     public boolean snapshotOnSave;
     public boolean deltaOnClose;
+    public boolean insecureTls;
     public int connectTimeoutSeconds;
     public int readTimeoutSeconds;
     public String serverIdOverride;
@@ -27,6 +28,7 @@ public class PluginConfig {
         this.snapshotOnOpen = Boolean.parseBoolean(properties.getProperty("capture.snapshotOnOpen", "true"));
         this.snapshotOnSave = Boolean.parseBoolean(properties.getProperty("capture.snapshotOnSave", "true"));
         this.deltaOnClose = Boolean.parseBoolean(properties.getProperty("capture.deltaOnClose", "true"));
+        this.insecureTls = Boolean.parseBoolean(properties.getProperty("http.insecureTls", "false"));
         this.connectTimeoutSeconds = Integer.parseInt(properties.getProperty("http.connectTimeoutSeconds", "15"));
         this.readTimeoutSeconds = Integer.parseInt(properties.getProperty("http.readTimeoutSeconds", "60"));
         this.serverIdOverride = trimToNull(properties.getProperty("metadata.serverId"));
@@ -56,6 +58,7 @@ public class PluginConfig {
             boolean snapshotOnOpen,
             boolean snapshotOnSave,
             boolean deltaOnClose,
+            boolean insecureTls,
             int connectTimeoutSeconds,
             int readTimeoutSeconds,
             String serverIdOverride
@@ -65,6 +68,7 @@ public class PluginConfig {
         this.snapshotOnOpen = snapshotOnOpen;
         this.snapshotOnSave = snapshotOnSave;
         this.deltaOnClose = deltaOnClose;
+        this.insecureTls = insecureTls;
         this.connectTimeoutSeconds = connectTimeoutSeconds;
         this.readTimeoutSeconds = readTimeoutSeconds;
         this.serverIdOverride = trimToNull(serverIdOverride);
@@ -77,6 +81,7 @@ public class PluginConfig {
         properties.setProperty("capture.snapshotOnOpen", Boolean.toString(snapshotOnOpen));
         properties.setProperty("capture.snapshotOnSave", Boolean.toString(snapshotOnSave));
         properties.setProperty("capture.deltaOnClose", Boolean.toString(deltaOnClose));
+        properties.setProperty("http.insecureTls", Boolean.toString(insecureTls));
         properties.setProperty("http.connectTimeoutSeconds", Integer.toString(connectTimeoutSeconds));
         properties.setProperty("http.readTimeoutSeconds", Integer.toString(readTimeoutSeconds));
         properties.setProperty("metadata.serverId", emptyIfNull(serverIdOverride));

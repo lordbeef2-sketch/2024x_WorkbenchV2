@@ -26,6 +26,7 @@ public final class WorkbenchConnectionDialog {
         JTextField serverIdField = new JTextField(nullToEmpty(config.serverIdOverride), 24);
         JTextField connectTimeoutField = new JTextField(Integer.toString(config.connectTimeoutSeconds), 8);
         JTextField readTimeoutField = new JTextField(Integer.toString(config.readTimeoutSeconds), 8);
+        JCheckBox insecureTlsBox = new JCheckBox("Disable TLS verification for Workbench HTTPS", config.insecureTls);
         JCheckBox snapshotOnOpenBox = new JCheckBox("Capture baseline on project open", config.snapshotOnOpen);
         JCheckBox snapshotOnSaveBox = new JCheckBox("Publish full snapshot on project save", config.snapshotOnSave);
         JCheckBox deltaOnCloseBox = new JCheckBox("Publish delta on project close", config.deltaOnClose);
@@ -43,6 +44,7 @@ public final class WorkbenchConnectionDialog {
         row = addRow(panel, constraints, row, "Workbench Server ID", serverIdField);
         row = addRow(panel, constraints, row, "Connect Timeout (sec)", connectTimeoutField);
         row = addRow(panel, constraints, row, "Read Timeout (sec)", readTimeoutField);
+        row = addRow(panel, constraints, row, "", insecureTlsBox);
         row = addRow(panel, constraints, row, "", snapshotOnOpenBox);
         row = addRow(panel, constraints, row, "", snapshotOnSaveBox);
         row = addRow(panel, constraints, row, "", deltaOnCloseBox);
@@ -51,7 +53,8 @@ public final class WorkbenchConnectionDialog {
                 + "Workbench Server ID must exactly match the server profile id inside TWC Workbench, "
                 + "such as <b>twc-2022x</b> or <b>twc-2024x</b>. "
                 + "This plugin now performs an exact sync from the currently open remote TWC project and resolves workspace/resource identifiers automatically. "
-                + "It publishes directly into TWC Workbench rather than writing local export files.</body></html>");
+                + "It publishes directly into TWC Workbench rather than writing local export files. "
+                + "If your internal Workbench HTTPS certificate is not trusted by the JVM inside Cameo, you can temporarily enable the TLS bypass option above.</body></html>");
         note.setVerticalAlignment(SwingConstants.TOP);
         constraints.gridx = 0;
         constraints.gridy = row;
@@ -80,6 +83,7 @@ public final class WorkbenchConnectionDialog {
                         snapshotOnOpenBox.isSelected(),
                         snapshotOnSaveBox.isSelected(),
                         deltaOnCloseBox.isSelected(),
+                        insecureTlsBox.isSelected(),
                         connectTimeout,
                         readTimeout,
                         serverIdField.getText()

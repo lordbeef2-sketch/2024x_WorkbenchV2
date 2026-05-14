@@ -13,6 +13,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+import java.security.cert.X509Certificate;
 
 public class WorkbenchIngestClient {
     private final PluginConfig config;
@@ -48,15 +56,52 @@ public class WorkbenchIngestClient {
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .build();
 
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(config.connectTimeoutSeconds))
-                .build();
+        HttpClient httpClient = createHttpClient();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         int statusCode = response.statusCode();
         if (statusCode < 200 || statusCode >= 300) {
             throw new IOException("Workbench ingest failed with status " + statusCode + ": " + response.body());
         }
         Application.getInstance().getGUILog().log("[INFO] Posted payload to Workbench ingest endpoint: " + path);
+    }
+
+    private HttpClient createHttpClient() throws IOException {
+        HttpClient.Builder builder = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(config.connectTimeoutSeconds));
+        if (config.insecureTls) {
+            try {
+                builder.sslContext(buildInsecureSslContext());
+                SSLParameters sslParameters = new SSLParameters();
+                sslParameters.setEndpointIdentificationAlgorithm("");
+                builder.sslParameters(sslParameters);
+            }
+            catch (GeneralSecurityException exception) {
+                throw new IOException("Failed to initialize insecure TLS mode for Workbench ingest.", exception);
+            }
+        }
+        return builder.build();
+    }
+
+    private SSLContext buildInsecureSslContext() throws GeneralSecurityException {
+        TrustManager[] trustManagers = new TrustManager[]{
+                new X509TrustManager() {
+                    @Override
+                    public void checkClientTrusted(X509Certificate[] chain, String authType) {
+                    }
+
+                    @Override
+                    public void checkServerTrusted(X509Certificate[] chain, String authType) {
+                    }
+
+                    @Override
+                    public X509Certificate[] getAcceptedIssuers() {
+                        return new X509Certificate[0];
+                    }
+                }
+        };
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, trustManagers, new SecureRandom());
+        return sslContext;
     }
 
     private String trimTrailingSlash(String value) {
