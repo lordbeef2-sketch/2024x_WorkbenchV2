@@ -7,7 +7,11 @@ from app.models.domain import (
     BranchDeltaIngestRequest,
     BranchSnapshotIngestRequest,
     CacheApiKeyScope,
+    CacheChildrenResponse,
     CacheElementEditRequest,
+    CacheElementGraphResponse,
+    CacheElementSearchResponse,
+    CacheTreeResponse,
     StereotypeElementSearchResponse,
 )
 from app.services.platform import ApplicationContainer
@@ -105,6 +109,62 @@ def cached_branch_snapshot(
     return snapshot
 
 
+@router.get(
+    "/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/tree",
+    response_model=CacheTreeResponse,
+)
+def cached_branch_tree(
+    server_id: str,
+    project_id: str,
+    branch_id: str,
+    modelId: str | None = Query(default=None),
+    rootId: str | None = Query(default=None),
+    depth: int | None = Query(default=None, ge=0, le=20),
+    includeOrphans: bool = Query(default=True),
+    preferred_username: str = Depends(require_cache_api_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.get_cached_branch_tree_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            model_id=modelId,
+            root_id=rootId,
+            depth=depth,
+            include_orphans=includeOrphans,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+
+
+@router.get(
+    "/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/nodes/{parent_id}/children",
+    response_model=CacheChildrenResponse,
+)
+def cached_branch_children(
+    server_id: str,
+    project_id: str,
+    branch_id: str,
+    parent_id: str,
+    modelId: str | None = Query(default=None),
+    preferred_username: str = Depends(require_cache_api_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.get_cached_branch_children_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            parent_id,
+            model_id=modelId,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+
+
 @router.get("/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models")
 def cached_models(
     server_id: str,
@@ -168,6 +228,44 @@ def cached_elements(
 
 
 @router.get(
+    "/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/search",
+    response_model=CacheElementSearchResponse,
+)
+def cached_element_search(
+    server_id: str,
+    project_id: str,
+    branch_id: str,
+    q: str | None = Query(default=None),
+    itemType: str | None = Query(default=None),
+    metaclass: str | None = Query(default=None),
+    stereotype: str | None = Query(default=None),
+    ownerId: str | None = Query(default=None),
+    includeDetails: bool = Query(default=False),
+    limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    preferred_username: str = Depends(require_cache_api_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.search_cached_branch_elements_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            query=q,
+            item_type=itemType,
+            metaclass=metaclass,
+            stereotype=stereotype,
+            owner_id=ownerId,
+            include_details=includeDetails,
+            limit=limit,
+            offset=offset,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+
+
+@router.get(
     "/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/by-stereotype",
     response_model=StereotypeElementSearchResponse,
 )
@@ -221,6 +319,60 @@ def cached_element(
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cached element not found")
     return record
+
+
+@router.get(
+    "/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/details",
+    response_model_exclude_none=True,
+)
+def cached_element_details(
+    server_id: str,
+    project_id: str,
+    branch_id: str,
+    element_id: str,
+    preferred_username: str = Depends(require_cache_api_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        item = container.platform.get_cached_branch_item_details_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cached element details not found")
+    return item
+
+
+@router.get(
+    "/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/graph",
+    response_model=CacheElementGraphResponse,
+)
+def cached_element_graph(
+    server_id: str,
+    project_id: str,
+    branch_id: str,
+    element_id: str,
+    preferred_username: str = Depends(require_cache_api_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        graph = container.platform.get_cached_branch_element_graph_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+    if graph is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cached element graph not found")
+    return graph
 
 
 @router.patch("/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}")

@@ -136,7 +136,7 @@ export interface TreeNode {
   node_type: string;
   path: string;
   children: TreeNode[];
-  metadata: Record<string, string>;
+  metadata: Record<string, unknown>;
 }
 
 export interface ItemReference {

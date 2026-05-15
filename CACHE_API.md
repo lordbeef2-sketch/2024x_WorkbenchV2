@@ -87,11 +87,16 @@ scoped to that user's cached visibility.
 
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/summary`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/snapshot`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/tree`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/nodes/{parent_id}/children`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models/{model_id}`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/search`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/by-stereotype`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/details`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/graph`
 
 ### Plugin/cache write endpoints
 
@@ -139,6 +144,65 @@ Use either a stereotype id or a stereotype name fragment in `stereotype`. Set
 `includeDetails=true` when you want full cached item details back instead of
 just the lightweight cached element records.
 
+### Reconstruct the containment tree
+
+```bash
+curl -H "Authorization: Bearer <key>" \
+  "https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/tree?depth=2&includeOrphans=true"
+```
+
+Useful query params:
+
+- `modelId`
+- `rootId`
+- `depth`
+- `includeOrphans`
+
+This returns a normalized tree built from the published snapshot's model roots,
+ownership, and contained-element links.
+
+### Search the reconstructed branch model
+
+```bash
+curl -H "Authorization: Bearer <key>" \
+  "https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/elements/search?q=system&itemType=package&includeDetails=true"
+```
+
+Supported filters:
+
+- `q`
+- `itemType`
+- `metaclass`
+- `stereotype`
+- `ownerId`
+- `includeDetails`
+
+### Read normalized details for one element
+
+```bash
+curl -H "Authorization: Bearer <key>" \
+  "https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/elements/<element_id>/details"
+```
+
+This returns the Workbench-presentable item structure instead of the raw cached
+element record.
+
+### Read the local graph around one element
+
+```bash
+curl -H "Authorization: Bearer <key>" \
+  "https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/elements/<element_id>/graph"
+```
+
+The graph response includes:
+
+- owner chain
+- contained elements
+- type/classifier references
+- related elements
+- incoming references
+- stereotype references
+
 ### Publish a snapshot
 
 ```bash
@@ -168,4 +232,7 @@ See:
 - [examples/24_workbench_cache_api_edit_element.py](/C:/sand/fresh/New%20Project/examples/24_workbench_cache_api_edit_element.py)
 - [examples/25_workbench_cache_api_ingest_snapshot.py](/C:/sand/fresh/New%20Project/examples/25_workbench_cache_api_ingest_snapshot.py)
 - [examples/26_workbench_cache_api_search_by_stereotype.py](/C:/sand/fresh/New%20Project/examples/26_workbench_cache_api_search_by_stereotype.py)
+- [examples/27_workbench_cache_api_tree.py](/C:/sand/fresh/New%20Project/examples/27_workbench_cache_api_tree.py)
+- [examples/28_workbench_cache_api_search_elements.py](/C:/sand/fresh/New%20Project/examples/28_workbench_cache_api_search_elements.py)
+- [examples/29_workbench_cache_api_element_graph.py](/C:/sand/fresh/New%20Project/examples/29_workbench_cache_api_element_graph.py)
 - [examples/workbench_cache_api_config.json](/C:/sand/fresh/New%20Project/examples/workbench_cache_api_config.json)

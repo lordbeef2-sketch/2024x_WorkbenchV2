@@ -19,11 +19,16 @@ Users can now create their own cache API keys from Workbench Settings for script
 - `GET /api/cache/servers/{server_id}/projects`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/summary`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/snapshot`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/tree`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/nodes/{parent_id}/children`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models/{model_id}`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/search`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/by-stereotype`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/details`
+- `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/graph`
 - `PATCH /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
 
 Use `Authorization: Bearer <api-key>` on those requests. The API key identity maps back to the Workbench user who created it, so cache reads stay scoped to that user's cached visibility instead of becoming a server-wide bypass.

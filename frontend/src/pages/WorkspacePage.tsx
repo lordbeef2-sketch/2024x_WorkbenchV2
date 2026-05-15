@@ -2,6 +2,9 @@ import { type SyntheticEvent, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   AppBar,
   Box,
@@ -30,6 +33,7 @@ import {
 } from "@mui/material";
 import Grid from "@mui/material/GridLegacy";
 import CompareArrowsRoundedIcon from "@mui/icons-material/CompareArrowsRounded";
+import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 import RefreshRoundedIcon from "@mui/icons-material/RefreshRounded";
 import SaveRoundedIcon from "@mui/icons-material/SaveRounded";
@@ -250,6 +254,90 @@ function hasMeaningfulValue(value: unknown): boolean {
     return Object.keys(value as Record<string, unknown>).length > 0;
   }
   return true;
+}
+
+interface InspectorRow {
+  key: string;
+  label: string;
+  value: string;
+}
+
+function mapToInspectorRows(source: Record<string, unknown>, lookup: Record<string, string>): InspectorRow[] {
+  return Object.entries(source)
+    .filter(([, value]) => hasMeaningfulValue(value))
+    .sort(([leftKey], [rightKey]) => compareDisplayValues(humanizeFieldLabel(leftKey), humanizeFieldLabel(rightKey)))
+    .map(([key, value]) => ({
+      key,
+      label: humanizeFieldLabel(key),
+      value: humanReadableValue(value, lookup),
+    }));
+}
+
+function payloadAttributes(item: ItemDetails): Record<string, unknown> {
+  const sourcePayload = item.source_payload ?? {};
+  return sourcePayload.attributes && typeof sourcePayload.attributes === "object" && !Array.isArray(sourcePayload.attributes)
+    ? (sourcePayload.attributes as Record<string, unknown>)
+    : {};
+}
+
+function payloadReferences(item: ItemDetails): Record<string, unknown> {
+  const sourcePayload = item.source_payload ?? {};
+  return sourcePayload.references && typeof sourcePayload.references === "object" && !Array.isArray(sourcePayload.references)
+    ? (sourcePayload.references as Record<string, unknown>)
+    : {};
+}
+
+function payloadExtraSections(item: ItemDetails): Array<[string, unknown]> {
+  const sourcePayload = item.source_payload ?? {};
+  return Object.entries(sourcePayload).filter(([key, value]) => {
+    if (
+      [
+        "element_id",
+        "model_id",
+        "local_id",
+        "owner_id",
+        "name",
+        "human_name",
+        "qualified_name",
+        "human_type",
+        "metaclass",
+        "documentation",
+        "owned_element_ids",
+        "applied_stereotype_ids",
+        "attributes",
+        "references",
+      ].includes(key)
+    ) {
+      return false;
+    }
+    return hasMeaningfulValue(value);
+  });
+}
+
+function identityRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
+  const sourcePayload = item.source_payload ?? {};
+  const fields: Record<string, unknown> = {
+    id: item.id,
+    type: item.item_type,
+    path: friendlyPath(item.path, lookup),
+    qualified_name: sourcePayload.qualified_name,
+    metaclass: sourcePayload.metaclass,
+    model_id: sourcePayload.model_id,
+    local_id: sourcePayload.local_id,
+    owner_id: sourcePayload.owner_id,
+    version: item.version,
+  };
+  return mapToInspectorRows(fields, lookup);
+}
+
+function overviewRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
+  const fields: Record<string, unknown> = {
+    name: item.name,
+    description: item.description,
+    stereotypes: item.stereotypes,
+    raw_types: item.raw_types,
+  };
+  return mapToInspectorRows(fields, lookup);
 }
 
 function defaultParameterValue(parameter: SwaggerParameterSpec): string {
@@ -805,6 +893,15 @@ export default function WorkspacePage() {
     ? displayEntityName(selectedWorkspaceItem.name, selectedWorkspaceItem.id, selectedWorkspaceItem.item_type, referenceNameById)
     : "";
   const selectedWorkspaceItemPath = selectedWorkspaceItem ? friendlyPath(selectedWorkspaceItem.path, referenceNameById) : "";
+  const selectedTreeNode = useMemo(
+    () => (selectedItemId ? flatNodes.find((node) => node.id === selectedItemId) ?? null : null),
+    [flatNodes, selectedItemId],
+  );
+  const selectedContainmentPath = selectedWorkspaceItemPath || (selectedTreeNode ? friendlyPath(selectedTreeNode.path, referenceNameById) : "");
+  const selectedContainmentSegments = selectedContainmentPath
+    .split(" / ")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
   const compareLeftName = compareLeft.trim() ? humanReadableReference(compareLeft, referenceNameById) : "";
   const compareRightName = compareRight.trim() ? humanReadableReference(compareRight, referenceNameById) : "";
   const compareLeftFieldValue = compareLeftDisplay || compareLeft;
@@ -1172,6 +1269,13 @@ export default function WorkspacePage() {
     setTab("models");
   };
 
+  const selectContainmentNode = (node: TreeNode, preferredTab: WorkspaceTab = "models") => {
+    setSelectedItemId(node.id);
+    if (!["models", "elements", "details"].includes(tab)) {
+      setTab(preferredTab);
+    }
+  };
+
   const openNode = (node: TreeNode) => {
     setSelectedItemId(node.id);
     setTab("details");
@@ -1181,6 +1285,42 @@ export default function WorkspacePage() {
     setSelectedItemId(itemId);
     setTab("details");
   };
+
+  const renderInspectorRows = (rows: InspectorRow[], emptyText: string) =>
+    rows.length ? (
+      <List dense disablePadding>
+        {rows.map((row) => (
+          <ListItemButton key={row.key} dense disableRipple sx={{ alignItems: "flex-start", cursor: "default" }}>
+            <ListItemText
+              primary={row.label}
+              secondary={
+                <Typography component="span" variant="body2" sx={{ whiteSpace: "pre-wrap", display: "block", mt: 0.25 }}>
+                  {row.value || "Not provided"}
+                </Typography>
+              }
+            />
+          </ListItemButton>
+        ))}
+      </List>
+    ) : (
+      <Typography color="text.secondary">{emptyText}</Typography>
+    );
+
+  const renderReferenceList = (references: ItemReference[], emptyText: string) =>
+    references.length ? (
+      <List dense disablePadding sx={{ maxHeight: 320, overflow: "auto" }}>
+        {references.map((reference) => (
+          <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
+            <ListItemText
+              primary={itemReferenceDisplayName(reference, referenceNameById)}
+              secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
+            />
+          </ListItemButton>
+        ))}
+      </List>
+    ) : (
+      <Typography color="text.secondary">{emptyText}</Typography>
+    );
 
   const pickCompareSide = (side: "left" | "right", itemId: string) => {
     const readableLabel = humanReadableReference(itemId, referenceNameById);
@@ -1458,17 +1598,31 @@ export default function WorkspacePage() {
           <Grid item xs={12} lg={5}>
             <Paper sx={{ p: 3, borderRadius: 2, height: "100%" }}>
               <Stack spacing={2}>
-                <Typography variant="h6">Full Branch Tree</Typography>
+                <Typography variant="h6">Containment Tree</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  This is the full top-down tree from the published branch snapshot. Select any element, table, package, or diagram to inspect its properties on the right.
+                  Walk the published branch snapshot the same way you would browse the containment tree in Cameo. Expand packages and elements on the left, then inspect the selected node on the right.
                 </Typography>
+                {selectedContainmentSegments.length ? (
+                  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+                      {selectedContainmentSegments.map((segment, index) => (
+                        <Chip
+                          key={`${segment}-${index}`}
+                          label={segment}
+                          size="small"
+                          variant={index === selectedContainmentSegments.length - 1 ? "filled" : "outlined"}
+                        />
+                      ))}
+                    </Stack>
+                  </Paper>
+                ) : null}
                 {treeNodes.length ? (
                   <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, maxHeight: 860, overflow: "auto" }}>
                     <ProjectTree
                       nodes={treeNodes}
                       selectedId={selectedItemId}
                       filter={treeFilter}
-                      onSelect={(node) => setSelectedItemId(node.id)}
+                      onSelect={(node) => selectContainmentNode(node, "models")}
                     />
                   </Paper>
                 ) : (
@@ -1481,6 +1635,14 @@ export default function WorkspacePage() {
             {selectedWorkspaceItem ? (
               <Paper sx={{ p: 3, borderRadius: 2 }}>
                 <Stack spacing={2}>
+                  {(() => {
+                    const quickIdentity = identityRows(selectedWorkspaceItem, referenceNameById);
+                    const quickOverview = overviewRows(selectedWorkspaceItem, referenceNameById);
+                    const quickAttributes = mapToInspectorRows(payloadAttributes(selectedWorkspaceItem), referenceNameById);
+                    const quickMetadata = mapToInspectorRows(selectedWorkspaceItem.metadata, referenceNameById);
+                    const quickReferences = mapToInspectorRows(payloadReferences(selectedWorkspaceItem), referenceNameById);
+                    return (
+                      <>
                   <Stack spacing={0.75}>
                     <Typography variant="h6">{selectedWorkspaceItemName}</Typography>
                     <Typography variant="body2" color="text.secondary">
@@ -1494,54 +1656,64 @@ export default function WorkspacePage() {
                   </Stack>
                   <Grid container spacing={2}>
                     <Grid item xs={12} md={6}>
-                      <TextField label="Name" value={selectedWorkspaceItem.name} fullWidth InputProps={{ readOnly: true }} />
+                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                        <Stack spacing={1}>
+                          <Typography variant="subtitle2">Identity</Typography>
+                          {renderInspectorRows(quickIdentity, "No identifying fields were published for this item.")}
+                        </Stack>
+                      </Paper>
                     </Grid>
                     <Grid item xs={12} md={6}>
-                      <TextField label="Type" value={humanizeFieldLabel(selectedWorkspaceItem.item_type)} fullWidth InputProps={{ readOnly: true }} />
+                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                        <Stack spacing={1}>
+                          <Typography variant="subtitle2">Overview</Typography>
+                          {renderInspectorRows(quickOverview, "No overview fields were published for this item.")}
+                        </Stack>
+                      </Paper>
                     </Grid>
                     <Grid item xs={12}>
-                      <TextField label="Path" value={selectedWorkspaceItemPath} fullWidth InputProps={{ readOnly: true }} />
+                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                        <Stack spacing={1}>
+                          <Typography variant="subtitle2">Properties</Typography>
+                          {renderInspectorRows(
+                            quickAttributes.length ? quickAttributes : quickMetadata,
+                            "No presentable properties were published for this item.",
+                          )}
+                        </Stack>
+                      </Paper>
                     </Grid>
-                    <Grid item xs={12}>
-                      <TextField
-                        label="Description"
-                        value={selectedWorkspaceItem.description}
-                        fullWidth
-                        multiline
-                        minRows={2}
-                        InputProps={{ readOnly: true }}
-                      />
+                    <Grid item xs={12} md={6}>
+                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                        <Stack spacing={1}>
+                          <Typography variant="subtitle2">Containment</Typography>
+                          {renderReferenceList(
+                            selectedWorkspaceItem.contained_elements,
+                            "No contained elements were published for this item.",
+                          )}
+                        </Stack>
+                      </Paper>
                     </Grid>
-                    <Grid item xs={12}>
-                      <TextField
-                        label="Documentation"
-                        value={selectedWorkspaceItem.documentation_markdown}
-                        fullWidth
-                        multiline
-                        minRows={4}
-                        InputProps={{ readOnly: true }}
-                      />
+                    <Grid item xs={12} md={6}>
+                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                        <Stack spacing={1}>
+                          <Typography variant="subtitle2">Relationships</Typography>
+                          {renderReferenceList(
+                            [...selectedWorkspaceItem.type_references, ...selectedWorkspaceItem.related_items],
+                            "No related model references were published for this item.",
+                          )}
+                        </Stack>
+                      </Paper>
                     </Grid>
-                    <Grid item xs={12}>
-                      <TextField
-                        label="Properties"
-                        value={humanReadableValue(
-                          {
-                            metadata: selectedWorkspaceItem.metadata,
-                            raw_types: selectedWorkspaceItem.raw_types,
-                            stereotypes: selectedWorkspaceItem.stereotypes,
-                            owner: selectedWorkspaceItem.owner,
-                            contained_elements: selectedWorkspaceItem.contained_elements,
-                            related_items: selectedWorkspaceItem.related_items,
-                          },
-                          referenceNameById,
-                        )}
-                        fullWidth
-                        multiline
-                        minRows={12}
-                        InputProps={{ readOnly: true }}
-                      />
-                    </Grid>
+                    {quickReferences.length ? (
+                      <Grid item xs={12}>
+                        <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                          <Stack spacing={1}>
+                            <Typography variant="subtitle2">Reference Buckets</Typography>
+                            {renderInspectorRows(quickReferences, "No reference buckets were published for this item.")}
+                          </Stack>
+                        </Paper>
+                      </Grid>
+                    ) : null}
                   </Grid>
                   <Stack direction="row" spacing={1}>
                     <Button size="small" variant="contained" onClick={() => setTab("details")}>
@@ -1554,6 +1726,9 @@ export default function WorkspacePage() {
                       Compare Right
                     </Button>
                   </Stack>
+                      </>
+                    );
+                  })()}
                 </Stack>
               </Paper>
             ) : (
@@ -1692,7 +1867,7 @@ export default function WorkspacePage() {
                 </Typography>
                 {treeNodes.length ? (
                   <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, maxHeight: 720, overflow: "auto" }}>
-                    <ProjectTree nodes={treeNodes} selectedId={selectedItemId} filter="" onSelect={openNode} />
+                    <ProjectTree nodes={treeNodes} selectedId={selectedItemId} filter="" onSelect={(node) => selectContainmentNode(node, "elements")} />
                   </Paper>
                 ) : (
                   <Typography color="text.secondary">No published model tree is available for this branch yet.</Typography>
@@ -1747,37 +1922,12 @@ export default function WorkspacePage() {
     }
 
     const sourcePayload = itemDraft.source_payload ?? {};
-    const payloadAttributes =
-      sourcePayload.attributes && typeof sourcePayload.attributes === "object" && !Array.isArray(sourcePayload.attributes)
-        ? (sourcePayload.attributes as Record<string, unknown>)
-        : {};
-    const payloadReferences =
-      sourcePayload.references && typeof sourcePayload.references === "object" && !Array.isArray(sourcePayload.references)
-        ? (sourcePayload.references as Record<string, unknown>)
-        : {};
-    const payloadSections = Object.entries(sourcePayload).filter(([key, value]) => {
-      if (
-        [
-          "element_id",
-          "model_id",
-          "local_id",
-          "owner_id",
-          "name",
-          "human_name",
-          "qualified_name",
-          "human_type",
-          "metaclass",
-          "documentation",
-          "owned_element_ids",
-          "applied_stereotype_ids",
-          "attributes",
-          "references",
-        ].includes(key)
-      ) {
-        return false;
-      }
-      return hasMeaningfulValue(value);
-    });
+    const attributeRows = mapToInspectorRows(payloadAttributes(itemDraft), referenceNameById);
+    const metadataRows = mapToInspectorRows(itemDraft.metadata, referenceNameById);
+    const referenceRows = mapToInspectorRows(payloadReferences(itemDraft), referenceNameById);
+    const extraSections = payloadExtraSections(itemDraft);
+    const identitySectionRows = identityRows(itemDraft, referenceNameById);
+    const overviewSectionRows = overviewRows(itemDraft, referenceNameById);
 
     return (
         <Stack spacing={2}>
@@ -1822,12 +1972,7 @@ export default function WorkspacePage() {
           <Grid item xs={12} md={7}>
             <Paper sx={{ p: 3, borderRadius: 2 }}>
               <Stack spacing={2}>
-                <TextField
-                  label="Path"
-                  value={friendlyPath(itemDraft.path, referenceNameById)}
-                  disabled
-                  fullWidth
-                />
+                <TextField label="Path" value={friendlyPath(itemDraft.path, referenceNameById)} disabled fullWidth />
                 <TextField
                   label="Name"
                   value={itemDraft.name}
@@ -1844,77 +1989,71 @@ export default function WorkspacePage() {
                   multiline
                   minRows={3}
                 />
-                <TextField
-                  label="Documentation"
-                  value={itemDraft.documentation_markdown}
-                  disabled
-                  helperText="Generated from the RealSwagger element/model payload."
-                  fullWidth
-                  multiline
-                  minRows={6}
-                />
-                {Object.entries(payloadAttributes).length ? (
-                  <TextField
-                    label="Element Properties"
-                    value={humanReadableValue(payloadAttributes, referenceNameById)}
-                    disabled
-                    helperText="Structured properties captured for this selected model item."
-                    fullWidth
-                    multiline
-                    minRows={8}
-                  />
+                <Accordion defaultExpanded disableGutters>
+                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                    <Typography variant="subtitle2">Overview</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>{renderInspectorRows(overviewSectionRows, "No overview fields were published for this item.")}</AccordionDetails>
+                </Accordion>
+                {hasMeaningfulValue(itemDraft.documentation_markdown) ? (
+                  <Accordion defaultExpanded disableGutters>
+                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                      <Typography variant="subtitle2">Documentation</Typography>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                        {itemDraft.documentation_markdown}
+                      </Typography>
+                    </AccordionDetails>
+                  </Accordion>
                 ) : null}
-                {Object.entries(payloadReferences).length ? (
-                  <TextField
-                    label="Reference Map"
-                    value={humanReadableValue(payloadReferences, referenceNameById)}
-                    disabled
-                    helperText="Resolved reference buckets captured for this selected model item."
-                    fullWidth
-                    multiline
-                    minRows={6}
-                  />
+                <Accordion defaultExpanded disableGutters>
+                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                    <Typography variant="subtitle2">Identity and Placement</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>{renderInspectorRows(identitySectionRows, "No identifying fields were published for this item.")}</AccordionDetails>
+                </Accordion>
+                <Accordion defaultExpanded disableGutters>
+                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                    <Typography variant="subtitle2">Element Properties</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    {renderInspectorRows(
+                      attributeRows.length ? attributeRows : metadataRows,
+                      "No structured properties were published for this item.",
+                    )}
+                  </AccordionDetails>
+                </Accordion>
+                {referenceRows.length ? (
+                  <Accordion disableGutters>
+                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                      <Typography variant="subtitle2">Reference Map</Typography>
+                    </AccordionSummary>
+                    <AccordionDetails>{renderInspectorRows(referenceRows, "No reference map was published for this item.")}</AccordionDetails>
+                  </Accordion>
                 ) : null}
-                {hasMeaningfulValue(sourcePayload.owned_element_ids) ? (
-                  <TextField
-                    label="Owned Element IDs"
-                    value={humanReadableValue(sourcePayload.owned_element_ids, referenceNameById)}
-                    disabled
-                    fullWidth
-                    multiline
-                    minRows={4}
-                  />
-                ) : null}
-                {hasMeaningfulValue(sourcePayload.applied_stereotype_ids) ? (
-                  <TextField
-                    label="Applied Stereotype IDs"
-                    value={humanReadableValue(sourcePayload.applied_stereotype_ids, referenceNameById)}
-                    disabled
-                    fullWidth
-                    multiline
-                    minRows={3}
-                  />
-                ) : null}
-                {payloadSections.map(([key, value]) => (
-                  <TextField
-                    key={key}
-                    label={humanizeFieldLabel(key)}
-                    value={humanReadableValue(value, referenceNameById)}
-                    disabled
-                    fullWidth
-                    multiline
-                    minRows={4}
-                  />
+                {extraSections.map(([key, value]) => (
+                  <Accordion key={key} disableGutters>
+                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                      <Typography variant="subtitle2">{humanizeFieldLabel(key)}</Typography>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                        {humanReadableValue(value, referenceNameById)}
+                      </Typography>
+                    </AccordionDetails>
+                  </Accordion>
                 ))}
-                <TextField
-                  label="Full Source Payload"
-                  value={humanReadableValue(sourcePayload, referenceNameById)}
-                  disabled
-                  helperText="Read-only viewer for the full cached Teamwork Cloud payload behind this selected model item."
-                  fullWidth
-                  multiline
-                  minRows={12}
-                />
+                <Accordion disableGutters>
+                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                    <Typography variant="subtitle2">Full Source Payload</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
+                      {humanReadableValue(sourcePayload, referenceNameById)}
+                    </Typography>
+                  </AccordionDetails>
+                </Accordion>
               </Stack>
             </Paper>
           </Grid>
@@ -1971,47 +2110,17 @@ export default function WorkspacePage() {
                 ) : null}
                 <Divider />
                 <Typography variant="h6">Properties</Typography>
-                {Object.entries(itemDraft.metadata).length ? (
-                  <List dense disablePadding>
-                    {Object.entries(itemDraft.metadata).map(([key, value]) => (
-                      <ListItemButton key={key} dense>
-                        <ListItemText primary={humanizeFieldLabel(key)} secondary={humanReadableValue(value, referenceNameById)} />
-                      </ListItemButton>
-                    ))}
-                  </List>
-                ) : (
-                  <Typography color="text.secondary">No metadata returned for this item.</Typography>
+                {renderInspectorRows(
+                  attributeRows.length ? attributeRows : metadataRows,
+                  "No presentable properties were published for this item.",
                 )}
-                <Divider />
                 <Divider />
                 <Typography variant="h6">Contained Elements</Typography>
-                {itemDraft.contained_elements.length ? (
-                  <List dense disablePadding sx={{ maxHeight: 280, overflow: "auto" }}>
-                    {itemDraft.contained_elements.map((reference) => (
-                      <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
-                        <ListItemText
-                          primary={itemReferenceDisplayName(reference, referenceNameById)}
-                          secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
-                        />
-                      </ListItemButton>
-                    ))}
-                  </List>
-                ) : (
-                  <Typography color="text.secondary">No contained elements were returned for this item.</Typography>
-                )}
+                {renderReferenceList(itemDraft.contained_elements, "No contained elements were returned for this item.")}
                 <Divider />
                 <Typography variant="h6">Related Elements</Typography>
                 {itemDraft.related_items.length ? (
-                  <List dense disablePadding sx={{ maxHeight: 280, overflow: "auto" }}>
-                    {itemDraft.related_items.map((reference) => (
-                      <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
-                        <ListItemText
-                          primary={itemReferenceDisplayName(reference, referenceNameById)}
-                          secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
-                        />
-                      </ListItemButton>
-                    ))}
-                  </List>
+                  renderReferenceList(itemDraft.related_items, "No related elements were returned for this item.")
                 ) : itemDraft.relationships.length ? (
                   <List dense disablePadding>
                     {itemDraft.relationships.map((relationship, index) => (
@@ -3030,11 +3139,23 @@ export default function WorkspacePage() {
                   <Typography variant="caption" color="text.secondary">
                     {humanizeFieldLabel(selectedWorkspaceItem.item_type)}
                   </Typography>
+                  {selectedContainmentSegments.length ? (
+                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+                      {selectedContainmentSegments.map((segment, index) => (
+                        <Chip
+                          key={`${segment}-${index}`}
+                          label={segment}
+                          size="small"
+                          variant={index === selectedContainmentSegments.length - 1 ? "filled" : "outlined"}
+                        />
+                      ))}
+                    </Stack>
+                  ) : null}
                 </Stack>
               </Paper>
             ) : null}
             <Divider />
-            <ProjectTree nodes={treeNodes} selectedId={selectedItemId} filter={treeFilter} onSelect={openNode} />
+            <ProjectTree nodes={treeNodes} selectedId={selectedItemId} filter={treeFilter} onSelect={(node) => selectContainmentNode(node, "models")} />
           </Stack>
         </Paper>
         <Stack spacing={2} component="main">

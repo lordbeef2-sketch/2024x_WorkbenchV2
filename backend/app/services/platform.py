@@ -38,7 +38,10 @@ from app.models.domain import (
     CacheApiKeyRecord,
     CacheApiKeyScope,
     CacheApiKeySummary,
+    CacheChildrenResponse,
     CacheElementEditRequest,
+    CacheElementGraphResponse,
+    CacheElementSearchResponse,
     CacheApiManifest,
     CacheApiTokenIdentity,
     CacheIngestTokenRotateResponse,
@@ -59,6 +62,7 @@ from app.models.domain import (
     ElementDiscoveryResult,
     ExportRequest,
     ItemDetails,
+    ItemReference,
     JobRecord,
     JobStatus,
     JobType,
@@ -94,6 +98,7 @@ from app.models.domain import (
     UserServerState,
     UserContext,
     WebhookRegistrationStatus,
+    CacheTreeResponse,
     StereotypeElementSearchResponse,
     utcnow,
 )
@@ -1283,6 +1288,383 @@ class PlatformService:
             details=details,
         )
 
+    def _visible_cached_elements_for_user(
+        self,
+        user_id: str,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        *,
+        model_id: str | None = None,
+    ) -> list[CachedElementRecord]:
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        branch_total = max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1)
+        if self._is_plugin_managed_summary(summary):
+            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            if branch_access is None or not branch_access.accessible:
+                return []
+            return self.repo.list_cached_elements(
+                server_id,
+                project_id,
+                branch_id,
+                model_id=model_id,
+                limit=branch_total,
+                offset=0,
+            ).items
+
+        visible_models = {
+            permission.model_id
+            for permission in self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id).values()
+            if permission.accessible and not permission.restricted
+        }
+        if model_id is not None and model_id not in visible_models:
+            return []
+        raw = self.repo.list_cached_elements(
+            server_id,
+            project_id,
+            branch_id,
+            model_id=model_id,
+            limit=branch_total,
+            offset=0,
+        ).items
+        return [item for item in raw if item.model_id in visible_models]
+
+    def get_cached_branch_tree_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        *,
+        model_id: str | None = None,
+        root_id: str | None = None,
+        depth: int | None = None,
+        include_orphans: bool = True,
+    ) -> CacheTreeResponse:
+        self._require_server(server_id, include_disabled=True)
+        user_id = self._user_key(preferred_username)
+        visible_models = self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id)
+        if model_id is not None:
+            visible_models = [model for model in visible_models if model.model_id == model_id]
+
+        nodes = [
+            self._tree_nodes_for_model(
+                project_id,
+                branch_id,
+                model,
+                {
+                    record.element_id: record
+                    for record in self._visible_cached_elements_for_user(
+                        user_id,
+                        server_id,
+                        project_id,
+                        branch_id,
+                        model_id=model.model_id,
+                    )
+                },
+                root_id=root_id,
+                depth=depth,
+                include_orphans=include_orphans,
+            )
+            for model in visible_models
+        ]
+
+        if root_id is not None:
+            nodes = [node for node in nodes if node.children or node.id == root_id or any(child.id == root_id for child in node.children)]
+
+        return CacheTreeResponse(
+            server_id=server_id,
+            project_id=project_id,
+            branch_id=branch_id,
+            model_id=model_id,
+            root_id=root_id,
+            depth=depth,
+            include_orphans=include_orphans,
+            total_nodes=self._count_tree_nodes(nodes),
+            nodes=nodes,
+        )
+
+    def get_cached_branch_children_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        parent_id: str,
+        *,
+        model_id: str | None = None,
+    ) -> CacheChildrenResponse:
+        self._require_server(server_id, include_disabled=True)
+        user_id = self._user_key(preferred_username)
+        if model_id:
+            visible_models = [model for model in self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id) if model.model_id == model_id]
+        else:
+            visible_models = self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id)
+
+        for model in visible_models:
+            records = {
+                record.element_id: record
+                for record in self._visible_cached_elements_for_user(
+                    user_id,
+                    server_id,
+                    project_id,
+                    branch_id,
+                    model_id=model.model_id,
+                )
+            }
+            if parent_id == model.model_id:
+                parent_to_children, root_ids = self._tree_indexes_for_model(model, records)
+                child_ids = sorted(root_ids, key=lambda element_id: self._cached_element_sort_key(records.get(element_id), element_id))
+                items = [
+                    self._build_tree_node_from_record(
+                        project_id=project_id,
+                        branch_id=branch_id,
+                        model_id=model.model_id,
+                        model_records=records,
+                        parent_to_children=parent_to_children,
+                        element_id=child_id,
+                        parent_path=f"{project_id}/{branch_id}/{model.name or model.model_id}",
+                        trail=(model.model_id,),
+                        covered=set(),
+                        depth=0,
+                    )
+                    for child_id in child_ids
+                ]
+                return CacheChildrenResponse(
+                    server_id=server_id,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    parent_id=parent_id,
+                    model_id=model.model_id,
+                    total_children=len(items),
+                    items=items,
+                )
+
+            parent_record = records.get(parent_id)
+            if parent_record is None:
+                continue
+            parent_to_children, _ = self._tree_indexes_for_model(model, records)
+            parent_path = str(parent_record.payload.get("qualified_name") or parent_record.path or parent_record.name or parent_record.element_id)
+            child_ids = sorted(
+                parent_to_children.get(parent_id, []),
+                key=lambda element_id: self._cached_element_sort_key(records.get(element_id), element_id),
+            )
+            items = [
+                self._build_tree_node_from_record(
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    model_id=model.model_id,
+                    model_records=records,
+                    parent_to_children=parent_to_children,
+                    element_id=child_id,
+                    parent_path=parent_path,
+                    trail=(model.model_id, parent_id),
+                    covered=set(),
+                    depth=0,
+                )
+                for child_id in child_ids
+            ]
+            return CacheChildrenResponse(
+                server_id=server_id,
+                project_id=project_id,
+                branch_id=branch_id,
+                parent_id=parent_id,
+                model_id=model.model_id,
+                total_children=len(items),
+                items=items,
+            )
+
+        return CacheChildrenResponse(
+            server_id=server_id,
+            project_id=project_id,
+            branch_id=branch_id,
+            parent_id=parent_id,
+            model_id=model_id,
+            total_children=0,
+            items=[],
+        )
+
+    def get_cached_branch_item_details_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        element_id: str,
+    ) -> ItemDetails | None:
+        self._require_server(server_id, include_disabled=True)
+        return self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element_id)
+
+    def search_cached_branch_elements_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        *,
+        query: str | None = None,
+        item_type: str | None = None,
+        metaclass: str | None = None,
+        stereotype: str | None = None,
+        owner_id: str | None = None,
+        include_details: bool = False,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> CacheElementSearchResponse:
+        self._require_server(server_id, include_disabled=True)
+        user_id = self._user_key(preferred_username)
+        visible_elements = self._visible_cached_elements_for_user(user_id, server_id, project_id, branch_id)
+        visible_by_id = {item.element_id: item for item in visible_elements}
+        query_normalized = normalize_lookup_key(query or "")
+        item_type_normalized = normalize_lookup_key(item_type or "")
+        metaclass_normalized = normalize_lookup_key(metaclass or "")
+        stereotype_normalized = normalize_lookup_key(stereotype or "")
+        owner_id_normalized = normalize_lookup_key(owner_id or "")
+
+        matched_items: list[CachedElementRecord] = []
+        for element in visible_elements:
+            payload = element.payload or {}
+            if owner_id_normalized and normalize_lookup_key(str(payload.get("owner_id") or "")) != owner_id_normalized:
+                continue
+            if item_type_normalized and item_type_normalized not in normalize_lookup_key(element.item_type or ""):
+                continue
+            if metaclass_normalized and metaclass_normalized not in normalize_lookup_key(str(payload.get("metaclass") or "")):
+                continue
+            if stereotype_normalized:
+                applied_ids = [str(value).strip() for value in payload.get("applied_stereotype_ids") or [] if str(value).strip()]
+                if not applied_ids:
+                    continue
+                stereotype_match = False
+                for stereotype_id in applied_ids:
+                    stereotype_record = visible_by_id.get(stereotype_id)
+                    stereotype_name = stereotype_record.name if stereotype_record else ""
+                    if normalize_lookup_key(stereotype_id) == stereotype_normalized:
+                        stereotype_match = True
+                        break
+                    if stereotype_name and stereotype_normalized in normalize_lookup_key(stereotype_name):
+                        stereotype_match = True
+                        break
+                if not stereotype_match:
+                    continue
+            if query_normalized:
+                search_fields = [
+                    element.name,
+                    element.path,
+                    element.item_type,
+                    element.element_id,
+                    str(payload.get("qualified_name") or ""),
+                    str(payload.get("documentation") or ""),
+                    str(payload.get("metaclass") or ""),
+                ]
+                haystack = " ".join(value for value in search_fields if value)
+                if query_normalized not in normalize_lookup_key(haystack):
+                    continue
+            matched_items.append(element)
+
+        matched_items.sort(key=lambda item: self._cached_element_sort_key(item, item.element_id))
+        paged_items = matched_items[offset : offset + limit]
+        details: list[ItemDetails] = []
+        if include_details:
+            details = [
+                detail
+                for element in paged_items
+                if (detail := self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element.element_id)) is not None
+            ]
+
+        return CacheElementSearchResponse(
+            query=query or "",
+            item_type=item_type,
+            metaclass=metaclass,
+            stereotype=stereotype,
+            owner_id=owner_id,
+            include_details=include_details,
+            total=len(matched_items),
+            items=paged_items,
+            details=details,
+        )
+
+    def _item_reference_from_cached_record(self, record: CachedElementRecord, relationship_type: str) -> ItemReference:
+        return ItemReference(
+            id=record.element_id,
+            name=record.name or record.element_id,
+            item_type=record.item_type or "item",
+            relationship_type=relationship_type,
+            path=record.path,
+        )
+
+    def get_cached_branch_element_graph_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        element_id: str,
+    ) -> CacheElementGraphResponse | None:
+        self._require_server(server_id, include_disabled=True)
+        item = self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element_id)
+        if item is None:
+            return None
+
+        user_id = self._user_key(preferred_username)
+        visible_elements = self._visible_cached_elements_for_user(user_id, server_id, project_id, branch_id)
+        visible_by_id = {record.element_id: record for record in visible_elements}
+        current_record = visible_by_id.get(element_id)
+
+        owner_chain: list[ItemReference] = []
+        seen_owner_ids: set[str] = set()
+        owner_id = str(current_record.payload.get("owner_id") or "").strip() if current_record else ""
+        while owner_id and owner_id not in seen_owner_ids:
+            seen_owner_ids.add(owner_id)
+            owner_record = visible_by_id.get(owner_id)
+            if owner_record is None:
+                break
+            owner_chain.insert(0, self._item_reference_from_cached_record(owner_record, "owner"))
+            owner_id = str(owner_record.payload.get("owner_id") or "").strip()
+
+        incoming: list[ItemReference] = []
+        incoming_seen: set[tuple[str, str]] = set()
+        for candidate in visible_elements:
+            if candidate.element_id == element_id:
+                continue
+            for field, values in (candidate.payload.get("references") or {}).items():
+                if any(str(value).strip() == element_id for value in values or []):
+                    key = (candidate.element_id, field)
+                    if key in incoming_seen:
+                        continue
+                    incoming_seen.add(key)
+                    incoming.append(self._item_reference_from_cached_record(candidate, field))
+
+        stereotype_refs: list[ItemReference] = []
+        for stereotype_id in [str(value).strip() for value in (current_record.payload.get("applied_stereotype_ids") or []) if str(value).strip()] if current_record else []:
+            stereotype_record = visible_by_id.get(stereotype_id)
+            if stereotype_record is not None:
+                stereotype_refs.append(self._item_reference_from_cached_record(stereotype_record, "stereotype"))
+            else:
+                stereotype_refs.append(
+                    ItemReference(
+                        id=stereotype_id,
+                        name=stereotype_id,
+                        item_type="stereotype",
+                        relationship_type="stereotype",
+                        path="",
+                    )
+                )
+
+        return CacheElementGraphResponse(
+            server_id=server_id,
+            project_id=project_id,
+            branch_id=branch_id,
+            element_id=element_id,
+            model_id=current_record.model_id if current_record else None,
+            item=item,
+            owner_chain=owner_chain,
+            contained_elements=item.contained_elements,
+            type_references=item.type_references,
+            related_items=item.related_items,
+            incoming_references=incoming,
+            stereotypes=stereotype_refs,
+        )
+
     def get_cached_branch_element_for_user(
         self,
         server_id: str,
@@ -1997,93 +2379,287 @@ class PlatformService:
         models = self._accessible_cached_models(session, project_id, branch_id)
         if not models:
             return None
-
-        records_by_model = {
-            model.model_id: {
+        nodes: list[TreeNode] = []
+        for model in models:
+            model_records = {
                 record.element_id: record
-                for record in self.repo.list_cached_elements(
+                for record in self._visible_cached_elements_for_user(
+                    self._user_key(session.user.preferred_username),
                     session.server.id,
                     project_id,
                     branch_id,
                     model_id=model.model_id,
-                    limit=max(1, model.element_count or 1),
-                    offset=0,
-                ).items
-            }
-            for model in models
-        }
-
-        nodes: list[TreeNode] = []
-        for model in models:
-            model_name = model.name or model.model_id
-            model_path = f"{project_id}/{branch_id}/{model_name}"
-            model_records = records_by_model.get(model.model_id, {})
-
-            def build_element_node(element_id: str, parent_path: str, trail: tuple[str, ...]) -> TreeNode:
-                record = model_records.get(element_id)
-                if record is None:
-                    return TreeNode(
-                        id=element_id,
-                        label=element_id,
-                        node_type="element",
-                        path=f"{parent_path}/{element_id}",
-                        children=[],
-                        metadata={
-                            "project_id": project_id,
-                            "branch_id": branch_id,
-                            "model_id": model.model_id,
-                        },
-                    )
-
-                node_name = record.name or record.element_id
-                node_path = f"{parent_path}/{node_name}"
-                if element_id in trail:
-                    return TreeNode(
-                        id=record.element_id,
-                        label=node_name,
-                        node_type=record.item_type,
-                        path=node_path,
-                        children=[],
-                        metadata={
-                            "project_id": project_id,
-                            "branch_id": branch_id,
-                            "model_id": model.model_id,
-                            "cycle_detected": "true",
-                        },
-                    )
-
-                child_ids = [str(value) for value in record.payload.get("owned_element_ids") or [] if str(value)]
-                return TreeNode(
-                    id=record.element_id,
-                    label=node_name,
-                    node_type=record.item_type,
-                    path=node_path,
-                    children=[build_element_node(child_id, node_path, (*trail, element_id)) for child_id in child_ids],
-                    metadata={
-                        "project_id": project_id,
-                        "branch_id": branch_id,
-                        "model_id": model.model_id,
-                    },
                 )
-
-            children: list[TreeNode] = []
-            for root_id in model.root_ids:
-                children.append(build_element_node(root_id, model_path, (model.model_id,)))
+            }
             nodes.append(
-                TreeNode(
-                    id=model.model_id,
-                    label=model_name,
-                    node_type="model",
-                    path=model_path,
-                    children=children,
-                    metadata={
-                        "project_id": project_id,
-                        "branch_id": branch_id,
-                        "model_id": model.model_id,
-                    },
+                self._tree_nodes_for_model(
+                    project_id,
+                    branch_id,
+                    model,
+                    model_records,
                 )
             )
         return nodes
+
+    def _cached_element_sort_key(self, record: CachedElementRecord | None, fallback_id: str = "") -> tuple[int, str]:
+        if record is None:
+            return (99, fallback_id.lower())
+        item_type = str(record.item_type or record.payload.get("metaclass") or "element").strip().lower()
+        display_name = str(record.name or record.payload.get("qualified_name") or record.element_id).strip().lower()
+        if item_type in {"package", "model"}:
+            rank = 0
+        elif "diagram" in item_type or item_type in {"table", "matrix", "chart"}:
+            rank = 1
+        elif item_type in {"block", "class", "requirement", "use case", "activity"}:
+            rank = 2
+        else:
+            rank = 3
+        return (rank, display_name or record.element_id.lower())
+
+    def _tree_indexes_for_model(
+        self,
+        model: CachedModelRecord,
+        model_records: dict[str, CachedElementRecord],
+    ) -> tuple[dict[str, list[str]], list[str]]:
+        parent_to_children: dict[str, list[str]] = {}
+
+        def append_child(parent_id: str, child_id: str) -> None:
+            if not parent_id or not child_id or child_id not in model_records:
+                return
+            bucket = parent_to_children.setdefault(parent_id, [])
+            if child_id not in bucket:
+                bucket.append(child_id)
+
+        for record in model_records.values():
+            owner_id = str(record.payload.get("owner_id") or "").strip()
+            if owner_id:
+                append_child(owner_id, record.element_id)
+            for child_id in [str(value).strip() for value in record.payload.get("owned_element_ids") or [] if str(value).strip()]:
+                append_child(record.element_id, child_id)
+
+        root_ids: list[str] = []
+        for root_id in model.root_ids:
+            root_text = str(root_id).strip()
+            if root_text and root_text in model_records and root_text not in root_ids:
+                root_ids.append(root_text)
+
+        detached_root_ids = [
+            element_id
+            for element_id, record in model_records.items()
+            if str(record.payload.get("owner_id") or "").strip() not in model_records and element_id not in root_ids
+        ]
+        root_ids.extend(
+            sorted(
+                detached_root_ids,
+                key=lambda element_id: self._cached_element_sort_key(model_records.get(element_id), element_id),
+            )
+        )
+        return parent_to_children, root_ids
+
+    def _build_tree_node_from_record(
+        self,
+        *,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        model_records: dict[str, CachedElementRecord],
+        parent_to_children: dict[str, list[str]],
+        element_id: str,
+        parent_path: str,
+        trail: tuple[str, ...],
+        covered: set[str],
+        depth: int | None = None,
+        current_depth: int = 0,
+    ) -> TreeNode:
+        record = model_records.get(element_id)
+        if record is None:
+            return TreeNode(
+                id=element_id,
+                label=element_id,
+                node_type="element",
+                path=f"{parent_path}/{element_id}",
+                children=[],
+                metadata={"project_id": project_id, "branch_id": branch_id, "model_id": model_id},
+            )
+
+        node_name = record.name or record.element_id
+        qualified_name = str(record.payload.get("qualified_name") or record.path or "").strip()
+        node_path = qualified_name or f"{parent_path}/{node_name}"
+        if element_id in trail:
+            return TreeNode(
+                id=record.element_id,
+                label=node_name,
+                node_type=record.item_type,
+                path=node_path,
+                children=[],
+                metadata={
+                    "project_id": project_id,
+                    "branch_id": branch_id,
+                    "model_id": model_id,
+                    "cycle_detected": True,
+                    "subtitle": "Cycle detected",
+                },
+            )
+
+        covered.add(record.element_id)
+        child_ids = sorted(
+            parent_to_children.get(record.element_id, []),
+            key=lambda child_id: self._cached_element_sort_key(model_records.get(child_id), child_id),
+        )
+        if depth is not None and current_depth >= depth:
+            child_nodes: list[TreeNode] = []
+        else:
+            child_nodes = [
+                self._build_tree_node_from_record(
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    model_id=model_id,
+                    model_records=model_records,
+                    parent_to_children=parent_to_children,
+                    element_id=child_id,
+                    parent_path=node_path,
+                    trail=(*trail, element_id),
+                    covered=covered,
+                    depth=depth,
+                    current_depth=current_depth + 1,
+                )
+                for child_id in child_ids
+            ]
+        stereotypes = [str(value).strip() for value in record.payload.get("applied_stereotype_ids") or [] if str(value).strip()]
+        metaclass = str(record.payload.get("metaclass") or record.item_type or "element").strip()
+        return TreeNode(
+            id=record.element_id,
+            label=node_name,
+            node_type=record.item_type,
+            path=node_path,
+            children=child_nodes,
+            metadata={
+                "project_id": project_id,
+                "branch_id": branch_id,
+                "model_id": model_id,
+                "owner_id": str(record.payload.get("owner_id") or "").strip(),
+                "child_count": len(child_ids),
+                "qualified_name": qualified_name,
+                "metaclass": metaclass,
+                "stereotypes": stereotypes,
+                "subtitle": qualified_name or metaclass or record.item_type,
+            },
+        )
+
+    def _tree_nodes_for_model(
+        self,
+        project_id: str,
+        branch_id: str,
+        model: CachedModelRecord,
+        model_records: dict[str, CachedElementRecord],
+        *,
+        root_id: str | None = None,
+        depth: int | None = None,
+        include_orphans: bool = True,
+    ) -> TreeNode:
+        model_name = model.name or model.model_id
+        model_path = f"{project_id}/{branch_id}/{model_name}"
+        if not model_records:
+            return TreeNode(
+                id=model.model_id,
+                label=model_name,
+                node_type="model",
+                path=model_path,
+                children=[],
+                metadata={
+                    "project_id": project_id,
+                    "branch_id": branch_id,
+                    "model_id": model.model_id,
+                    "element_count": model.element_count or 0,
+                    "subtitle": "Published model snapshot",
+                },
+            )
+
+        parent_to_children, root_ids = self._tree_indexes_for_model(model, model_records)
+        covered: set[str] = set()
+
+        if root_id:
+            seed_ids = [root_id] if root_id in model_records else []
+        else:
+            seed_ids = sorted(root_ids, key=lambda element_id: self._cached_element_sort_key(model_records.get(element_id), element_id))
+
+        children = [
+            self._build_tree_node_from_record(
+                project_id=project_id,
+                branch_id=branch_id,
+                model_id=model.model_id,
+                model_records=model_records,
+                parent_to_children=parent_to_children,
+                element_id=seed_id,
+                parent_path=model_path,
+                trail=(model.model_id,),
+                covered=covered,
+                depth=depth,
+            )
+            for seed_id in seed_ids
+        ]
+
+        if include_orphans and not root_id:
+            unlinked_ids = sorted(
+                [element_id for element_id in model_records if element_id not in covered],
+                key=lambda element_id: self._cached_element_sort_key(model_records.get(element_id), element_id),
+            )
+            if unlinked_ids:
+                children.append(
+                    TreeNode(
+                        id=f"{model.model_id}::additional",
+                        label="Additional Elements",
+                        node_type="group",
+                        path=f"{model_path}/Additional Elements",
+                        children=[
+                            self._build_tree_node_from_record(
+                                project_id=project_id,
+                                branch_id=branch_id,
+                                model_id=model.model_id,
+                                model_records=model_records,
+                                parent_to_children=parent_to_children,
+                                element_id=element_id,
+                                parent_path=f"{model_path}/Additional Elements",
+                                trail=(model.model_id,),
+                                covered=covered,
+                                depth=depth,
+                            )
+                            for element_id in unlinked_ids
+                        ],
+                        metadata={
+                            "project_id": project_id,
+                            "branch_id": branch_id,
+                            "model_id": model.model_id,
+                            "child_count": len(unlinked_ids),
+                            "subtitle": "Elements not attached to a published root",
+                        },
+                    )
+                )
+
+        return TreeNode(
+            id=model.model_id,
+            label=model_name,
+            node_type="model",
+            path=model_path,
+            children=children,
+            metadata={
+                "project_id": project_id,
+                "branch_id": branch_id,
+                "model_id": model.model_id,
+                "element_count": model.element_count or len(model_records),
+                "root_count": len(root_ids),
+                "subtitle": f"{model.element_count or len(model_records)} published elements",
+            },
+        )
+
+    def _count_tree_nodes(self, nodes: list[TreeNode]) -> int:
+        total = 0
+        stack = list(nodes)
+        while stack:
+            node = stack.pop()
+            total += 1
+            stack.extend(node.children)
+        return total
 
     def _materialized_element_discovery(
         self,
@@ -3790,11 +4366,16 @@ class PlatformService:
                 "GET /api/cache/servers/{server_id}/projects",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/summary",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/snapshot",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/tree",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/nodes/{parent_id}/children",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models/{model_id}",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/search",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/by-stereotype",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/details",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/graph",
                 "PATCH /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}",
                 "POST /api/cache-ingest/branch-snapshots",
                 "POST /api/cache-ingest/branch-deltas",

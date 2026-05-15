@@ -154,6 +154,10 @@ Files:
 - `23_workbench_cache_api_list_elements.py`
 - `24_workbench_cache_api_edit_element.py`
 - `25_workbench_cache_api_ingest_snapshot.py`
+- `26_workbench_cache_api_search_by_stereotype.py`
+- `27_workbench_cache_api_tree.py`
+- `28_workbench_cache_api_search_elements.py`
+- `29_workbench_cache_api_element_graph.py`
 
 They read from:
 
@@ -170,6 +174,9 @@ python .\22_workbench_cache_api_manifest.py
 python .\23_workbench_cache_api_list_elements.py
 python .\24_workbench_cache_api_edit_element.py
 python .\25_workbench_cache_api_ingest_snapshot.py
+python .\27_workbench_cache_api_tree.py
+python .\28_workbench_cache_api_search_elements.py
+python .\29_workbench_cache_api_element_graph.py
 ```
 
 More background is in:

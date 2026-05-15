@@ -1,11 +1,13 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   Box,
   Collapse,
+  IconButton,
   List,
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Stack,
   Typography,
 } from "@mui/material";
 import AccountTreeRoundedIcon from "@mui/icons-material/AccountTreeRounded";
@@ -14,6 +16,9 @@ import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 import FolderRoundedIcon from "@mui/icons-material/FolderRounded";
 import SchemaRoundedIcon from "@mui/icons-material/SchemaRounded";
+import TableChartRoundedIcon from "@mui/icons-material/TableChartRounded";
+import ViewQuiltRoundedIcon from "@mui/icons-material/ViewQuiltRounded";
+import DatasetLinkedRoundedIcon from "@mui/icons-material/DatasetLinkedRounded";
 
 import { TreeNode } from "../models/api";
 
@@ -25,14 +30,24 @@ interface ProjectTreeProps {
 }
 
 function iconForNode(nodeType: string) {
-  if (nodeType === "package") {
+  const normalized = nodeType.toLowerCase();
+  if (normalized === "package" || normalized === "group" || normalized === "model") {
     return <FolderRoundedIcon fontSize="small" />;
   }
-  if (nodeType === "diagram") {
+  if (normalized.includes("diagram")) {
     return <SchemaRoundedIcon fontSize="small" />;
   }
-  if (nodeType === "block") {
+  if (normalized.includes("table") || normalized.includes("matrix")) {
+    return <TableChartRoundedIcon fontSize="small" />;
+  }
+  if (normalized.includes("block") || normalized.includes("class")) {
     return <AccountTreeRoundedIcon fontSize="small" />;
+  }
+  if (normalized.includes("activity") || normalized.includes("requirement") || normalized.includes("part")) {
+    return <ViewQuiltRoundedIcon fontSize="small" />;
+  }
+  if (normalized.includes("connector") || normalized.includes("association") || normalized.includes("relationship")) {
+    return <DatasetLinkedRoundedIcon fontSize="small" />;
   }
   return <DescriptionRoundedIcon fontSize="small" />;
 }
@@ -62,6 +77,62 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect }: Pro
 
   const visibleNodes = useMemo(() => nodes.filter((node) => matchesFilter(node, filter)), [filter, nodes]);
 
+  useEffect(() => {
+    if (!selectedId) {
+      return;
+    }
+    const ancestorTrail: string[] = [];
+    const walk = (candidates: TreeNode[], trail: string[]): boolean => {
+      for (const candidate of candidates) {
+        if (candidate.id === selectedId) {
+          ancestorTrail.push(...trail);
+          return true;
+        }
+        if (walk(candidate.children, [...trail, candidate.id])) {
+          return true;
+        }
+      }
+      return false;
+    };
+    walk(nodes, []);
+    if (!ancestorTrail.length) {
+      return;
+    }
+    setExpanded((current) => {
+      const next = { ...current };
+      let changed = false;
+      ancestorTrail.forEach((nodeId) => {
+        if (!next[nodeId]) {
+          next[nodeId] = true;
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [nodes, selectedId]);
+
+  const secondaryText = (node: TreeNode) => {
+    const subtitle = typeof node.metadata.subtitle === "string" ? node.metadata.subtitle.trim() : "";
+    const childCount =
+      typeof node.metadata.child_count === "number"
+        ? node.metadata.child_count
+        : typeof node.metadata.child_count === "string"
+          ? Number.parseInt(node.metadata.child_count, 10)
+          : node.children.length;
+    const stereotypes = Array.isArray(node.metadata.stereotypes)
+      ? (node.metadata.stereotypes as unknown[]).filter((value) => typeof value === "string" && value.trim()).slice(0, 2) as string[]
+      : [];
+    const details = [
+      humanizeNodeType(node.node_type),
+      Number.isFinite(childCount) && childCount > 0 ? `${childCount} children` : "",
+      ...stereotypes,
+    ].filter(Boolean);
+    if (subtitle && !details.includes(subtitle)) {
+      details.push(subtitle);
+    }
+    return details.join(" · ");
+  };
+
   const renderNode = (node: TreeNode, depth = 0) => {
     if (!matchesFilter(node, filter)) {
       return null;
@@ -73,19 +144,55 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect }: Pro
       <Fragment key={node.id}>
         <ListItemButton
           selected={selectedId === node.id}
-          onClick={() => {
-            if (hasChildren) {
-              setExpanded((current) => ({ ...current, [node.id]: !isOpen }));
-            }
-            onSelect(node);
+          onClick={() => onSelect(node)}
+          sx={{
+            pl: 1 + depth * 2,
+            borderRadius: 2,
+            mb: 0.25,
+            alignItems: "flex-start",
+            "&::before": depth
+              ? {
+                  content: '""',
+                  position: "absolute",
+                  left: 12 + (depth - 1) * 16,
+                  top: 0,
+                  bottom: 0,
+                  borderLeft: "1px solid",
+                  borderColor: "divider",
+                }
+              : undefined,
           }}
-          sx={{ pl: 2 + depth * 2, borderRadius: 2, mb: 0.5 }}
         >
+          <Box sx={{ width: 24, display: "flex", alignItems: "center", justifyContent: "center", mr: 0.5 }}>
+            {hasChildren ? (
+              <IconButton
+                size="small"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setExpanded((current) => ({ ...current, [node.id]: !isOpen }));
+                }}
+              >
+                {isOpen ? <ExpandMoreRoundedIcon fontSize="small" /> : <ChevronRightRoundedIcon fontSize="small" />}
+              </IconButton>
+            ) : null}
+          </Box>
           <ListItemIcon sx={{ minWidth: 30 }}>{iconForNode(node.node_type)}</ListItemIcon>
-          <ListItemText primary={node.label} secondary={humanizeNodeType(node.node_type)} />
-          {hasChildren ? (isOpen ? <ExpandMoreRoundedIcon fontSize="small" /> : <ChevronRightRoundedIcon fontSize="small" />) : null}
+          <ListItemText
+            primary={node.label}
+            secondary={
+              <Stack spacing={0.25}>
+                <Typography variant="caption" color="text.secondary">
+                  {secondaryText(node)}
+                </Typography>
+              </Stack>
+            }
+          />
         </ListItemButton>
-        {hasChildren ? <Collapse in={isOpen}>{node.children.map((child) => renderNode(child, depth + 1))}</Collapse> : null}
+        {hasChildren ? (
+          <Collapse in={isOpen}>
+            <Box sx={{ ml: 1 }}>{node.children.map((child) => renderNode(child, depth + 1))}</Box>
+          </Collapse>
+        ) : null}
       </Fragment>
     );
   };

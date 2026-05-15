@@ -5,7 +5,9 @@
   "server_id": "twc-2022x",
   "project_id": "",
   "branch_id": "master",
+  "query": "system",
   "stereotype": "Block",
   "element_id": "",
+  "root_id": "",
   "snapshot_payload_path": "../plugin/payloads/branch-snapshot.json"
 }

@@ -662,6 +662,55 @@ class StereotypeElementSearchResponse(BaseModel):
     details: list[ItemDetails] = Field(default_factory=list)
 
 
+class CacheTreeResponse(BaseModel):
+    server_id: str
+    project_id: str
+    branch_id: str
+    model_id: str | None = None
+    root_id: str | None = None
+    depth: int | None = None
+    include_orphans: bool = True
+    total_nodes: int = 0
+    nodes: list[TreeNode] = Field(default_factory=list)
+
+
+class CacheChildrenResponse(BaseModel):
+    server_id: str
+    project_id: str
+    branch_id: str
+    parent_id: str
+    model_id: str | None = None
+    total_children: int = 0
+    items: list[TreeNode] = Field(default_factory=list)
+
+
+class CacheElementSearchResponse(BaseModel):
+    query: str = ""
+    item_type: str | None = None
+    metaclass: str | None = None
+    stereotype: str | None = None
+    owner_id: str | None = None
+    include_details: bool = False
+    total: int = 0
+    items: list[CachedElementRecord] = Field(default_factory=list)
+    details: list[ItemDetails] = Field(default_factory=list)
+
+
+class CacheElementGraphResponse(BaseModel):
+    server_id: str
+    project_id: str
+    branch_id: str
+    element_id: str
+    model_id: str | None = None
+    item: ItemDetails
+    owner_chain: list[ItemReference] = Field(default_factory=list)
+    contained_elements: list[ItemReference] = Field(default_factory=list)
+    type_references: list[ItemReference] = Field(default_factory=list)
+    related_items: list[ItemReference] = Field(default_factory=list)
+    incoming_references: list[ItemReference] = Field(default_factory=list)
+    stereotypes: list[ItemReference] = Field(default_factory=list)
+
+
 class BranchCacheSnapshot(BaseModel):
     summary: BranchCacheSummary
     models: list[CachedModelView] = Field(default_factory=list)
