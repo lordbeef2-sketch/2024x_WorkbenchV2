@@ -295,11 +295,37 @@ async def tree(
     branchId: str | None = Query(default=None),
     workspaceId: str | None = Query(default=None),
     refresh: bool = Query(default=False),
+    depth: int | None = Query(default=None, ge=0, le=20),
     session=Depends(get_session),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
-        return await container.platform.get_model_tree(session, projectId, branchId, workspaceId, refresh=refresh)
+        return await container.platform.get_model_tree(session, projectId, branchId, workspaceId, refresh=refresh, depth=depth)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/tree/children")
+async def tree_children(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    parentId: str = Query(...),
+    workspaceId: str | None = Query(default=None),
+    modelId: str | None = Query(default=None),
+    refresh: bool = Query(default=False),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.get_model_tree_children(
+            session,
+            projectId,
+            branchId,
+            parentId,
+            workspace_id=workspaceId,
+            model_id=modelId,
+            refresh=refresh,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

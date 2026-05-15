@@ -69,12 +69,45 @@ function errorMessage(caught: unknown): string {
 
 function flattenTree(nodes: TreeNode[]): TreeNode[] {
   const flattened: TreeNode[] = [];
-  const visit = (node: TreeNode) => {
+  const stack = [...nodes].reverse();
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node) {
+      continue;
+    }
     flattened.push(node);
-    node.children.forEach(visit);
-  };
-  nodes.forEach(visit);
+    for (let index = node.children.length - 1; index >= 0; index -= 1) {
+      stack.push(node.children[index]);
+    }
+  }
   return flattened;
+}
+
+function replaceNodeChildren(nodes: TreeNode[], targetId: string, children: TreeNode[]): TreeNode[] {
+  let changed = false;
+  const nextNodes = nodes.map((node) => {
+    if (node.id === targetId) {
+      changed = true;
+      return {
+        ...node,
+        children,
+        metadata: {
+          ...node.metadata,
+          children_loaded: true,
+        },
+      };
+    }
+    if (!node.children.length) {
+      return node;
+    }
+    const nextChildren = replaceNodeChildren(node.children, targetId, children);
+    if (nextChildren !== node.children) {
+      changed = true;
+      return { ...node, children: nextChildren };
+    }
+    return node;
+  });
+  return changed ? nextNodes : nodes;
 }
 
 function valueText(value: unknown): string {
@@ -512,6 +545,8 @@ export default function WorkspacePage() {
   const [selectedBranchId, setSelectedBranchId] = useState("");
   const [treeFilter, setTreeFilter] = useState("");
   const [selectedItemId, setSelectedItemId] = useState("");
+  const [treeNodes, setTreeNodes] = useState<TreeNode[]>([]);
+  const [loadingTreeNodeIds, setLoadingTreeNodeIds] = useState<string[]>([]);
   const [itemDraft, setItemDraft] = useState<ItemDetails | null>(null);
   const [compareLeft, setCompareLeft] = useState("");
   const [compareRight, setCompareRight] = useState("");
@@ -645,7 +680,7 @@ export default function WorkspacePage() {
 
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
-    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined),
+    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined, false, 1),
     enabled:
       projectContextActive &&
       Boolean(selectedProjectId) &&
@@ -656,7 +691,11 @@ export default function WorkspacePage() {
     refetchOnWindowFocus: false,
   });
 
-  const treeNodes = treeQuery.data ?? [];
+  useEffect(() => {
+    setTreeNodes(treeQuery.data ?? []);
+    setLoadingTreeNodeIds([]);
+  }, [treeQuery.data]);
+
   const flatNodes = useMemo(() => flattenTree(treeNodes), [treeNodes]);
   const elementDiscoveryQuery = useQuery({
     queryKey: ["workspace-elements", ...sessionCacheKey, selectedProjectId, selectedBranchId, selectedProject?.workspace_id],
@@ -962,7 +1001,7 @@ export default function WorkspacePage() {
       let tree: TreeNode[] | null = null;
       const currentBranchId = selectedBranchId || branches[0]?.id;
       if (currentBranchId) {
-        tree = await api.getTree(selectedProjectId, currentBranchId, selectedProject?.workspace_id || undefined, true);
+        tree = await api.getTree(selectedProjectId, currentBranchId, selectedProject?.workspace_id || undefined, true, 1);
       }
       return { branches, tree, branchId: currentBranchId ?? "" };
     },
@@ -1284,6 +1323,31 @@ export default function WorkspacePage() {
   const openElementId = (itemId: string) => {
     setSelectedItemId(itemId);
     setTab("details");
+  };
+
+  const loadTreeChildren = async (node: TreeNode) => {
+    if (!selectedProjectId || !selectedBranchId) {
+      return;
+    }
+    if (loadingTreeNodeIds.includes(node.id)) {
+      return;
+    }
+    const modelId = typeof node.metadata.model_id === "string" ? node.metadata.model_id : undefined;
+    setLoadingTreeNodeIds((current) => [...current, node.id]);
+    try {
+      const children = await api.getTreeChildren(
+        selectedProjectId,
+        selectedBranchId,
+        node.id,
+        modelId,
+        selectedProject?.workspace_id || undefined,
+      );
+      setTreeNodes((current) => replaceNodeChildren(current, node.id, children));
+    } catch (caught) {
+      setNotice({ severity: "error", message: errorMessage(caught) });
+    } finally {
+      setLoadingTreeNodeIds((current) => current.filter((value) => value !== node.id));
+    }
   };
 
   const renderInspectorRows = (rows: InspectorRow[], emptyText: string) =>
@@ -1623,6 +1687,8 @@ export default function WorkspacePage() {
                       selectedId={selectedItemId}
                       filter={treeFilter}
                       onSelect={(node) => selectContainmentNode(node, "models")}
+                      onExpand={loadTreeChildren}
+                      loadingIds={loadingTreeNodeIds}
                     />
                   </Paper>
                 ) : (
@@ -1867,7 +1933,14 @@ export default function WorkspacePage() {
                 </Typography>
                 {treeNodes.length ? (
                   <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, maxHeight: 720, overflow: "auto" }}>
-                    <ProjectTree nodes={treeNodes} selectedId={selectedItemId} filter="" onSelect={(node) => selectContainmentNode(node, "elements")} />
+                    <ProjectTree
+                      nodes={treeNodes}
+                      selectedId={selectedItemId}
+                      filter=""
+                      onSelect={(node) => selectContainmentNode(node, "elements")}
+                      onExpand={loadTreeChildren}
+                      loadingIds={loadingTreeNodeIds}
+                    />
                   </Paper>
                 ) : (
                   <Typography color="text.secondary">No published model tree is available for this branch yet.</Typography>
@@ -3155,7 +3228,14 @@ export default function WorkspacePage() {
               </Paper>
             ) : null}
             <Divider />
-            <ProjectTree nodes={treeNodes} selectedId={selectedItemId} filter={treeFilter} onSelect={(node) => selectContainmentNode(node, "models")} />
+            <ProjectTree
+              nodes={treeNodes}
+              selectedId={selectedItemId}
+              filter={treeFilter}
+              onSelect={(node) => selectContainmentNode(node, "models")}
+              onExpand={loadTreeChildren}
+              loadingIds={loadingTreeNodeIds}
+            />
           </Stack>
         </Paper>
         <Stack spacing={2} component="main">

@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   Box,
+  CircularProgress,
   Collapse,
   IconButton,
   List,
@@ -27,6 +28,8 @@ interface ProjectTreeProps {
   selectedId?: string;
   filter: string;
   onSelect: (node: TreeNode) => void;
+  onExpand?: (node: TreeNode) => void | Promise<void>;
+  loadingIds?: string[];
 }
 
 function iconForNode(nodeType: string) {
@@ -72,7 +75,15 @@ function humanizeNodeType(nodeType: string): string {
     .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-export default function ProjectTree({ nodes, selectedId, filter, onSelect }: ProjectTreeProps) {
+function declaredChildCount(node: TreeNode): number {
+  return typeof node.metadata.child_count === "number"
+    ? node.metadata.child_count
+    : typeof node.metadata.child_count === "string"
+      ? Number.parseInt(node.metadata.child_count, 10)
+      : node.children.length;
+}
+
+export default function ProjectTree({ nodes, selectedId, filter, onSelect, onExpand, loadingIds = [] }: ProjectTreeProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const visibleNodes = useMemo(() => nodes.filter((node) => matchesFilter(node, filter)), [filter, nodes]);
@@ -113,12 +124,7 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect }: Pro
 
   const secondaryText = (node: TreeNode) => {
     const subtitle = typeof node.metadata.subtitle === "string" ? node.metadata.subtitle.trim() : "";
-    const childCount =
-      typeof node.metadata.child_count === "number"
-        ? node.metadata.child_count
-        : typeof node.metadata.child_count === "string"
-          ? Number.parseInt(node.metadata.child_count, 10)
-          : node.children.length;
+    const childCount = declaredChildCount(node);
     const stereotypes = Array.isArray(node.metadata.stereotypes)
       ? (node.metadata.stereotypes as unknown[]).filter((value) => typeof value === "string" && value.trim()).slice(0, 2) as string[]
       : [];
@@ -137,8 +143,9 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect }: Pro
     if (!matchesFilter(node, filter)) {
       return null;
     }
-    const hasChildren = node.children.length > 0;
+    const hasChildren = node.children.length > 0 || declaredChildCount(node) > 0;
     const isOpen = expanded[node.id] ?? true;
+    const isLoading = loadingIds.includes(node.id);
 
     return (
       <Fragment key={node.id}>
@@ -169,10 +176,20 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect }: Pro
                 size="small"
                 onClick={(event) => {
                   event.stopPropagation();
-                  setExpanded((current) => ({ ...current, [node.id]: !isOpen }));
+                  const nextOpen = !isOpen;
+                  if (
+                    nextOpen &&
+                    onExpand &&
+                    node.children.length === 0 &&
+                    declaredChildCount(node) > 0 &&
+                    node.metadata.children_loaded !== true
+                  ) {
+                    void onExpand(node);
+                  }
+                  setExpanded((current) => ({ ...current, [node.id]: nextOpen }));
                 }}
               >
-                {isOpen ? <ExpandMoreRoundedIcon fontSize="small" /> : <ChevronRightRoundedIcon fontSize="small" />}
+                {isLoading ? <CircularProgress size={16} /> : isOpen ? <ExpandMoreRoundedIcon fontSize="small" /> : <ChevronRightRoundedIcon fontSize="small" />}
               </IconButton>
             ) : null}
           </Box>

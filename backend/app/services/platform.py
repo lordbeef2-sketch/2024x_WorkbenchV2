@@ -448,6 +448,7 @@ class PlatformService:
         branch_id: str | None,
         workspace_id: str | None = None,
         refresh: bool = False,
+        depth: int | None = None,
     ):
         if not project_id or not branch_id:
             return []
@@ -468,8 +469,40 @@ class PlatformService:
                 summary=summary,
                 force=refresh,
             )
-            materialized_tree = self._materialized_model_tree(session, project_id, branch_id)
+            materialized_tree = self._materialized_model_tree(session, project_id, branch_id, depth=depth)
             return materialized_tree or []
+
+        raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
+
+    async def get_model_tree_children(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        parent_id: str,
+        workspace_id: str | None = None,
+        model_id: str | None = None,
+        refresh: bool = False,
+    ) -> list[TreeNode]:
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            await self._ensure_plugin_branch_permissions(
+                session,
+                project_id,
+                branch_id,
+                workspace_id=workspace_id,
+                summary=summary,
+                force=refresh,
+            )
+            response = self.get_cached_branch_children_for_user(
+                session.server.id,
+                session.user.preferred_username,
+                project_id,
+                branch_id,
+                parent_id,
+                model_id=model_id,
+            )
+            return response.items
 
         raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
 
@@ -2375,7 +2408,14 @@ class PlatformService:
             if (permission := permissions.get(model.model_id)) is not None and permission.accessible and not permission.restricted
         ]
 
-    def _materialized_model_tree(self, session: SessionData, project_id: str, branch_id: str) -> list[TreeNode] | None:
+    def _materialized_model_tree(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        *,
+        depth: int | None = None,
+    ) -> list[TreeNode] | None:
         models = self._accessible_cached_models(session, project_id, branch_id)
         if not models:
             return None
@@ -2397,6 +2437,7 @@ class PlatformService:
                     branch_id,
                     model,
                     model_records,
+                    depth=depth,
                 )
             )
         return nodes

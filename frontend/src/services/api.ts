@@ -299,7 +299,7 @@ export const api = {
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request<BranchSummary[]>(`/workspace/projects/${projectId}/branches${suffix}`);
   },
-  getTree(projectId?: string, branchId?: string, workspaceId?: string, refresh = false) {
+  getTree(projectId?: string, branchId?: string, workspaceId?: string, refresh = false, depth?: number) {
     const params = new URLSearchParams();
     if (projectId) {
       params.set("projectId", projectId);
@@ -313,8 +313,28 @@ export const api = {
     if (refresh) {
       params.set("refresh", "true");
     }
+    if (typeof depth === "number") {
+      params.set("depth", String(depth));
+    }
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request<TreeNode[]>(`/workspace/tree${suffix}`);
+  },
+  getTreeChildren(projectId: string, branchId: string, parentId: string, modelId?: string, workspaceId?: string, refresh = false) {
+    const params = new URLSearchParams({
+      projectId,
+      branchId,
+      parentId,
+    });
+    if (modelId) {
+      params.set("modelId", modelId);
+    }
+    if (workspaceId) {
+      params.set("workspaceId", workspaceId);
+    }
+    if (refresh) {
+      params.set("refresh", "true");
+    }
+    return request<TreeNode[]>(`/workspace/tree/children?${params.toString()}`);
   },
   getElementDiscovery(projectId: string, branchId: string, workspaceId?: string, refresh = false) {
     const params = new URLSearchParams({
