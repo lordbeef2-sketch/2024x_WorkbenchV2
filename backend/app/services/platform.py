@@ -1380,6 +1380,38 @@ class PlatformService:
         if model_id is not None:
             visible_models = [model for model in visible_models if model.model_id == model_id]
 
+        if depth is not None and depth <= 0 and root_id is None:
+            nodes = [
+                TreeNode(
+                    id=model.model_id,
+                    label=model.name or model.model_id,
+                    node_type="model",
+                    path=f"{project_id}/{branch_id}/{model.name or model.model_id}",
+                    children=[],
+                    metadata={
+                        "project_id": project_id,
+                        "branch_id": branch_id,
+                        "model_id": model.model_id,
+                        "child_count": len(model.root_ids),
+                        "element_count": model.element_count or 0,
+                        "root_count": len(model.root_ids),
+                        "subtitle": f"{model.element_count or 0} published elements",
+                    },
+                )
+                for model in visible_models
+            ]
+            return CacheTreeResponse(
+                server_id=server_id,
+                project_id=project_id,
+                branch_id=branch_id,
+                model_id=model_id,
+                root_id=root_id,
+                depth=depth,
+                include_orphans=include_orphans,
+                total_nodes=len(nodes),
+                nodes=nodes,
+            )
+
         nodes = [
             self._tree_nodes_for_model(
                 project_id,
@@ -2419,6 +2451,26 @@ class PlatformService:
         models = self._accessible_cached_models(session, project_id, branch_id)
         if not models:
             return None
+        if depth is not None and depth <= 0:
+            return [
+                TreeNode(
+                    id=model.model_id,
+                    label=model.name or model.model_id,
+                    node_type="model",
+                    path=f"{project_id}/{branch_id}/{model.name or model.model_id}",
+                    children=[],
+                    metadata={
+                        "project_id": project_id,
+                        "branch_id": branch_id,
+                        "model_id": model.model_id,
+                        "child_count": len(model.root_ids),
+                        "element_count": model.element_count or 0,
+                        "root_count": len(model.root_ids),
+                        "subtitle": f"{model.element_count or 0} published elements",
+                    },
+                )
+                for model in models
+            ]
         nodes: list[TreeNode] = []
         for model in models:
             model_records = {
@@ -2600,6 +2652,23 @@ class PlatformService:
     ) -> TreeNode:
         model_name = model.name or model.model_id
         model_path = f"{project_id}/{branch_id}/{model_name}"
+        if depth is not None and depth <= 0:
+            return TreeNode(
+                id=model.model_id,
+                label=model_name,
+                node_type="model",
+                path=model_path,
+                children=[],
+                metadata={
+                    "project_id": project_id,
+                    "branch_id": branch_id,
+                    "model_id": model.model_id,
+                    "child_count": len(model.root_ids),
+                    "element_count": model.element_count or len(model_records),
+                    "root_count": len(model.root_ids),
+                    "subtitle": f"{model.element_count or len(model_records)} published elements",
+                },
+            )
         if not model_records:
             return TreeNode(
                 id=model.model_id,

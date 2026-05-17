@@ -680,7 +680,7 @@ export default function WorkspacePage() {
 
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
-    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined, false, 1),
+    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined, false, 0),
     enabled:
       projectContextActive &&
       Boolean(selectedProjectId) &&
@@ -690,13 +690,15 @@ export default function WorkspacePage() {
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
   });
+  const baseTreeNodes = treeQuery.data ?? [];
 
   useEffect(() => {
-    setTreeNodes(treeQuery.data ?? []);
+    setTreeNodes(baseTreeNodes);
     setLoadingTreeNodeIds([]);
-  }, [treeQuery.data]);
+  }, [baseTreeNodes]);
 
-  const flatNodes = useMemo(() => flattenTree(treeNodes), [treeNodes]);
+  const baseFlatNodes = useMemo(() => flattenTree(baseTreeNodes), [baseTreeNodes]);
+  const loadedFlatNodes = useMemo(() => flattenTree(treeNodes), [treeNodes]);
   const elementDiscoveryQuery = useQuery({
     queryKey: ["workspace-elements", ...sessionCacheKey, selectedProjectId, selectedBranchId, selectedProject?.workspace_id],
     queryFn: () => api.getElementDiscovery(selectedProjectId, selectedBranchId, selectedProject?.workspace_id || undefined),
@@ -894,7 +896,7 @@ export default function WorkspacePage() {
         lookup[normalizeLookupKey(branch.id)] = branch.name;
       }
     });
-    flatNodes.forEach((node) => {
+    loadedFlatNodes.forEach((node) => {
       if (node.label) {
         lookup[normalizeLookupKey(node.id)] = node.label;
       }
@@ -926,15 +928,15 @@ export default function WorkspacePage() {
       }
     });
     return lookup;
-  }, [elementDiscovery?.entries, flatNodes, projects, selectedProjectBranches, selectedWorkspaceItem]);
+  }, [elementDiscovery?.entries, loadedFlatNodes, projects, selectedProjectBranches, selectedWorkspaceItem]);
 
   const selectedWorkspaceItemName = selectedWorkspaceItem
     ? displayEntityName(selectedWorkspaceItem.name, selectedWorkspaceItem.id, selectedWorkspaceItem.item_type, referenceNameById)
     : "";
   const selectedWorkspaceItemPath = selectedWorkspaceItem ? friendlyPath(selectedWorkspaceItem.path, referenceNameById) : "";
   const selectedTreeNode = useMemo(
-    () => (selectedItemId ? flatNodes.find((node) => node.id === selectedItemId) ?? null : null),
-    [flatNodes, selectedItemId],
+    () => (selectedItemId ? loadedFlatNodes.find((node) => node.id === selectedItemId) ?? null : null),
+    [loadedFlatNodes, selectedItemId],
   );
   const selectedContainmentPath = selectedWorkspaceItemPath || (selectedTreeNode ? friendlyPath(selectedTreeNode.path, referenceNameById) : "");
   const selectedContainmentSegments = selectedContainmentPath
@@ -1001,7 +1003,7 @@ export default function WorkspacePage() {
       let tree: TreeNode[] | null = null;
       const currentBranchId = selectedBranchId || branches[0]?.id;
       if (currentBranchId) {
-        tree = await api.getTree(selectedProjectId, currentBranchId, selectedProject?.workspace_id || undefined, true, 1);
+        tree = await api.getTree(selectedProjectId, currentBranchId, selectedProject?.workspace_id || undefined, true, 0);
       }
       return { branches, tree, branchId: currentBranchId ?? "" };
     },
@@ -1473,7 +1475,7 @@ export default function WorkspacePage() {
               <Typography variant="overline" color="text.secondary">
                 Model Items
               </Typography>
-              <Typography variant="h3">{flatNodes.length}</Typography>
+              <Typography variant="h3">{baseFlatNodes.length}</Typography>
               <Typography color="text.secondary">Loaded for the selected project and branch.</Typography>
             </CardContent>
           </Card>
@@ -1562,7 +1564,7 @@ export default function WorkspacePage() {
       {treeQuery.isLoading ? <CircularProgress size={28} /> : null}
       {treeQuery.error ? <Alert severity="error">{errorMessage(treeQuery.error)}</Alert> : null}
       <Grid container spacing={2}>
-        {flatNodes.map((node) => (
+        {baseFlatNodes.map((node) => (
           <Grid item xs={12} md={6} lg={4} key={node.id}>
             <Card sx={{ height: "100%", borderRadius: 2 }}>
               <CardContent>
@@ -1600,7 +1602,7 @@ export default function WorkspacePage() {
           </Grid>
         ))}
       </Grid>
-      {!treeQuery.isLoading && selectedProjectId && !flatNodes.length ? (
+      {!treeQuery.isLoading && selectedProjectId && !baseFlatNodes.length ? (
         <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
           <Typography color="text.secondary">No model entries were returned for the selected project and branch.</Typography>
         </Paper>
