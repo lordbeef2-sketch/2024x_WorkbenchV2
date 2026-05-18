@@ -48,6 +48,24 @@ class SqliteRepository:
             connection.commit()
             return result
 
+    def _cached_element_db_tuple(self, item: CachedElementRecord) -> tuple[object, ...]:
+        payload = item.payload if isinstance(item.payload, dict) else {}
+        return (
+            item.server_id,
+            item.project_id,
+            item.branch_id,
+            item.model_id,
+            item.element_id,
+            item.name,
+            item.item_type,
+            item.path,
+            str(payload.get("owner_id") or "").strip() or None,
+            str(payload.get("qualified_name") or item.path or item.name or "").strip() or None,
+            str(payload.get("metaclass") or item.item_type or "element").strip() or None,
+            item.synced_at.isoformat(),
+            item.model_dump_json(),
+        )
+
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -200,6 +218,9 @@ class SqliteRepository:
                     name TEXT NOT NULL,
                     item_type TEXT NOT NULL,
                     path TEXT NOT NULL,
+                    owner_id TEXT,
+                    qualified_name TEXT,
+                    metaclass TEXT,
                     updated_at TEXT NOT NULL,
                     payload TEXT NOT NULL,
                     PRIMARY KEY (server_id, project_id, branch_id, model_id, element_id)
@@ -216,6 +237,12 @@ class SqliteRepository:
                 """
                 CREATE INDEX IF NOT EXISTS idx_twc_cached_elements_search
                 ON twc_cached_elements (server_id, project_id, branch_id, name, path)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_twc_cached_elements_parent
+                ON twc_cached_elements (server_id, project_id, branch_id, model_id, owner_id, name)
                 """
             )
             connection.execute(
@@ -239,7 +266,49 @@ class SqliteRepository:
                 ON twc_webhook_registrations (server_id, project_id, branch_id)
                 """
             )
+            self._ensure_cached_element_columns(connection)
             connection.commit()
+
+    def _ensure_cached_element_columns(self, connection: sqlite3.Connection) -> None:
+        column_rows = connection.execute("PRAGMA table_info(twc_cached_elements)").fetchall()
+        column_names = {str(row["name"]) for row in column_rows}
+        if "owner_id" not in column_names:
+            connection.execute("ALTER TABLE twc_cached_elements ADD COLUMN owner_id TEXT")
+        if "qualified_name" not in column_names:
+            connection.execute("ALTER TABLE twc_cached_elements ADD COLUMN qualified_name TEXT")
+        if "metaclass" not in column_names:
+            connection.execute("ALTER TABLE twc_cached_elements ADD COLUMN metaclass TEXT")
+
+        rows = connection.execute(
+            """
+            SELECT rowid, payload, name, path, item_type
+            FROM twc_cached_elements
+            WHERE owner_id IS NULL OR qualified_name IS NULL OR metaclass IS NULL
+            """
+        ).fetchall()
+        if not rows:
+            return
+
+        updates: list[tuple[str | None, str | None, str | None, int]] = []
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload"]))
+            except json.JSONDecodeError:
+                payload = {}
+            owner_id = str(payload.get("owner_id") or "").strip() or None
+            qualified_name = str(payload.get("qualified_name") or row["path"] or row["name"] or "").strip() or None
+            metaclass = str(payload.get("metaclass") or row["item_type"] or "element").strip() or None
+            updates.append((owner_id, qualified_name, metaclass, int(row["rowid"])))
+
+        if updates:
+            connection.executemany(
+                """
+                UPDATE twc_cached_elements
+                SET owner_id = ?, qualified_name = ?, metaclass = ?
+                WHERE rowid = ?
+                """,
+                updates,
+            )
 
     def list_servers(self, *, include_disabled: bool = False) -> list[ServerProfile]:
         with self._lock, self._connect() as connection:
@@ -976,25 +1045,11 @@ class SqliteRepository:
                     """
                     INSERT OR REPLACE INTO twc_cached_elements (
                         server_id, project_id, branch_id, model_id, element_id,
-                        name, item_type, path, updated_at, payload
+                        name, item_type, path, owner_id, qualified_name, metaclass, updated_at, payload
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    [
-                        (
-                            item.server_id,
-                            item.project_id,
-                            item.branch_id,
-                            item.model_id,
-                            item.element_id,
-                            item.name,
-                            item.item_type,
-                            item.path,
-                            item.synced_at.isoformat(),
-                            item.model_dump_json(),
-                        )
-                        for item in items
-                    ],
+                    [self._cached_element_db_tuple(item) for item in items],
                 )
             return len(items)
         with self._lock, self._connect() as managed_connection:
@@ -1023,25 +1078,11 @@ class SqliteRepository:
                 """
                 INSERT OR REPLACE INTO twc_cached_elements (
                     server_id, project_id, branch_id, model_id, element_id,
-                    name, item_type, path, updated_at, payload
+                    name, item_type, path, owner_id, qualified_name, metaclass, updated_at, payload
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [
-                    (
-                        item.server_id,
-                        item.project_id,
-                        item.branch_id,
-                        item.model_id,
-                        item.element_id,
-                        item.name,
-                        item.item_type,
-                        item.path,
-                        item.synced_at.isoformat(),
-                        item.model_dump_json(),
-                    )
-                    for item in items
-                ],
+                [self._cached_element_db_tuple(item) for item in items],
             )
             return len(items)
         with self._lock, self._connect() as managed_connection:
@@ -1293,6 +1334,72 @@ class SqliteRepository:
                 search=search,
                 limit=limit,
                 offset=offset,
+                connection=managed_connection,
+            )
+
+    def list_cached_elements_by_ids(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        element_ids: Iterable[str],
+        *,
+        model_id: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[CachedElementRecord]:
+        ids = [element_id for element_id in dict.fromkeys(element_ids) if element_id]
+        if not ids:
+            return []
+        placeholders = ", ".join("?" for _ in ids)
+        clauses = ["server_id = ?", "project_id = ?", "branch_id = ?", f"element_id IN ({placeholders})"]
+        params: list[object] = [server_id, project_id, branch_id, *ids]
+        if model_id:
+            clauses.append("model_id = ?")
+            params.append(model_id)
+        where = " AND ".join(clauses)
+        if connection is not None:
+            rows = connection.execute(
+                f"SELECT payload FROM twc_cached_elements WHERE {where}",
+                tuple(params),
+            ).fetchall()
+            return [CachedElementRecord.model_validate_json(row["payload"]) for row in rows]
+        with self._lock, self._connect() as managed_connection:
+            return self.list_cached_elements_by_ids(
+                server_id,
+                project_id,
+                branch_id,
+                ids,
+                model_id=model_id,
+                connection=managed_connection,
+            )
+
+    def list_cached_elements_by_owner(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        owner_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[CachedElementRecord]:
+        if connection is not None:
+            rows = connection.execute(
+                """
+                SELECT payload FROM twc_cached_elements
+                WHERE server_id = ? AND project_id = ? AND branch_id = ? AND model_id = ? AND owner_id = ?
+                ORDER BY LOWER(name), element_id
+                """,
+                (server_id, project_id, branch_id, model_id, owner_id),
+            ).fetchall()
+            return [CachedElementRecord.model_validate_json(row["payload"]) for row in rows]
+        with self._lock, self._connect() as managed_connection:
+            return self.list_cached_elements_by_owner(
+                server_id,
+                project_id,
+                branch_id,
+                model_id,
+                owner_id,
                 connection=managed_connection,
             )
 

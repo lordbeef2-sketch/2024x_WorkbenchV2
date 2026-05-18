@@ -476,6 +476,7 @@ def cached_elements(
     branchId: str = Query(...),
     modelId: str | None = Query(default=None),
     search: str | None = Query(default=None),
+    allResults: bool = Query(default=False),
     limit: int = Query(default=200, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     session=Depends(get_session),
@@ -489,6 +490,7 @@ def cached_elements(
         search=search,
         limit=limit,
         offset=offset,
+        all_results=allResults,
     )
 
 

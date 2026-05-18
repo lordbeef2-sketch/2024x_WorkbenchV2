@@ -749,12 +749,27 @@ class IngestElementRecord(BaseModel):
     human_type: str = Field(default="element", alias="humanType")
     metaclass: str = "Element"
     documentation: str = ""
+    diagram_type: str = Field(default="", alias="diagramType")
+    diagram_preview_format: str = Field(default="", alias="diagramPreviewFormat")
+    diagram_preview_base64: str = Field(default="", alias="diagramPreviewBase64")
     owned_element_ids: list[str] = Field(default_factory=list, alias="ownedElementIds")
     applied_stereotype_ids: list[str] = Field(default_factory=list, alias="appliedStereotypeIds")
+    diagram_element_ids: list[str] = Field(default_factory=list, alias="diagramElementIds")
     attributes: dict[str, Any] = Field(default_factory=dict)
     references: dict[str, list[str]] = Field(default_factory=dict)
 
-    @field_validator("name", "human_name", "qualified_name", "human_type", "metaclass", "documentation", mode="before")
+    @field_validator(
+        "name",
+        "human_name",
+        "qualified_name",
+        "human_type",
+        "metaclass",
+        "documentation",
+        "diagram_type",
+        "diagram_preview_format",
+        "diagram_preview_base64",
+        mode="before",
+    )
     @classmethod
     def normalize_nullable_strings(cls, value: object) -> str:
         if value is None:

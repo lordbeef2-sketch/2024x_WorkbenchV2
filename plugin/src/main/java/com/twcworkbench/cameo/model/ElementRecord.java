@@ -16,8 +16,12 @@ public class ElementRecord {
     public String humanType;
     public String metaclass;
     public String documentation;
+    public String diagramType;
+    public String diagramPreviewFormat;
+    public String diagramPreviewBase64;
     public List<String> ownedElementIds = new ArrayList<>();
     public List<String> appliedStereotypeIds = new ArrayList<>();
+    public List<String> diagramElementIds = new ArrayList<>();
     public Map<String, Object> attributes = new LinkedHashMap<>();
     public Map<String, List<String>> references = new LinkedHashMap<>();
 
@@ -33,8 +37,12 @@ public class ElementRecord {
                 safe(humanType),
                 safe(metaclass),
                 safe(documentation),
+                safe(diagramType),
+                safe(diagramPreviewFormat),
+                safe(diagramPreviewBase64),
                 ownedElementIds.toString(),
                 appliedStereotypeIds.toString(),
+                diagramElementIds.toString(),
                 attributes.toString(),
                 references.toString());
     }

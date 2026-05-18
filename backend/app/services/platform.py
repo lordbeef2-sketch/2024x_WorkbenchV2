@@ -368,7 +368,6 @@ class PlatformService:
         )
 
     async def list_projects(self, session: SessionData, refresh: bool = False):
-        await self._ensure_plugin_listing_permissions(session)
         projects = self._project_summaries_from_cache_for_user(session)
         self.repo.delete_user_cache(
             self._user_key(session.user.preferred_username),
@@ -384,8 +383,6 @@ class PlatformService:
             cached_branches = self._cached_model_list(session, cache_key, BranchSummary)
             if cached_branches is not None:
                 return cached_branches
-
-        await self._ensure_plugin_listing_permissions(session, project_id=project_id)
 
         branches = self._branch_summaries_from_cache_for_user(session, project_id)
         self.repo.upsert_user_cache(
@@ -724,6 +721,7 @@ class PlatformService:
         search: str | None = None,
         limit: int = 200,
         offset: int = 0,
+        all_results: bool = False,
     ) -> CachedElementQueryResponse:
         return self.list_cached_branch_elements_for_user(
             session.server.id,
@@ -734,6 +732,7 @@ class PlatformService:
             search=search,
             limit=limit,
             offset=offset,
+            all_results=all_results,
         )
 
     def search_cached_branch_elements(
@@ -1123,7 +1122,13 @@ class PlatformService:
         projects: dict[str, CacheProjectEntry] = {}
         for summary in self.repo.list_branch_cache_summaries(server_id):
             if self._is_plugin_managed_summary(summary):
-                branch_access = self._branch_access_for_user(user_id, server_id, summary.project_id, summary.branch_id)
+                branch_access = self._plugin_branch_access_or_source_fallback(
+                    user_id,
+                    server_id,
+                    summary.project_id,
+                    summary.branch_id,
+                    summary,
+                )
                 if branch_access is None or not branch_access.accessible:
                     continue
                 visible_model_count = summary.model_count
@@ -1229,7 +1234,13 @@ class PlatformService:
             for record in records
         ]
         self.repo.replace_branch_access_records_for_branch(session.server.id, project_id, branch_id, normalized_records)
-        current_user_access = next((record for record in normalized_records if record.user_id == self._user_key(session.user.preferred_username)), None)
+        current_user_access = self._plugin_branch_access_or_source_fallback(
+            self._user_key(session.user.preferred_username),
+            session.server.id,
+            project_id,
+            branch_id,
+            summary,
+        )
         models = self.repo.list_cached_models(session.server.id, project_id, branch_id)
         self.repo.replace_model_permissions_for_user_branch(
             self._user_key(session.user.preferred_username),
@@ -1261,7 +1272,13 @@ class PlatformService:
         if summary is None:
             return None
         if self._is_plugin_managed_summary(summary):
-            branch_access = self._branch_access_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
+            branch_access = self._plugin_branch_access_or_source_fallback(
+                self._user_key(preferred_username),
+                server_id,
+                project_id,
+                branch_id,
+                summary,
+            )
             if branch_access is None or not branch_access.accessible:
                 return None
             return summary
@@ -1288,7 +1305,13 @@ class PlatformService:
             return None
         user_id = self._user_key(preferred_username)
         if self._is_plugin_managed_summary(summary):
-            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            branch_access = self._plugin_branch_access_or_source_fallback(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                summary,
+            )
             if branch_access is None or not branch_access.accessible:
                 return None
             models = [
@@ -1318,7 +1341,13 @@ class PlatformService:
         user_id = self._user_key(preferred_username)
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
-            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            branch_access = self._plugin_branch_access_or_source_fallback(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                summary,
+            )
             if branch_access is None or not branch_access.accessible:
                 return None
             model = self.repo.get_cached_model(server_id, project_id, branch_id, model_id)
@@ -1345,12 +1374,22 @@ class PlatformService:
         search: str | None = None,
         limit: int = 200,
         offset: int = 0,
+        all_results: bool = False,
     ) -> CachedElementQueryResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
+        if all_results:
+            limit = max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1)
+            offset = 0
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
-            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            branch_access = self._plugin_branch_access_or_source_fallback(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                summary,
+            )
             if branch_access is None or not branch_access.accessible:
                 return CachedElementQueryResponse(total=0, items=[])
             return self.repo.list_cached_elements(
@@ -1476,7 +1515,13 @@ class PlatformService:
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         branch_total = max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1)
         if self._is_plugin_managed_summary(summary):
-            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            branch_access = self._plugin_branch_access_or_source_fallback(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                summary,
+            )
             if branch_access is None or not branch_access.accessible:
                 return []
             return self.repo.list_cached_elements(
@@ -1610,34 +1655,13 @@ class PlatformService:
             visible_models = self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id)
 
         for model in visible_models:
-            records = {
-                record.element_id: record
-                for record in self._visible_cached_elements_for_user(
-                    user_id,
+            if parent_id == model.model_id:
+                items = self._tree_children_for_model_root(
                     server_id,
                     project_id,
                     branch_id,
-                    model_id=model.model_id,
+                    model,
                 )
-            }
-            if parent_id == model.model_id:
-                parent_to_children, root_ids = self._tree_indexes_for_model(model, records)
-                child_ids = sorted(root_ids, key=lambda element_id: self._cached_element_sort_key(records.get(element_id), element_id))
-                items = [
-                    self._build_tree_node_from_record(
-                        project_id=project_id,
-                        branch_id=branch_id,
-                        model_id=model.model_id,
-                        model_records=records,
-                        parent_to_children=parent_to_children,
-                        element_id=child_id,
-                        parent_path=f"{project_id}/{branch_id}/{model.name or model.model_id}",
-                        trail=(model.model_id,),
-                        covered=set(),
-                        depth=0,
-                    )
-                    for child_id in child_ids
-                ]
                 return CacheChildrenResponse(
                     server_id=server_id,
                     project_id=project_id,
@@ -1648,30 +1672,22 @@ class PlatformService:
                     items=items,
                 )
 
-            parent_record = records.get(parent_id)
+            parent_record = self.repo.get_cached_element(
+                server_id,
+                project_id,
+                branch_id,
+                parent_id,
+                model_id=model.model_id,
+            )
             if parent_record is None:
                 continue
-            parent_to_children, _ = self._tree_indexes_for_model(model, records)
-            parent_path = str(parent_record.payload.get("qualified_name") or parent_record.path or parent_record.name or parent_record.element_id)
-            child_ids = sorted(
-                parent_to_children.get(parent_id, []),
-                key=lambda element_id: self._cached_element_sort_key(records.get(element_id), element_id),
+            items = self._tree_children_for_parent(
+                server_id,
+                project_id,
+                branch_id,
+                model.model_id,
+                parent_record,
             )
-            items = [
-                self._build_tree_node_from_record(
-                    project_id=project_id,
-                    branch_id=branch_id,
-                    model_id=model.model_id,
-                    model_records=records,
-                    parent_to_children=parent_to_children,
-                    element_id=child_id,
-                    parent_path=parent_path,
-                    trail=(model.model_id, parent_id),
-                    covered=set(),
-                    depth=0,
-                )
-                for child_id in child_ids
-            ]
             return CacheChildrenResponse(
                 server_id=server_id,
                 project_id=project_id,
@@ -1929,6 +1945,13 @@ class PlatformService:
         editable = False
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
+            branch_access = self._plugin_branch_access_or_source_fallback(
+                self._user_key(preferred_username),
+                server_id,
+                project_id,
+                branch_id,
+                summary,
+            )
             editable = bool(branch_access.editable) if branch_access and branch_access.accessible else False
         else:
             permission = self.repo.get_model_permission(
@@ -1981,7 +2004,13 @@ class PlatformService:
         if record is None:
             return None
 
-        branch_access = self._branch_access_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
+        branch_access = self._plugin_branch_access_or_source_fallback(
+            self._user_key(preferred_username),
+            server_id,
+            project_id,
+            branch_id,
+            summary,
+        )
         if branch_access is None or not branch_access.accessible or not branch_access.editable:
             raise PermissionError("The active Workbench user does not have edit access to this cached branch.")
 
@@ -2669,14 +2698,225 @@ class PlatformService:
                 root_ids.append(root_text)
 
         if root_ids:
-            return root_ids
+            return self._normalize_model_root_ids(model, model_records, root_ids)
 
         model_record = model_records.get(model.model_id)
         if model_record is not None:
             for child_id in [str(value).strip() for value in model_record.payload.get("owned_element_ids") or [] if str(value).strip()]:
                 if child_id != model.model_id and child_id in model_records and child_id not in root_ids:
                     root_ids.append(child_id)
-        return root_ids
+        return self._normalize_model_root_ids(model, model_records, root_ids)
+
+    def _normalize_model_root_ids(
+        self,
+        model: CachedModelRecord,
+        model_records: dict[str, CachedElementRecord],
+        root_ids: list[str],
+    ) -> list[str]:
+        normalized_root_ids = [root_id for root_id in root_ids if root_id and root_id != model.model_id]
+        if len(normalized_root_ids) != 1:
+            return normalized_root_ids
+        root_record = model_records.get(normalized_root_ids[0])
+        if root_record is None or not self._is_modelish_record(root_record):
+            return normalized_root_ids
+        root_name = normalize_lookup_key(str(root_record.name or root_record.payload.get("human_name") or ""))
+        model_name = normalize_lookup_key(str(model.name or model.payload.get("human_name") or ""))
+        if not root_name or root_name != model_name:
+            return normalized_root_ids
+        lifted_ids = [
+            child_id
+            for child_id in [str(value).strip() for value in root_record.payload.get("owned_element_ids") or [] if str(value).strip()]
+            if child_id != model.model_id and child_id in model_records
+        ]
+        return lifted_ids or normalized_root_ids
+
+    def _is_modelish_record(self, record: CachedElementRecord) -> bool:
+        normalized_type = normalize_lookup_key(
+            str(record.payload.get("metaclass") or record.item_type or record.payload.get("human_type") or "element")
+        )
+        return normalized_type in {"model", "sysml model", "uml model"}
+
+    def _tree_node_summary_from_record(
+        self,
+        *,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        record: CachedElementRecord,
+    ) -> TreeNode:
+        qualified_name = str(record.payload.get("qualified_name") or record.path or "").strip()
+        child_ids = [str(value).strip() for value in record.payload.get("owned_element_ids") or [] if str(value).strip()]
+        metaclass = str(record.payload.get("metaclass") or record.item_type or "element").strip()
+        stereotypes = [str(value).strip() for value in record.payload.get("applied_stereotype_ids") or [] if str(value).strip()]
+        child_count = max(record.child_count, len(child_ids))
+        label = self._presentable_tree_label(server_id, project_id, branch_id, record)
+        subtitle = self._presentable_tree_subtitle(server_id, project_id, branch_id, record)
+        return TreeNode(
+            id=record.element_id,
+            label=label,
+            node_type=record.item_type,
+            path=qualified_name or record.path or record.name or record.element_id,
+            children=[],
+            metadata={
+                "project_id": project_id,
+                "branch_id": branch_id,
+                "model_id": model_id,
+                "owner_id": str(record.payload.get("owner_id") or "").strip(),
+                "child_count": child_count,
+                "children_loaded": False,
+                "qualified_name": qualified_name,
+                "metaclass": metaclass,
+                "stereotypes": stereotypes,
+                "subtitle": subtitle,
+            },
+        )
+
+    def _presentable_tree_label(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        record: CachedElementRecord,
+    ) -> str:
+        raw_label = str(record.name or record.element_id).strip() or record.element_id
+        normalized_type = normalize_lookup_key(str(record.item_type or record.payload.get("metaclass") or "element"))
+        references = record.payload.get("references") or {}
+        if normalized_type in {"package import", "element import"} and isinstance(references, dict):
+            candidate_ids = []
+            for key in ("importedPackage", "importedElement", "importedMember", "target"):
+                values = references.get(key)
+                if isinstance(values, list):
+                    candidate_ids.extend(str(value).strip() for value in values if str(value).strip())
+            for candidate_id in candidate_ids:
+                target = self.repo.get_cached_element(server_id, project_id, branch_id, candidate_id)
+                if target is not None and target.name and normalize_lookup_key(target.name) != normalize_lookup_key(raw_label):
+                    return f"Import {target.name}"
+        if normalized_type == "comment":
+            documentation = str(record.payload.get("documentation") or "").strip()
+            if documentation:
+                first_line = documentation.splitlines()[0].strip()
+                if first_line:
+                    return first_line[:96]
+        return raw_label
+
+    def _presentable_tree_subtitle(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        record: CachedElementRecord,
+    ) -> str:
+        normalized_type = normalize_lookup_key(str(record.item_type or record.payload.get("metaclass") or "element"))
+        diagram_type = str(record.payload.get("diagram_type") or "").strip()
+        if diagram_type:
+            return diagram_type
+        references = record.payload.get("references") or {}
+        if normalized_type in {"package import", "element import"} and isinstance(references, dict):
+            candidate_ids = []
+            for key in ("importedPackage", "importedElement", "importedMember", "target"):
+                values = references.get(key)
+                if isinstance(values, list):
+                    candidate_ids.extend(str(value).strip() for value in values if str(value).strip())
+            for candidate_id in candidate_ids:
+                target = self.repo.get_cached_element(server_id, project_id, branch_id, candidate_id)
+                if target is not None and target.path:
+                    return target.path
+                if target is not None and target.name:
+                    return target.name
+            return "Imported reference"
+        metaclass = str(record.payload.get("metaclass") or record.item_type or "element").strip()
+        return metaclass or record.item_type
+
+    def _tree_children_for_model_root(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        model: CachedModelRecord,
+    ) -> list[TreeNode]:
+        initial_records = self.repo.list_cached_elements_by_ids(
+            server_id,
+            project_id,
+            branch_id,
+            [model.model_id, *model.root_ids],
+            model_id=model.model_id,
+        )
+        records_by_id = {record.element_id: record for record in initial_records}
+        root_ids = self._sanitize_model_root_ids(model, records_by_id)
+        missing_root_ids = [root_id for root_id in root_ids if root_id not in records_by_id]
+        if missing_root_ids:
+            for record in self.repo.list_cached_elements_by_ids(
+                server_id,
+                project_id,
+                branch_id,
+                missing_root_ids,
+                model_id=model.model_id,
+            ):
+                records_by_id[record.element_id] = record
+        ordered_records = [records_by_id[root_id] for root_id in root_ids if root_id in records_by_id]
+        return [
+            self._tree_node_summary_from_record(
+                project_id=project_id,
+                server_id=server_id,
+                branch_id=branch_id,
+                model_id=model.model_id,
+                record=record,
+            )
+            for record in ordered_records
+        ]
+
+    def _tree_children_for_parent(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        parent_record: CachedElementRecord,
+    ) -> list[TreeNode]:
+        owned_child_ids = [
+            child_id
+            for child_id in [str(value).strip() for value in parent_record.payload.get("owned_element_ids") or [] if str(value).strip()]
+            if child_id and child_id != parent_record.element_id
+        ]
+        child_records = {
+            record.element_id: record
+            for record in self.repo.list_cached_elements_by_owner(
+                server_id,
+                project_id,
+                branch_id,
+                model_id,
+                parent_record.element_id,
+            )
+            if record.element_id != parent_record.element_id
+        }
+        missing_owned_child_ids = [child_id for child_id in owned_child_ids if child_id not in child_records]
+        if missing_owned_child_ids:
+            for record in self.repo.list_cached_elements_by_ids(
+                server_id,
+                project_id,
+                branch_id,
+                missing_owned_child_ids,
+                model_id=model_id,
+            ):
+                if record.element_id != parent_record.element_id:
+                    child_records[record.element_id] = record
+
+        ordered_records = [child_records[child_id] for child_id in owned_child_ids if child_id in child_records]
+        extra_records = sorted(
+            [record for child_id, record in child_records.items() if child_id not in owned_child_ids],
+            key=lambda item: self._cached_element_sort_key(item, item.element_id),
+        )
+        return [
+            self._tree_node_summary_from_record(
+                project_id=project_id,
+                server_id=server_id,
+                branch_id=branch_id,
+                model_id=model_id,
+                record=record,
+            )
+            for record in [*ordered_records, *extra_records]
+        ]
 
     def _repair_cached_model_roots(
         self,
@@ -4040,7 +4280,13 @@ class PlatformService:
                 normalized_records,
             )
             self._write_branch_access_manifest(resolved_summary, normalized_records)
-            current_user_access = self._branch_access_for_user(user_id, session.server.id, project_id, branch_id)
+            current_user_access = self._plugin_branch_access_or_source_fallback(
+                user_id,
+                session.server.id,
+                project_id,
+                branch_id,
+                resolved_summary,
+            )
             if current_user_access is not None:
                 self.repo.replace_model_permissions_for_user_branch(
                     user_id,
@@ -4157,17 +4403,52 @@ class PlatformService:
     ) -> BranchAccessRecord | None:
         return self.repo.get_branch_access_record(user_id, server_id, project_id, branch_id)
 
+    def _plugin_branch_access_or_source_fallback(
+        self,
+        user_id: str,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        summary: BranchCacheSummary | None = None,
+    ) -> BranchAccessRecord | None:
+        branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+        if branch_access is not None:
+            return branch_access
+        resolved_summary = summary or self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if not self._is_plugin_managed_summary(resolved_summary):
+            return None
+        source_user = self._user_key(resolved_summary.source_user or "")
+        if not source_user or source_user != user_id:
+            return None
+        return BranchAccessRecord(
+            user_id=user_id,
+            server_id=server_id,
+            project_id=project_id,
+            branch_id=branch_id,
+            workspace_id=resolved_summary.workspace_id,
+            branch_name=resolved_summary.branch_name or branch_id,
+            latest_revision=resolved_summary.latest_revision,
+            accessible=True,
+            editable=True,
+            admin_access=True,
+            roles=["Snapshot Publisher"],
+            source="cameo-plugin-ingest-fallback",
+            payload={"source_user": resolved_summary.source_user, "fallback": True},
+            updated_at=resolved_summary.updated_at,
+        )
+
     def _branch_access_for_session(
         self,
         session: SessionData,
         project_id: str,
         branch_id: str,
     ) -> BranchAccessRecord | None:
-        return self._branch_access_for_user(
+        return self._plugin_branch_access_or_source_fallback(
             self._user_key(session.user.preferred_username),
             session.server.id,
             project_id,
             branch_id,
+            self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id),
         )
 
     def _plugin_permission_snapshot_from_branch_access(
@@ -4205,7 +4486,13 @@ class PlatformService:
     ) -> list[CachedModelRecord]:
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
-            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            branch_access = self._plugin_branch_access_or_source_fallback(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                summary,
+            )
             if branch_access is None or not branch_access.accessible:
                 return []
             return self.repo.list_cached_models(server_id, project_id, branch_id)
@@ -4422,8 +4709,12 @@ class PlatformService:
                 "human_type": element.human_type,
                 "metaclass": element.metaclass,
                 "documentation": element.documentation,
+                "diagram_type": element.diagram_type,
+                "diagram_preview_format": element.diagram_preview_format,
+                "diagram_preview_base64": element.diagram_preview_base64,
                 "owned_element_ids": element.owned_element_ids,
                 "applied_stereotype_ids": element.applied_stereotype_ids,
+                "diagram_element_ids": element.diagram_element_ids,
                 "attributes": element.attributes,
                 "references": element.references,
             },

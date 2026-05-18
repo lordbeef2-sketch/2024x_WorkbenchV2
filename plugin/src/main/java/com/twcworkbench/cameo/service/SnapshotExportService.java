@@ -2,9 +2,12 @@ package com.twcworkbench.cameo.service;
 
 import com.nomagic.magicdraw.core.Project;
 import com.nomagic.magicdraw.core.ProjectUtilities;
+import com.nomagic.magicdraw.export.image.ImageExporter;
 import com.nomagic.magicdraw.esi.EsiUtils;
+import com.nomagic.magicdraw.uml.symbols.DiagramPresentationElement;
 import com.nomagic.uml2.ext.jmi.helpers.ModelHelper;
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Diagram;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement;
 import com.nomagic.uml2.ext.magicdraw.mdprofiles.Stereotype;
@@ -16,9 +19,11 @@ import org.eclipse.emf.common.util.URI;
 import org.eclipse.emf.ecore.EStructuralFeature;
 
 import java.net.URISyntaxException;
+import java.nio.file.Files;
 import java.time.OffsetDateTime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -65,13 +70,13 @@ public class SnapshotExportService {
             report(progress, "Preparing primary model snapshot...");
             ModelRecord modelRecord = mapModel(primaryModel);
             payload.models.add(modelRecord);
-            payload.elements.addAll(traverseElements(primaryModel, modelRecord.modelId, progress));
+            payload.elements.addAll(traverseElements(project, primaryModel, modelRecord.modelId, progress));
         }
         report(progress, "Snapshot capture complete.");
         return payload;
     }
 
-    private List<ElementRecord> traverseElements(Element primaryModel, String modelId, Consumer<String> progress) {
+    private List<ElementRecord> traverseElements(Project project, Element primaryModel, String modelId, Consumer<String> progress) {
         Map<String, ElementRecord> recordsById = new LinkedHashMap<>();
         Deque<Element> queue = new ArrayDeque<>();
         queue.add(primaryModel);
@@ -85,7 +90,7 @@ public class SnapshotExportService {
                 continue;
             }
 
-            ElementRecord record = mapElement(current, modelId);
+            ElementRecord record = mapElement(project, current, modelId);
             recordsById.put(currentId, record);
             visitedCount += 1;
             if (visitedCount == 1 || visitedCount % 250 == 0) {
@@ -132,7 +137,7 @@ public class SnapshotExportService {
         return record;
     }
 
-    private ElementRecord mapElement(Element element, String modelId) {
+    private ElementRecord mapElement(Project project, Element element, String modelId) {
         ElementRecord record = new ElementRecord();
         record.elementId = safeId(element);
         record.modelId = modelId;
@@ -161,7 +166,45 @@ public class SnapshotExportService {
         }
 
         extractFeatureData(element, record);
+        if (element instanceof Diagram) {
+            populateDiagramPreview(project, (Diagram) element, record);
+        }
         return record;
+    }
+
+    private void populateDiagramPreview(Project project, Diagram diagram, ElementRecord record) {
+        try {
+            DiagramPresentationElement presentationElement = project.getDiagram(diagram);
+            if (presentationElement == null) {
+                return;
+            }
+            presentationElement.ensureLoaded();
+            if (presentationElement.getDiagramType() != null) {
+                record.diagramType = safeString(presentationElement.getDiagramType().getType());
+            }
+            for (Element usedElement : presentationElement.getUsedModelElements(true)) {
+                String usedId = safeId(usedElement);
+                if (usedId != null && !usedId.isBlank() && !record.diagramElementIds.contains(usedId)) {
+                    record.diagramElementIds.add(usedId);
+                }
+            }
+
+            java.io.File previewFile = java.io.File.createTempFile("twc-workbench-diagram-", ".png");
+            try {
+                ImageExporter.export(presentationElement, ImageExporter.PNG, previewFile, false, 144, 100);
+                byte[] bytes = Files.readAllBytes(previewFile.toPath());
+                if (bytes.length > 0) {
+                    record.diagramPreviewFormat = "image/png";
+                    record.diagramPreviewBase64 = Base64.getEncoder().encodeToString(bytes);
+                }
+            }
+            finally {
+                Files.deleteIfExists(previewFile.toPath());
+            }
+        }
+        catch (Exception ignored) {
+            // Diagram previews are best-effort; the semantic snapshot should still publish.
+        }
     }
 
     private void extractFeatureData(Element element, ElementRecord record) {

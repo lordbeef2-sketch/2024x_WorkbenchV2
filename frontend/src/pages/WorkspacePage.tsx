@@ -334,8 +334,12 @@ function payloadExtraSections(item: ItemDetails): Array<[string, unknown]> {
         "human_type",
         "metaclass",
         "documentation",
+        "diagram_type",
+        "diagram_preview_format",
+        "diagram_preview_base64",
         "owned_element_ids",
         "applied_stereotype_ids",
+        "diagram_element_ids",
         "attributes",
         "references",
       ].includes(key)
@@ -344,6 +348,16 @@ function payloadExtraSections(item: ItemDetails): Array<[string, unknown]> {
     }
     return hasMeaningfulValue(value);
   });
+}
+
+function diagramPreviewDataUrl(item: ItemDetails): string | null {
+  const sourcePayload = item.source_payload ?? {};
+  const format = typeof sourcePayload.diagram_preview_format === "string" ? sourcePayload.diagram_preview_format.trim() : "";
+  const encoded = typeof sourcePayload.diagram_preview_base64 === "string" ? sourcePayload.diagram_preview_base64.trim() : "";
+  if (!format || !encoded) {
+    return null;
+  }
+  return `data:${format};base64,${encoded}`;
 }
 
 function identityRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
@@ -1699,6 +1713,7 @@ export default function WorkspacePage() {
                     const quickAttributes = mapToInspectorRows(payloadAttributes(selectedWorkspaceItem), referenceNameById);
                     const quickMetadata = mapToInspectorRows(selectedWorkspaceItem.metadata, referenceNameById);
                     const quickReferences = mapToInspectorRows(payloadReferences(selectedWorkspaceItem), referenceNameById);
+                    const quickDiagramPreview = diagramPreviewDataUrl(selectedWorkspaceItem);
                     return (
                       <>
                   <Stack spacing={0.75}>
@@ -1712,6 +1727,27 @@ export default function WorkspacePage() {
                       {selectedWorkspaceItem.editable && canEdit ? <Chip label="Editable" color="success" variant="outlined" /> : null}
                     </Stack>
                   </Stack>
+                  {quickDiagramPreview ? (
+                    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                      <Stack spacing={1.5}>
+                        <Typography variant="subtitle2">Diagram Preview</Typography>
+                        <Box
+                          component="img"
+                          src={quickDiagramPreview}
+                          alt={selectedWorkspaceItemName}
+                          sx={{
+                            width: "100%",
+                            maxHeight: 520,
+                            objectFit: "contain",
+                            borderRadius: 1,
+                            border: "1px solid",
+                            borderColor: "divider",
+                            bgcolor: "background.default",
+                          }}
+                        />
+                      </Stack>
+                    </Paper>
+                  ) : null}
                   <Grid container spacing={2}>
                     <Grid item xs={12} md={6}>
                       <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
@@ -1829,6 +1865,7 @@ export default function WorkspacePage() {
     const extraSections = payloadExtraSections(itemDraft);
     const identitySectionRows = identityRows(itemDraft, referenceNameById);
     const overviewSectionRows = overviewRows(itemDraft, referenceNameById);
+    const detailDiagramPreview = diagramPreviewDataUrl(itemDraft);
 
     return (
         <Stack spacing={2}>
@@ -1925,6 +1962,29 @@ export default function WorkspacePage() {
                     )}
                   </AccordionDetails>
                 </Accordion>
+                {detailDiagramPreview ? (
+                  <Accordion defaultExpanded disableGutters>
+                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                      <Typography variant="subtitle2">Diagram Preview</Typography>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Box
+                        component="img"
+                        src={detailDiagramPreview}
+                        alt={displayEntityName(itemDraft.name, itemDraft.id, itemDraft.item_type, referenceNameById)}
+                        sx={{
+                          width: "100%",
+                          maxHeight: 720,
+                          objectFit: "contain",
+                          borderRadius: 1,
+                          border: "1px solid",
+                          borderColor: "divider",
+                          bgcolor: "background.default",
+                        }}
+                      />
+                    </AccordionDetails>
+                  </Accordion>
+                ) : null}
                 {referenceRows.length ? (
                   <Accordion disableGutters>
                     <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>

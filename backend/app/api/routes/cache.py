@@ -207,6 +207,7 @@ def cached_elements(
     branch_id: str,
     modelId: str | None = Query(default=None),
     search: str | None = Query(default=None),
+    allResults: bool = Query(default=False),
     limit: int = Query(default=200, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     preferred_username: str = Depends(require_cache_api_token),
@@ -222,6 +223,7 @@ def cached_elements(
             search=search,
             limit=limit,
             offset=offset,
+            all_results=allResults,
         )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc

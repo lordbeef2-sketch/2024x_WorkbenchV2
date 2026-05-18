@@ -1458,6 +1458,8 @@ class TeamworkAdapter:
             "ldp:hasMemberRelation",
             "ldp:membershipResource",
             "kerml:esiData",
+            "diagram_preview_format",
+            "diagram_preview_base64",
         }
         for key, value in entity.items():
             if key in ignored_keys or value in (None, "", [], {}):
@@ -1539,6 +1541,8 @@ class TeamworkAdapter:
             "uml:stereotypeId",
             "stereotypeName",
             "stereotypes",
+            "diagram_preview_format",
+            "diagram_preview_base64",
         }
 
         resolution_ids: list[str] = []
@@ -1694,6 +1698,8 @@ class TeamworkAdapter:
             "uml:stereotypeId",
             "stereotypeName",
             "stereotypes",
+            "diagram_preview_format",
+            "diagram_preview_base64",
         }
 
         resolution_ids = self.reference_resolution_ids(payload)
