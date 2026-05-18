@@ -857,6 +857,11 @@ export default function WorkspacePage() {
     }
   }, [branchesQuery.isLoading, selectedBranchId, selectedProjectBranches, selectedProjectId]);
 
+  useEffect(() => {
+    setSelectedItemId("");
+    setItemDraft(null);
+  }, [selectedBranchId]);
+
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
     queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined, false, 0),

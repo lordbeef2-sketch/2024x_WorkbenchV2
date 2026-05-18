@@ -832,6 +832,7 @@ class TeamworkAdapter:
         self.context = context
         self._detected_version: str | None = None
         self._last_project_list_issue: str | None = None
+        self._readonly_branch_probe_supported: bool | None = None
         self.verify = (
             context.server.ca_bundle_path if context.server.verify_tls and context.server.ca_bundle_path else context.server.verify_tls
         )
@@ -2935,14 +2936,28 @@ class TeamworkAdapter:
         return group_name, usernames
 
     async def _user_readonly_branches(self, project_id: str, username: str) -> list[str]:
+        if self._readonly_branch_probe_supported is False:
+            return []
         encoded_username = quote(username, safe="")
-        payload = await self._request_candidates_paged(
+        payload, trace = await self._request_candidates_with_trace(
             "GET",
             [f"/osmc/admin/user/resources/{project_id}/branches/readonly?username={encoded_username}&resolve=true"],
             timeout=30.0,
         )
+        if payload is None:
+            attempts = trace.get("attempts", [])
+            if any(attempt.get("status_code") == 404 for attempt in attempts):
+                if self._readonly_branch_probe_supported is not False:
+                    logger.info(
+                        "readonly-branch-endpoint-unsupported",
+                        server_id=self.context.server.id,
+                        project_id=project_id,
+                    )
+                self._readonly_branch_probe_supported = False
+            return []
         if not payload or (isinstance(payload, dict) and payload.get("restricted")):
             return []
+        self._readonly_branch_probe_supported = True
         return [str(item).strip() for item in _as_list(payload) if str(item).strip()]
 
     def _role_access_flags(self, role: dict[str, Any]) -> tuple[bool, bool, bool]:

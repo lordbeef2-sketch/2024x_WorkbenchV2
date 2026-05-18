@@ -1903,7 +1903,13 @@ class PlatformService:
         user_id = self._user_key(preferred_username)
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
-            branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
+            branch_access = self._plugin_branch_access_or_source_fallback(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                summary,
+            )
             if branch_access is None or not branch_access.accessible:
                 return None
             if model_id is not None:
@@ -2552,12 +2558,37 @@ class PlatformService:
         branch_id: str,
     ) -> ItemDetails | None:
         cached_record = self.get_cached_branch_element(session, project_id, branch_id, item_id)
-        if cached_record is None:
-            return None
-
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        branch_access = self._branch_access_for_session(session, project_id, branch_id) if self._is_plugin_managed_summary(summary) else None
+        editable = False
+        if cached_record is None:
+            cached_model = self.repo.get_cached_model(session.server.id, project_id, branch_id, item_id)
+            if cached_model is None:
+                return None
+            if self._is_plugin_managed_summary(summary):
+                if branch_access is None or not branch_access.accessible:
+                    return None
+                editable = bool(branch_access.editable)
+            else:
+                permission = self.repo.get_model_permission(
+                    self._user_key(session.user.preferred_username),
+                    session.server.id,
+                    project_id,
+                    branch_id,
+                    cached_model.model_id,
+                )
+                if permission is None or not permission.accessible or permission.restricted:
+                    return None
+                editable = bool(permission.editable)
+            return self._materialized_model_item_details(
+                session,
+                cached_model,
+                project_id,
+                branch_id,
+                editable=editable,
+            )
+
         if self._is_plugin_managed_summary(summary):
-            branch_access = self._branch_access_for_session(session, project_id, branch_id)
             editable = bool(branch_access.editable) if branch_access and branch_access.accessible else False
         else:
             permission = self.repo.get_model_permission(
@@ -2583,6 +2614,44 @@ class PlatformService:
             resolved_payloads=resolved_payloads,
             editable=editable,
             version=cached_record.latest_revision or cached_record.synced_at.isoformat(),
+        )
+
+    def _materialized_model_item_details(
+        self,
+        session: SessionData,
+        model: CachedModelRecord,
+        project_id: str,
+        branch_id: str,
+        *,
+        editable: bool,
+    ) -> ItemDetails:
+        adapter = self._adapter_for_session(session)
+        synthetic_payload: dict[str, Any] = {
+            "@id": model.model_id,
+            "@type": ["Model"],
+            "name": model.payload.get("name") or model.name or model.model_id,
+            "dcterms:title": model.payload.get("human_name") or model.name or model.model_id,
+            "qualified_name": model.payload.get("qualified_name") or model.name or model.model_id,
+            "human_type": "Model",
+            "metaclass": "Model",
+            "owner_id": model.payload.get("owner_id"),
+            "root_element_ids": model.root_ids,
+            "ldp:contains": [{"@id": root_id} for root_id in model.root_ids if str(root_id).strip()],
+            "editable": editable,
+        }
+        resolved_payloads: dict[str, Any] = {}
+        for root_id in model.root_ids:
+            referenced_record = self.get_cached_branch_element(session, project_id, branch_id, root_id)
+            if referenced_record is not None and isinstance(referenced_record.payload, dict):
+                resolved_payloads[root_id] = referenced_record.payload
+        return adapter.build_item_details_from_payload(
+            synthetic_payload,
+            model.model_id,
+            project_id,
+            branch_id,
+            resolved_payloads=resolved_payloads,
+            editable=editable,
+            version=model.latest_revision or model.synced_at.isoformat(),
         )
 
     def _accessible_cached_models(
