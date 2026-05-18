@@ -4,7 +4,7 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, TypeVar
 
 from app.models.domain import (
     BranchAccessRecord,
@@ -23,6 +23,9 @@ from app.models.domain import (
 )
 
 
+TransactionResultT = TypeVar("TransactionResultT")
+
+
 class SqliteRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
@@ -33,6 +36,17 @@ class SqliteRepository:
         connection = sqlite3.connect(self.database_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def run_in_transaction(self, callback: Callable[[sqlite3.Connection], TransactionResultT]) -> TransactionResultT:
+        with self._lock, self._connect() as connection:
+            try:
+                connection.execute("BEGIN")
+                result = callback(connection)
+            except Exception:
+                connection.rollback()
+                raise
+            connection.commit()
+            return result
 
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
@@ -580,8 +594,13 @@ class SqliteRepository:
             return None
         return BranchCacheSummary.model_validate_json(row["payload"])
 
-    def upsert_branch_cache_summary(self, summary: BranchCacheSummary) -> BranchCacheSummary:
-        with self._lock, self._connect() as connection:
+    def upsert_branch_cache_summary(
+        self,
+        summary: BranchCacheSummary,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> BranchCacheSummary:
+        if connection is not None:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO twc_branch_cache (server_id, project_id, branch_id, status, updated_at, payload)
@@ -596,7 +615,10 @@ class SqliteRepository:
                     summary.model_dump_json(),
                 ),
             )
-            connection.commit()
+            return summary
+        with self._lock, self._connect() as managed_connection:
+            self.upsert_branch_cache_summary(summary, connection=managed_connection)
+            managed_connection.commit()
         return summary
 
     def delete_branch_cache(self, server_id: str, project_id: str, branch_id: str) -> None:
@@ -623,8 +645,15 @@ class SqliteRepository:
             )
             connection.commit()
 
-    def list_cached_models(self, server_id: str, project_id: str, branch_id: str) -> list[CachedModelRecord]:
-        with self._lock, self._connect() as connection:
+    def list_cached_models(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[CachedModelRecord]:
+        if connection is not None:
             rows = connection.execute(
                 """
                 SELECT payload FROM twc_cached_models
@@ -633,7 +662,9 @@ class SqliteRepository:
                 """,
                 (server_id, project_id, branch_id),
             ).fetchall()
-        return [CachedModelRecord.model_validate_json(row["payload"]) for row in rows]
+            return [CachedModelRecord.model_validate_json(row["payload"]) for row in rows]
+        with self._lock, self._connect() as managed_connection:
+            return self.list_cached_models(server_id, project_id, branch_id, connection=managed_connection)
 
     def get_cached_model(self, server_id: str, project_id: str, branch_id: str, model_id: str) -> CachedModelRecord | None:
         with self._lock, self._connect() as connection:
@@ -648,11 +679,16 @@ class SqliteRepository:
             return None
         return CachedModelRecord.model_validate_json(row["payload"])
 
-    def upsert_cached_models(self, records: Iterable[CachedModelRecord]) -> None:
+    def upsert_cached_models(
+        self,
+        records: Iterable[CachedModelRecord],
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
         items = list(records)
         if not items:
             return
-        with self._lock, self._connect() as connection:
+        if connection is not None:
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO twc_cached_models (server_id, project_id, branch_id, model_id, name, updated_at, payload)
@@ -671,7 +707,10 @@ class SqliteRepository:
                     for item in items
                 ],
             )
-            connection.commit()
+            return
+        with self._lock, self._connect() as managed_connection:
+            self.upsert_cached_models(items, connection=managed_connection)
+            managed_connection.commit()
 
     def get_model_permission(
         self,
@@ -785,9 +824,11 @@ class SqliteRepository:
         project_id: str,
         branch_id: str,
         records: Iterable[ModelPermissionSnapshot],
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> None:
         items = list(records)
-        with self._lock, self._connect() as connection:
+        if connection is not None:
             connection.execute(
                 """
                 DELETE FROM twc_cached_model_permissions
@@ -820,13 +861,28 @@ class SqliteRepository:
                         for item in items
                     ],
                 )
-            connection.commit()
+            return
+        with self._lock, self._connect() as managed_connection:
+            self.replace_model_permissions_for_user_branch(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                items,
+                connection=managed_connection,
+            )
+            managed_connection.commit()
 
-    def upsert_branch_access_records(self, records: Iterable[BranchAccessRecord]) -> None:
+    def upsert_branch_access_records(
+        self,
+        records: Iterable[BranchAccessRecord],
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
         items = list(records)
         if not items:
             return
-        with self._lock, self._connect() as connection:
+        if connection is not None:
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO twc_branch_access_records (
@@ -851,7 +907,10 @@ class SqliteRepository:
                     for item in items
                 ],
             )
-            connection.commit()
+            return
+        with self._lock, self._connect() as managed_connection:
+            self.upsert_branch_access_records(items, connection=managed_connection)
+            managed_connection.commit()
 
     def replace_branch_access_records_for_branch(
         self,
@@ -903,9 +962,11 @@ class SqliteRepository:
         branch_id: str,
         model_id: str,
         records: Iterable[CachedElementRecord],
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> int:
         items = list(records)
-        with self._lock, self._connect() as connection:
+        if connection is not None:
             connection.execute(
                 "DELETE FROM twc_cached_elements WHERE server_id = ? AND project_id = ? AND branch_id = ? AND model_id = ?",
                 (server_id, project_id, branch_id, model_id),
@@ -934,15 +995,30 @@ class SqliteRepository:
                         )
                         for item in items
                     ],
+                )
+            return len(items)
+        with self._lock, self._connect() as managed_connection:
+            count = self.replace_cached_elements(
+                server_id,
+                project_id,
+                branch_id,
+                model_id,
+                items,
+                connection=managed_connection,
             )
-            connection.commit()
-        return len(items)
+            managed_connection.commit()
+            return count
 
-    def upsert_cached_elements(self, records: Iterable[CachedElementRecord]) -> int:
+    def upsert_cached_elements(
+        self,
+        records: Iterable[CachedElementRecord],
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
         items = list(records)
         if not items:
             return 0
-        with self._lock, self._connect() as connection:
+        if connection is not None:
             connection.executemany(
                 """
                 INSERT OR REPLACE INTO twc_cached_elements (
@@ -967,8 +1043,11 @@ class SqliteRepository:
                     for item in items
                 ],
             )
-            connection.commit()
-        return len(items)
+            return len(items)
+        with self._lock, self._connect() as managed_connection:
+            count = self.upsert_cached_elements(items, connection=managed_connection)
+            managed_connection.commit()
+            return count
 
     def delete_cached_elements_by_ids(
         self,
@@ -976,12 +1055,14 @@ class SqliteRepository:
         project_id: str,
         branch_id: str,
         element_ids: Iterable[str],
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> None:
         ids = [element_id for element_id in dict.fromkeys(element_ids) if element_id]
         if not ids:
             return
         placeholders = ", ".join("?" for _ in ids)
-        with self._lock, self._connect() as connection:
+        if connection is not None:
             connection.execute(
                 f"""
                 DELETE FROM twc_cached_elements
@@ -989,7 +1070,16 @@ class SqliteRepository:
                 """,
                 (server_id, project_id, branch_id, *ids),
             )
-            connection.commit()
+            return
+        with self._lock, self._connect() as managed_connection:
+            self.delete_cached_elements_by_ids(
+                server_id,
+                project_id,
+                branch_id,
+                ids,
+                connection=managed_connection,
+            )
+            managed_connection.commit()
 
     def delete_cached_models_by_ids(
         self,
@@ -997,12 +1087,14 @@ class SqliteRepository:
         project_id: str,
         branch_id: str,
         model_ids: Iterable[str],
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> None:
         ids = [model_id for model_id in dict.fromkeys(model_ids) if model_id]
         if not ids:
             return
         placeholders = ", ".join("?" for _ in ids)
-        with self._lock, self._connect() as connection:
+        if connection is not None:
             connection.execute(
                 f"""
                 DELETE FROM twc_cached_models
@@ -1024,10 +1116,27 @@ class SqliteRepository:
                 """,
                 (server_id, project_id, branch_id, *ids),
             )
-            connection.commit()
+            return
+        with self._lock, self._connect() as managed_connection:
+            self.delete_cached_models_by_ids(
+                server_id,
+                project_id,
+                branch_id,
+                ids,
+                connection=managed_connection,
+            )
+            managed_connection.commit()
 
-    def count_cached_elements_for_model(self, server_id: str, project_id: str, branch_id: str, model_id: str) -> int:
-        with self._lock, self._connect() as connection:
+    def count_cached_elements_for_model(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        if connection is not None:
             row = connection.execute(
                 """
                 SELECT COUNT(*) AS total FROM twc_cached_elements
@@ -1035,10 +1144,25 @@ class SqliteRepository:
                 """,
                 (server_id, project_id, branch_id, model_id),
             ).fetchone()
-        return int(row["total"]) if row else 0
+            return int(row["total"]) if row else 0
+        with self._lock, self._connect() as managed_connection:
+            return self.count_cached_elements_for_model(
+                server_id,
+                project_id,
+                branch_id,
+                model_id,
+                connection=managed_connection,
+            )
 
-    def count_cached_elements_for_branch(self, server_id: str, project_id: str, branch_id: str) -> int:
-        with self._lock, self._connect() as connection:
+    def count_cached_elements_for_branch(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        if connection is not None:
             row = connection.execute(
                 """
                 SELECT COUNT(*) AS total FROM twc_cached_elements
@@ -1046,7 +1170,14 @@ class SqliteRepository:
                 """,
                 (server_id, project_id, branch_id),
             ).fetchone()
-        return int(row["total"]) if row else 0
+            return int(row["total"]) if row else 0
+        with self._lock, self._connect() as managed_connection:
+            return self.count_cached_elements_for_branch(
+                server_id,
+                project_id,
+                branch_id,
+                connection=managed_connection,
+            )
 
     def list_branch_cache_summaries(self, server_id: str | None = None) -> list[BranchCacheSummary]:
         query = "SELECT payload FROM twc_branch_cache"
@@ -1065,9 +1196,11 @@ class SqliteRepository:
         project_id: str,
         branch_id: str,
         model_ids: Iterable[str],
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> None:
         kept_ids = [model_id for model_id in dict.fromkeys(model_ids) if model_id]
-        with self._lock, self._connect() as connection:
+        if connection is not None:
             if not kept_ids:
                 connection.execute(
                     "DELETE FROM twc_cached_models WHERE server_id = ? AND project_id = ? AND branch_id = ?",
@@ -1081,7 +1214,6 @@ class SqliteRepository:
                     "DELETE FROM twc_cached_elements WHERE server_id = ? AND project_id = ? AND branch_id = ?",
                     (server_id, project_id, branch_id),
                 )
-                connection.commit()
                 return
 
             placeholders = ", ".join("?" for _ in kept_ids)
@@ -1098,7 +1230,16 @@ class SqliteRepository:
                 f"DELETE FROM twc_cached_elements WHERE server_id = ? AND project_id = ? AND branch_id = ? AND model_id NOT IN ({placeholders})",
                 params,
             )
-            connection.commit()
+            return
+        with self._lock, self._connect() as managed_connection:
+            self.delete_branch_models_except(
+                server_id,
+                project_id,
+                branch_id,
+                kept_ids,
+                connection=managed_connection,
+            )
+            managed_connection.commit()
 
     def list_cached_elements(
         self,
@@ -1110,6 +1251,7 @@ class SqliteRepository:
         search: str | None = None,
         limit: int = 200,
         offset: int = 0,
+        connection: sqlite3.Connection | None = None,
     ) -> CachedElementQueryResponse:
         clauses = ["server_id = ?", "project_id = ?", "branch_id = ?"]
         params: list[object] = [server_id, project_id, branch_id]
@@ -1122,7 +1264,7 @@ class SqliteRepository:
             params.extend([query, query, query, query])
 
         where = " AND ".join(clauses)
-        with self._lock, self._connect() as connection:
+        if connection is not None:
             total = int(
                 connection.execute(
                     f"SELECT COUNT(*) AS total FROM twc_cached_elements WHERE {where}",
@@ -1138,10 +1280,21 @@ class SqliteRepository:
                 """,
                 (*params, limit, offset),
             ).fetchall()
-        return CachedElementQueryResponse(
-            total=total,
-            items=[CachedElementRecord.model_validate_json(row["payload"]) for row in rows],
-        )
+            return CachedElementQueryResponse(
+                total=total,
+                items=[CachedElementRecord.model_validate_json(row["payload"]) for row in rows],
+            )
+        with self._lock, self._connect() as managed_connection:
+            return self.list_cached_elements(
+                server_id,
+                project_id,
+                branch_id,
+                model_id=model_id,
+                search=search,
+                limit=limit,
+                offset=offset,
+                connection=managed_connection,
+            )
 
     def get_cached_element(
         self,

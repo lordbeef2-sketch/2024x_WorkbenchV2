@@ -143,8 +143,10 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect, onExp
     if (!matchesFilter(node, filter)) {
       return null;
     }
-    const hasChildren = node.children.length > 0 || declaredChildCount(node) > 0;
-    const isOpen = expanded[node.id] ?? true;
+    const childCount = declaredChildCount(node);
+    const childrenLoaded = node.metadata.children_loaded === true;
+    const hasChildren = node.children.length > 0 || (!childrenLoaded && childCount > 0);
+    const isOpen = hasChildren ? (expanded[node.id] ?? true) : false;
     const isLoading = loadingIds.includes(node.id);
 
     return (
@@ -181,8 +183,8 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect, onExp
                     nextOpen &&
                     onExpand &&
                     node.children.length === 0 &&
-                    declaredChildCount(node) > 0 &&
-                    node.metadata.children_loaded !== true
+                    childCount > 0 &&
+                    !childrenLoaded
                   ) {
                     void onExpand(node);
                   }

@@ -13,7 +13,6 @@ import {
   CapabilitySummary,
   CompareResult,
   DashboardPayload,
-  ElementDiscoveryResult,
   ItemDetails,
   OSLCAuthorizationStatus,
   OSLCGenerateConsumerRequest,
@@ -335,19 +334,6 @@ export const api = {
       params.set("refresh", "true");
     }
     return request<TreeNode[]>(`/workspace/tree/children?${params.toString()}`);
-  },
-  getElementDiscovery(projectId: string, branchId: string, workspaceId?: string, refresh = false) {
-    const params = new URLSearchParams({
-      projectId,
-      branchId,
-    });
-    if (workspaceId) {
-      params.set("workspaceId", workspaceId);
-    }
-    if (refresh) {
-      params.set("refresh", "true");
-    }
-    return request<ElementDiscoveryResult>(`/workspace/elements/discovery?${params.toString()}`);
   },
   getBranchAccessManifestStatus(projectId: string, branchId: string) {
     const params = new URLSearchParams({ projectId, branchId });

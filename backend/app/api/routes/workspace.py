@@ -10,11 +10,13 @@ from app.models.domain import (
     BranchCacheSyncRequest,
     CacheApiKeyCreateRequest,
     CacheIngestTokenRequest,
+    CacheElementSearchResponse,
     OSLCExecuteRequest,
     OSLCGenerateConsumerRequest,
     OSLCSharedConsumerRequest,
     OSLCStoreConsumerRequest,
     SessionPreferences,
+    StereotypeElementSearchResponse,
     SwaggerExecuteRequest,
 )
 from app.services.platform import ApplicationContainer
@@ -485,6 +487,58 @@ def cached_elements(
         branchId,
         model_id=modelId,
         search=search,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/model-cache/elements/search", response_model=CacheElementSearchResponse)
+def cached_element_search(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    q: str | None = Query(default=None),
+    itemType: str | None = Query(default=None),
+    metaclass: str | None = Query(default=None),
+    stereotype: str | None = Query(default=None),
+    ownerId: str | None = Query(default=None),
+    includeDetails: bool = Query(default=False),
+    limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.search_cached_branch_elements(
+        session,
+        projectId,
+        branchId,
+        query=q,
+        item_type=itemType,
+        metaclass=metaclass,
+        stereotype=stereotype,
+        owner_id=ownerId,
+        include_details=includeDetails,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/model-cache/elements/by-stereotype", response_model=StereotypeElementSearchResponse)
+def cached_elements_by_stereotype(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    stereotype: str = Query(..., min_length=1),
+    includeDetails: bool = Query(default=False),
+    limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.search_cached_branch_elements_by_stereotype(
+        session,
+        projectId,
+        branchId,
+        stereotype,
+        include_details=includeDetails,
         limit=limit,
         offset=offset,
     )
