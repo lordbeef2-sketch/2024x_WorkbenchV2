@@ -360,6 +360,172 @@ function diagramPreviewDataUrl(item: ItemDetails): string | null {
   return `data:${format};base64,${encoded}`;
 }
 
+function pythonLiteral(value: string): string {
+  return JSON.stringify(value);
+}
+
+function workbenchManifestPythonScript(workbenchBaseUrl: string): string {
+  return `from __future__ import annotations
+
+import json
+
+import requests
+
+WORKBENCH_BASE_URL = ${pythonLiteral(workbenchBaseUrl)}
+API_KEY = "replace-with-your-api-key"
+VERIFY_TLS = True
+
+
+def main() -> None:
+    response = requests.get(
+        f"{WORKBENCH_BASE_URL}/api/cache",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        timeout=60,
+        verify=VERIFY_TLS,
+    )
+    response.raise_for_status()
+    print(json.dumps(response.json(), indent=2))
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
+
+function workbenchListElementsPythonScript(
+  workbenchBaseUrl: string,
+  serverId: string,
+  projectId: string,
+  branchId: string,
+): string {
+  return `from __future__ import annotations
+
+import json
+from urllib.parse import urlencode
+
+import requests
+
+WORKBENCH_BASE_URL = ${pythonLiteral(workbenchBaseUrl)}
+API_KEY = "replace-with-your-api-key"
+SERVER_ID = ${pythonLiteral(serverId)}
+PROJECT_ID = ${pythonLiteral(projectId)}
+BRANCH_ID = ${pythonLiteral(branchId)}
+VERIFY_TLS = True
+
+
+def main() -> None:
+    query = urlencode({"allResults": "true"})
+    response = requests.get(
+        f"{WORKBENCH_BASE_URL}/api/cache/servers/{SERVER_ID}/projects/{PROJECT_ID}/branches/{BRANCH_ID}/elements?{query}",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        timeout=120,
+        verify=VERIFY_TLS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    print(json.dumps(payload, indent=2))
+    print(f"Returned {len(payload.get('items', []))} stored elements.")
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
+
+function workbenchStereotypeSearchPythonScript(
+  workbenchBaseUrl: string,
+  serverId: string,
+  projectId: string,
+  branchId: string,
+): string {
+  return `from __future__ import annotations
+
+import json
+from urllib.parse import urlencode
+
+import requests
+
+WORKBENCH_BASE_URL = ${pythonLiteral(workbenchBaseUrl)}
+API_KEY = "replace-with-your-api-key"
+SERVER_ID = ${pythonLiteral(serverId)}
+PROJECT_ID = ${pythonLiteral(projectId)}
+BRANCH_ID = ${pythonLiteral(branchId)}
+STEREOTYPE_NAME = "Block"
+INCLUDE_DETAILS = True
+VERIFY_TLS = True
+
+
+def main() -> None:
+    query = urlencode(
+        {
+            "stereotype": STEREOTYPE_NAME,
+            "includeDetails": str(INCLUDE_DETAILS).lower(),
+            "limit": 500,
+            "offset": 0,
+        }
+    )
+    response = requests.get(
+        f"{WORKBENCH_BASE_URL}/api/cache/servers/{SERVER_ID}/projects/{PROJECT_ID}/branches/{BRANCH_ID}/elements/by-stereotype?{query}",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        timeout=120,
+        verify=VERIFY_TLS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    print(json.dumps(payload, indent=2))
+    print(f"Matched {payload.get('total', 0)} elements for stereotype {STEREOTYPE_NAME!r}.")
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
+
+function workbenchEditElementPythonScript(
+  workbenchBaseUrl: string,
+  serverId: string,
+  projectId: string,
+  branchId: string,
+  elementId: string,
+): string {
+  return `from __future__ import annotations
+
+import json
+
+import requests
+
+WORKBENCH_BASE_URL = ${pythonLiteral(workbenchBaseUrl)}
+API_KEY = "replace-with-your-api-key"
+SERVER_ID = ${pythonLiteral(serverId)}
+PROJECT_ID = ${pythonLiteral(projectId)}
+BRANCH_ID = ${pythonLiteral(branchId)}
+ELEMENT_ID = ${pythonLiteral(elementId)}
+VERIFY_TLS = True
+
+
+def main() -> None:
+    payload = {
+        "documentation": "Updated from a full Python example in the Workbench Developer API tab."
+    }
+    response = requests.patch(
+        f"{WORKBENCH_BASE_URL}/api/cache/servers/{SERVER_ID}/projects/{PROJECT_ID}/branches/{BRANCH_ID}/elements/{ELEMENT_ID}",
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=120,
+        verify=VERIFY_TLS,
+    )
+    response.raise_for_status()
+    print(json.dumps(response.json(), indent=2))
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
+
 function identityRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
   const sourcePayload = item.source_payload ?? {};
   const fields: Record<string, unknown> = {
@@ -722,6 +888,46 @@ export default function WorkspacePage() {
   });
   const branchAccessManifestStatus: BranchAccessManifestStatus | null = branchAccessManifestQuery.data ?? null;
   const contractManifest = contractQuery.data ?? null;
+  const workbenchBaseUrlExample = typeof window !== "undefined" ? window.location.origin : "https://your-workbench-host";
+  const developerApiServerId = session?.server?.id ?? "<server_id>";
+  const developerApiProjectId = selectedProjectId || selectedProject?.resource_id || "<project_id>";
+  const developerApiBranchId = selectedBranchId || "<branch_id>";
+  const developerApiElementId = selectedItemId || "<element_id>";
+  const manifestPythonExample = useMemo(
+    () => workbenchManifestPythonScript(workbenchBaseUrlExample),
+    [workbenchBaseUrlExample],
+  );
+  const listElementsPythonExample = useMemo(
+    () =>
+      workbenchListElementsPythonScript(
+        workbenchBaseUrlExample,
+        developerApiServerId,
+        developerApiProjectId,
+        developerApiBranchId,
+      ),
+    [developerApiBranchId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
+  );
+  const stereotypeSearchPythonExample = useMemo(
+    () =>
+      workbenchStereotypeSearchPythonScript(
+        workbenchBaseUrlExample,
+        developerApiServerId,
+        developerApiProjectId,
+        developerApiBranchId,
+      ),
+    [developerApiBranchId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
+  );
+  const editElementPythonExample = useMemo(
+    () =>
+      workbenchEditElementPythonScript(
+        workbenchBaseUrlExample,
+        developerApiServerId,
+        developerApiProjectId,
+        developerApiBranchId,
+        developerApiElementId,
+      ),
+    [developerApiBranchId, developerApiElementId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
+  );
   const apiTags = useMemo(
     () => Object.keys(contractManifest?.tag_counts ?? {}).sort((left, right) => left.localeCompare(right)),
     [contractManifest],
@@ -2286,11 +2492,11 @@ export default function WorkspacePage() {
           </>
         ) : null}
         <TextField
-          label="Quick start example"
-          value={'curl -H "Authorization: Bearer <your-key>" https://your-workbench-host/api/cache/servers'}
+          label="Quick start Python script"
+          value={manifestPythonExample}
           fullWidth
           multiline
-          minRows={2}
+          minRows={18}
           InputProps={{ readOnly: true }}
         />
         <Stack spacing={1.5}>
@@ -2743,28 +2949,44 @@ export default function WorkspacePage() {
         <Stack spacing={2}>
           <Typography variant="h5">Developer API</Typography>
           <Typography variant="body2" color="text.secondary">
-            Workbench exposes a cache-first API for scripts, notebooks, AI agents, and integration services. Use a personal API key from this page or from Settings, then call the cache manifest first to discover the available route set.
+            Workbench exposes a stored-model API for scripts, notebooks, AI agents, and integration services. Use a personal API key from this page or from Settings, then call the cache manifest first to discover the available route set.
           </Typography>
           <Alert severity="info">
             Plugin-backed branches are the preferred source for designated cache targets. For those branches, Workbench serves the shared cached model data and checks your per-user TWC visibility overlay instead of duplicating the model itself per user.
           </Alert>
           <Typography variant="caption" color="text.secondary">
-            API keys are labeled and tracked with last-used timestamps so you can tell which automation key is still alive before rotating or deleting it.
+            These are full standalone Python scripts, not snippets. The current Workbench host and selected project context are prefilled when available. The matching repository files live under the examples folder too.
           </Typography>
           <TextField
-            label="Read example"
-            value={'curl -H "Authorization: Bearer <your-key>" https://your-workbench-host/api/cache'}
+            label="Python script: discover the API manifest"
+            value={manifestPythonExample}
             fullWidth
             multiline
-            minRows={2}
+            minRows={18}
             InputProps={{ readOnly: true }}
           />
           <TextField
-            label="Edit example"
-            value={'curl -X PATCH -H "Authorization: Bearer <your-key>" -H "Content-Type: application/json" https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/elements/<element_id> -d "{\"documentation\":\"Updated from automation\"}"'}
+            label="Python script: get all stored elements for the selected project and branch"
+            value={listElementsPythonExample}
             fullWidth
             multiline
-            minRows={3}
+            minRows={22}
+            InputProps={{ readOnly: true }}
+          />
+          <TextField
+            label="Python script: search all elements by applied stereotype name"
+            value={stereotypeSearchPythonExample}
+            fullWidth
+            multiline
+            minRows={24}
+            InputProps={{ readOnly: true }}
+          />
+          <TextField
+            label="Python script: edit a stored element"
+            value={editElementPythonExample}
+            fullWidth
+            multiline
+            minRows={22}
             InputProps={{ readOnly: true }}
           />
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
