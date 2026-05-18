@@ -123,7 +123,12 @@ public class SnapshotExportService {
             record.name = record.humanName;
             record.qualifiedName = firstNonBlank(record.humanName, record.modelId);
         }
-        record.rootElementIds.add(record.modelId);
+        for (Element child : model.getOwnedElement()) {
+            String childId = safeId(child);
+            if (childId != null && !childId.isBlank() && !childId.equals(record.modelId) && !record.rootElementIds.contains(childId)) {
+                record.rootElementIds.add(childId);
+            }
+        }
         return record;
     }
 

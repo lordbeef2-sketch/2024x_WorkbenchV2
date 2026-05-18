@@ -761,13 +761,14 @@ class PlatformService:
 
         resolved_models = self._resolve_snapshot_model_records(server.id, payload, source_user, ingested_at)
         resolved_elements = self._resolve_snapshot_element_records(server.id, payload, resolved_models, source_user, ingested_at)
+        repaired_models = self._repair_cached_model_roots(resolved_models, resolved_elements)
         element_counts_by_model: dict[str, int] = {}
         for record in resolved_elements:
             element_counts_by_model[record.model_id] = element_counts_by_model.get(record.model_id, 0) + 1
 
         finalized_models = [
             model.model_copy(update={"element_count": element_counts_by_model.get(model.model_id, 0)})
-            for model in resolved_models
+            for model in repaired_models
         ]
         permissions = [
             ModelPermissionSnapshot(
@@ -887,7 +888,10 @@ class PlatformService:
             self.repo.delete_cached_elements_by_ids(server.id, payload.project_id, payload.branch_id, payload.removed_element_ids)
         self.repo.upsert_cached_elements([*resolved_added_elements, *resolved_updated_elements])
 
-        current_models = self.repo.list_cached_models(server.id, payload.project_id, payload.branch_id)
+        current_models = self._repair_cached_model_roots(
+            self.repo.list_cached_models(server.id, payload.project_id, payload.branch_id),
+            self.repo.list_cached_elements(server.id, payload.project_id, payload.branch_id, limit=500000, offset=0).items,
+        )
         refreshed_models: list[CachedModelRecord] = []
         for model in current_models:
             refreshed_models.append(
@@ -1392,9 +1396,9 @@ class PlatformService:
                         "project_id": project_id,
                         "branch_id": branch_id,
                         "model_id": model.model_id,
-                        "child_count": len(model.root_ids),
+                        "child_count": len(self._sanitize_model_root_ids(model, {})) or (1 if (model.element_count or 0) > 0 else 0),
                         "element_count": model.element_count or 0,
-                        "root_count": len(model.root_ids),
+                        "root_count": len(self._sanitize_model_root_ids(model, {})),
                         "subtitle": f"{model.element_count or 0} published elements",
                     },
                 )
@@ -2452,25 +2456,28 @@ class PlatformService:
         if not models:
             return None
         if depth is not None and depth <= 0:
-            return [
-                TreeNode(
-                    id=model.model_id,
-                    label=model.name or model.model_id,
-                    node_type="model",
-                    path=f"{project_id}/{branch_id}/{model.name or model.model_id}",
-                    children=[],
-                    metadata={
-                        "project_id": project_id,
-                        "branch_id": branch_id,
-                        "model_id": model.model_id,
-                        "child_count": len(model.root_ids),
-                        "element_count": model.element_count or 0,
-                        "root_count": len(model.root_ids),
-                        "subtitle": f"{model.element_count or 0} published elements",
-                    },
+            top_level_nodes: list[TreeNode] = []
+            for model in models:
+                sanitized_root_count = len([root_id for root_id in model.root_ids if str(root_id).strip() and str(root_id).strip() != model.model_id])
+                top_level_nodes.append(
+                    TreeNode(
+                        id=model.model_id,
+                        label=model.name or model.model_id,
+                        node_type="model",
+                        path=f"{project_id}/{branch_id}/{model.name or model.model_id}",
+                        children=[],
+                        metadata={
+                            "project_id": project_id,
+                            "branch_id": branch_id,
+                            "model_id": model.model_id,
+                            "child_count": sanitized_root_count or (1 if (model.element_count or 0) > 0 else 0),
+                            "element_count": model.element_count or 0,
+                            "root_count": sanitized_root_count,
+                            "subtitle": f"{model.element_count or 0} published elements",
+                        },
+                    )
                 )
-                for model in models
-            ]
+            return top_level_nodes
         nodes: list[TreeNode] = []
         for model in models:
             model_records = {
@@ -2509,6 +2516,48 @@ class PlatformService:
             rank = 3
         return (rank, display_name or record.element_id.lower())
 
+    def _sanitize_model_root_ids(
+        self,
+        model: CachedModelRecord,
+        model_records: dict[str, CachedElementRecord],
+    ) -> list[str]:
+        root_ids: list[str] = []
+        for root_id in model.root_ids:
+            root_text = str(root_id).strip()
+            if not root_text or root_text == model.model_id:
+                continue
+            if root_text in model_records and root_text not in root_ids:
+                root_ids.append(root_text)
+
+        if root_ids:
+            return root_ids
+
+        model_record = model_records.get(model.model_id)
+        if model_record is not None:
+            for child_id in [str(value).strip() for value in model_record.payload.get("owned_element_ids") or [] if str(value).strip()]:
+                if child_id != model.model_id and child_id in model_records and child_id not in root_ids:
+                    root_ids.append(child_id)
+        return root_ids
+
+    def _repair_cached_model_roots(
+        self,
+        models: list[CachedModelRecord],
+        elements: list[CachedElementRecord],
+    ) -> list[CachedModelRecord]:
+        elements_by_model: dict[str, dict[str, CachedElementRecord]] = {}
+        for element in elements:
+            elements_by_model.setdefault(element.model_id, {})[element.element_id] = element
+
+        repaired: list[CachedModelRecord] = []
+        for model in models:
+            model_records = elements_by_model.get(model.model_id, {})
+            repaired_roots = self._sanitize_model_root_ids(model, model_records)
+            if repaired_roots != model.root_ids:
+                repaired.append(model.model_copy(update={"root_ids": repaired_roots}))
+            else:
+                repaired.append(model)
+        return repaired
+
     def _tree_indexes_for_model(
         self,
         model: CachedModelRecord,
@@ -2517,7 +2566,7 @@ class PlatformService:
         parent_to_children: dict[str, list[str]] = {}
 
         def append_child(parent_id: str, child_id: str) -> None:
-            if not parent_id or not child_id or child_id not in model_records:
+            if not parent_id or not child_id or parent_id == child_id or child_id not in model_records:
                 return
             bucket = parent_to_children.setdefault(parent_id, [])
             if child_id not in bucket:
@@ -2530,16 +2579,12 @@ class PlatformService:
             for child_id in [str(value).strip() for value in record.payload.get("owned_element_ids") or [] if str(value).strip()]:
                 append_child(record.element_id, child_id)
 
-        root_ids: list[str] = []
-        for root_id in model.root_ids:
-            root_text = str(root_id).strip()
-            if root_text and root_text in model_records and root_text not in root_ids:
-                root_ids.append(root_text)
+        root_ids = self._sanitize_model_root_ids(model, model_records)
 
         detached_root_ids = [
             element_id
             for element_id, record in model_records.items()
-            if str(record.payload.get("owner_id") or "").strip() not in model_records and element_id not in root_ids
+            if element_id != model.model_id and str(record.payload.get("owner_id") or "").strip() not in model_records and element_id not in root_ids
         ]
         root_ids.extend(
             sorted(
@@ -2652,6 +2697,7 @@ class PlatformService:
     ) -> TreeNode:
         model_name = model.name or model.model_id
         model_path = f"{project_id}/{branch_id}/{model_name}"
+        sanitized_root_ids = self._sanitize_model_root_ids(model, model_records)
         if depth is not None and depth <= 0:
             return TreeNode(
                 id=model.model_id,
@@ -2663,13 +2709,14 @@ class PlatformService:
                     "project_id": project_id,
                     "branch_id": branch_id,
                     "model_id": model.model_id,
-                    "child_count": len(model.root_ids),
+                    "child_count": len(sanitized_root_ids),
                     "element_count": model.element_count or len(model_records),
-                    "root_count": len(model.root_ids),
+                    "root_count": len(sanitized_root_ids),
                     "subtitle": f"{model.element_count or len(model_records)} published elements",
                 },
             )
         if not model_records:
+            sanitized_root_count = len([root_id for root_id in model.root_ids if str(root_id).strip() and str(root_id).strip() != model.model_id])
             return TreeNode(
                 id=model.model_id,
                 label=model_name,
@@ -2681,6 +2728,8 @@ class PlatformService:
                     "branch_id": branch_id,
                     "model_id": model.model_id,
                     "element_count": model.element_count or 0,
+                    "child_count": sanitized_root_count or (1 if (model.element_count or 0) > 0 else 0),
+                    "root_count": sanitized_root_count,
                     "subtitle": "Published model snapshot",
                 },
             )
@@ -2758,6 +2807,7 @@ class PlatformService:
                 "model_id": model.model_id,
                 "element_count": model.element_count or len(model_records),
                 "root_count": len(root_ids),
+                "child_count": len(root_ids),
                 "subtitle": f"{model.element_count or len(model_records)} published elements",
             },
         )
