@@ -146,7 +146,7 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect, onExp
     const childCount = declaredChildCount(node);
     const childrenLoaded = node.metadata.children_loaded === true;
     const hasChildren = node.children.length > 0 || (!childrenLoaded && childCount > 0);
-    const isOpen = hasChildren ? (expanded[node.id] ?? true) : false;
+    const isOpen = hasChildren ? (expanded[node.id] ?? Boolean(filter)) : false;
     const isLoading = loadingIds.includes(node.id);
 
     return (
