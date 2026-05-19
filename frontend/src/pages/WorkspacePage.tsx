@@ -1,4 +1,4 @@
-import { type MouseEvent as ReactMouseEvent, type SyntheticEvent, useEffect, useMemo, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, type SyntheticEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -834,6 +834,7 @@ function oslcResponseContent(response: OSLCExecuteResponse): string {
 export default function WorkspacePage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const pendingSearchSyncRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const { session, refreshSession } = useSession();
   const csrfToken = session?.csrf_token ?? "";
@@ -1072,6 +1073,11 @@ export default function WorkspacePage() {
   }, [expandedTreeNodeIds, treeExpandedStorageKey]);
 
   useEffect(() => {
+    const currentSearch = searchParams.toString();
+    if (pendingSearchSyncRef.current !== null && pendingSearchSyncRef.current === currentSearch) {
+      pendingSearchSyncRef.current = null;
+      return;
+    }
     const urlTab = parseWorkspaceTab(searchParams.get("tab"), isAdmin);
     const urlProjectId = searchParams.get("project") ?? "";
     const urlBranchId = searchParams.get("branch") ?? "";
@@ -1088,7 +1094,7 @@ export default function WorkspacePage() {
     if (urlItemId !== selectedItemId) {
       setSelectedItemId(urlItemId);
     }
-  }, [isAdmin, searchParams, selectedBranchId, selectedItemId, selectedProjectId, tab]);
+  }, [isAdmin, searchParams]);
 
   useEffect(() => {
     const nextParams = new URLSearchParams(searchParams);
@@ -1116,6 +1122,7 @@ export default function WorkspacePage() {
     const current = searchParams.toString();
     const next = nextParams.toString();
     if (current !== next) {
+      pendingSearchSyncRef.current = next;
       setSearchParams(nextParams, { replace: true });
     }
   }, [isAdmin, searchParams, selectedBranchId, selectedItemId, selectedProjectId, setSearchParams, tab]);
