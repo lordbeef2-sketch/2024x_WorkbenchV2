@@ -17,6 +17,7 @@ public class BranchSnapshotPayload {
     public String branchId;
     public String branchName;
     public String revisionId;
+    public String snapshotHash;
     public String sourceUser;
     public List<ModelRecord> models = new ArrayList<>();
     public List<ElementRecord> elements = new ArrayList<>();

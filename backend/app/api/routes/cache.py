@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_container, require_cache_api_identity, require_cache_api_scope, require_cache_api_token, require_cache_ingest_token
 from app.models.domain import (
+    BranchIngestState,
     BranchDeltaIngestRequest,
     BranchSnapshotIngestRequest,
     CacheApiKeyScope,
@@ -27,6 +28,20 @@ def cache_manifest(
     return container.platform.cache_api_manifest(identity.preferred_username, identity.source, identity.scopes)
 
 
+@router.get("/cache-ingest/branch-state", response_model=BranchIngestState)
+def branch_ingest_state(
+    serverId: str = Query(alias="serverId"),
+    projectId: str = Query(alias="projectId"),
+    branchId: str = Query(alias="branchId"),
+    token=Depends(require_cache_ingest_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.get_branch_ingest_state(serverId, projectId, branchId)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+
+
 @router.post("/cache-ingest/branch-snapshots")
 def ingest_branch_snapshot(
     payload: BranchSnapshotIngestRequest,
@@ -37,6 +52,8 @@ def ingest_branch_snapshot(
         return container.platform.ingest_branch_snapshot(payload)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
@@ -51,6 +68,8 @@ def ingest_branch_delta(
         return container.platform.ingest_branch_delta(payload)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

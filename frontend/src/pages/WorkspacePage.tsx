@@ -26,6 +26,8 @@ import {
   Tab,
   Tabs,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Toolbar,
   Tooltip,
   Typography,
@@ -45,6 +47,7 @@ import {
   BranchAccessManifestStatus,
   CacheApiKeyScope,
   CacheApiKeySummary,
+  ItemDetailViewMode,
   ItemReference,
   OpenWebUIModelEntry,
   ItemDetails,
@@ -64,6 +67,12 @@ import { useSession } from "../state/SessionProvider";
 type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "agent" | "developer" | "api";
 
 const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "details", "compare", "agent", "developer", "api"];
+const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
+const ITEM_DETAIL_VIEW_LABELS: Record<ItemDetailViewMode, string> = {
+  standard: "Standard",
+  expert: "Expert",
+  all: "All",
+};
 
 function parseWorkspaceTab(value: string | null, isAdmin = false): WorkspaceTab {
   const fallback: WorkspaceTab = "dashboard";
@@ -74,6 +83,13 @@ function parseWorkspaceTab(value: string | null, isAdmin = false): WorkspaceTab 
     return fallback;
   }
   return value as WorkspaceTab;
+}
+
+function parseItemDetailViewMode(value: string | null | undefined): ItemDetailViewMode {
+  if (!value || !ITEM_DETAIL_VIEW_MODES.includes(value as ItemDetailViewMode)) {
+    return "standard";
+  }
+  return value as ItemDetailViewMode;
 }
 
 function errorMessage(caught: unknown): string {
@@ -385,6 +401,10 @@ function itemReferenceSecondaryText(reference: ItemReference, lookup: Record<str
   return humanizeFieldLabel(reference.item_type);
 }
 
+function itemReferenceTypeLabel(reference: ItemReference): string {
+  return humanizeFieldLabel(reference.relationship_type || reference.item_type || "item");
+}
+
 function humanizeFieldPath(path: string): string {
   return path
     .split(".")
@@ -446,6 +466,30 @@ interface InspectorRow {
   key: string;
   label: string;
   value: string;
+}
+
+const SPECIFICATION_FIELD_HINTS = ["specification", "expression", "formula", "guard", "condition", "language", "body", "constraint"];
+const CONSTRAINT_FIELD_HINTS = ["constraint", "constrained", "guard", "condition", "rule", "expression"];
+
+function normalizedFieldKey(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function keyMatchesHints(key: string, hints: string[]): boolean {
+  const normalized = normalizedFieldKey(key);
+  return hints.some((hint) => normalized.includes(normalizedFieldKey(hint)));
+}
+
+function dedupeInspectorRows(rows: InspectorRow[]): InspectorRow[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = `${row.label}::${row.value}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function mapToInspectorRows(source: Record<string, unknown>, lookup: Record<string, string>): InspectorRow[] {
@@ -706,6 +750,157 @@ function overviewRows(item: ItemDetails, lookup: Record<string, string>): Inspec
   return mapToInspectorRows(fields, lookup);
 }
 
+function specificationRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
+  const sourcePayload = item.source_payload ?? {};
+  const attributes = payloadAttributes(item);
+  const references = payloadReferences(item);
+  const rows: InspectorRow[] = [];
+
+  const pushRows = (source: Record<string, unknown>, sectionPrefix = "") => {
+    for (const [key, value] of Object.entries(source)) {
+      if (!keyMatchesHints(key, SPECIFICATION_FIELD_HINTS) || !hasMeaningfulValue(value)) {
+        continue;
+      }
+      rows.push({
+        key: `${sectionPrefix}${key}`,
+        label: humanizeFieldLabel(key),
+        value: humanReadableValue(value, lookup),
+      });
+    }
+  };
+
+  pushRows(sourcePayload, "payload.");
+  pushRows(attributes, "attributes.");
+  pushRows(references, "references.");
+
+  if (!rows.length && hasMeaningfulValue(item.documentation_markdown) && keyMatchesHints(item.item_type, ["constraint"])) {
+    rows.push({
+      key: "documentation_markdown",
+      label: "Constraint Documentation",
+      value: item.documentation_markdown,
+    });
+  }
+
+  return dedupeInspectorRows(
+    rows.sort((left, right) => compareDisplayValues(left.label, right.label)),
+  );
+}
+
+function constraintRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
+  const attributes = payloadAttributes(item);
+  const references = payloadReferences(item);
+  const rows: InspectorRow[] = [];
+
+  const pushRows = (source: Record<string, unknown>, sectionPrefix = "") => {
+    for (const [key, value] of Object.entries(source)) {
+      if (!keyMatchesHints(key, CONSTRAINT_FIELD_HINTS) || !hasMeaningfulValue(value)) {
+        continue;
+      }
+      rows.push({
+        key: `${sectionPrefix}${key}`,
+        label: humanizeFieldLabel(key),
+        value: humanReadableValue(value, lookup),
+      });
+    }
+  };
+
+  pushRows(attributes, "attributes.");
+  pushRows(references, "references.");
+
+  return dedupeInspectorRows(
+    rows.sort((left, right) => compareDisplayValues(left.label, right.label)),
+  );
+}
+
+function constraintReferenceItems(item: ItemDetails): ItemReference[] {
+  const seen = new Set<string>();
+  const matchesConstraint = (reference: ItemReference) =>
+    keyMatchesHints(reference.item_type, ["constraint"]) ||
+    keyMatchesHints(reference.relationship_type, CONSTRAINT_FIELD_HINTS) ||
+    keyMatchesHints(reference.name, ["constraint"]);
+
+  return [...item.type_references, ...item.related_items, ...item.contained_elements].filter((reference) => {
+    if (!matchesConstraint(reference)) {
+      return false;
+    }
+    const key = `${reference.relationship_type}:${reference.id}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function viewModeIncludes(viewMode: ItemDetailViewMode, target: "standard" | "expert" | "all"): boolean {
+  if (viewMode === "all") {
+    return true;
+  }
+  if (viewMode === "expert") {
+    return target === "standard" || target === "expert";
+  }
+  return target === "standard";
+}
+
+function specificationWindowRows(
+  item: ItemDetails,
+  lookup: Record<string, string>,
+  viewMode: ItemDetailViewMode,
+): InspectorRow[] {
+  const sourcePayload = item.source_payload ?? {};
+  const attributes = payloadAttributes(item);
+  const metadata = item.metadata ?? {};
+  const references = payloadReferences(item);
+  const baseFields: Record<string, unknown> = {
+    name: item.name,
+    description: item.description,
+    documentation: item.documentation_markdown,
+    path: friendlyPath(item.path, lookup),
+    qualified_name: sourcePayload.qualified_name,
+    type: item.item_type,
+    human_type: sourcePayload.human_type,
+    metaclass: sourcePayload.metaclass,
+    stereotypes: item.stereotypes,
+    version: item.version,
+  };
+  const rows: InspectorRow[] = [
+    ...mapToInspectorRows(baseFields, lookup),
+    ...mapToInspectorRows(attributes, lookup),
+    ...specificationRows(item, lookup),
+    ...constraintRows(item, lookup),
+  ];
+
+  if (viewModeIncludes(viewMode, "expert")) {
+    rows.push(
+      ...mapToInspectorRows(
+        {
+          local_id: sourcePayload.local_id,
+          model_id: sourcePayload.model_id,
+          owner_id: sourcePayload.owner_id,
+          raw_types: item.raw_types,
+        },
+        lookup,
+      ),
+      ...mapToInspectorRows(metadata, lookup),
+      ...mapToInspectorRows(references, lookup),
+    );
+  }
+
+  if (viewMode === "all") {
+    for (const [key, value] of payloadExtraSections(item)) {
+      rows.push({
+        key: `extra.${key}`,
+        label: humanizeFieldLabel(key),
+        value: humanReadableValue(value, lookup),
+      });
+    }
+  }
+
+  return dedupeInspectorRows(
+    rows.sort((left, right) => compareDisplayValues(left.label, right.label)),
+  );
+}
+
 function defaultParameterValue(parameter: SwaggerParameterSpec): string {
   if (parameter.default === null || parameter.default === undefined) {
     return "";
@@ -857,16 +1052,26 @@ export default function WorkspacePage() {
   const pendingSearchSyncRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const { session, refreshSession } = useSession();
+  const currentPreferences: SessionPreferences = session?.preferences ?? {
+    theme_mode: "system",
+    font_scale: 1,
+    request_timeout_seconds: 30,
+    live_log_poll_interval_ms: 2500,
+    presentation_font_scale: 1.2,
+    compact_ui: true,
+    show_hidden_packages_in_tree: false,
+    item_detail_view_mode: "standard",
+  };
   const csrfToken = session?.csrf_token ?? "";
   const capabilities = session?.capabilities?.capabilities ?? {};
   const canEdit = capabilities.edit?.state === "ready";
   const isAdmin = Boolean(session?.can_manage_server_presets);
-  const compactUi = session?.preferences.compact_ui ?? true;
+  const compactUi = currentPreferences.compact_ui ?? true;
+  const itemDetailViewMode = parseItemDetailViewMode(currentPreferences.item_detail_view_mode);
   const cacheTimeMs = 1000 * 60 * 60 * 12;
   const sessionCacheKey = [session?.user?.preferred_username ?? "anonymous", session?.server?.id ?? "no-server"];
   const layoutStoragePrefix = `twc-workbench-layout:${sessionCacheKey.join(":")}`;
   const navPaneStorageKey = `${layoutStoragePrefix}:nav-pane-width`;
-  const modelPaneStorageKey = `${layoutStoragePrefix}:model-pane-width`;
   const detailSidebarStorageKey = `${layoutStoragePrefix}:detail-sidebar-width`;
 
   const toggleNewCacheApiKeyScope = (scope: CacheApiKeyScope, checked: boolean) => {
@@ -888,7 +1093,6 @@ export default function WorkspacePage() {
   const [loadingTreeNodeIds, setLoadingTreeNodeIds] = useState<string[]>([]);
   const [expandedTreeNodeIds, setExpandedTreeNodeIds] = useState<string[]>([]);
   const [navPaneWidth, setNavPaneWidth] = useState(() => readStoredNumber(navPaneStorageKey, 320, 260, 520));
-  const [modelPaneWidth, setModelPaneWidth] = useState(() => readStoredNumber(modelPaneStorageKey, 400, 280, 680));
   const [detailSidebarWidth, setDetailSidebarWidth] = useState(() => readStoredNumber(detailSidebarStorageKey, 360, 280, 620));
   const [itemDraft, setItemDraft] = useState<ItemDetails | null>(null);
   const [compareLeft, setCompareLeft] = useState("");
@@ -1076,10 +1280,6 @@ export default function WorkspacePage() {
   }, [navPaneStorageKey]);
 
   useEffect(() => {
-    setModelPaneWidth(readStoredNumber(modelPaneStorageKey, 400, 280, 680));
-  }, [modelPaneStorageKey]);
-
-  useEffect(() => {
     setDetailSidebarWidth(readStoredNumber(detailSidebarStorageKey, 360, 280, 620));
   }, [detailSidebarStorageKey]);
 
@@ -1087,7 +1287,6 @@ export default function WorkspacePage() {
     const clampPaneWidths = () => {
       const viewportWidth = window.innerWidth;
       setNavPaneWidth((current) => clampNumber(current, 260, paneMaxWidthForViewport(viewportWidth, 0.34, 260, 520)));
-      setModelPaneWidth((current) => clampNumber(current, 280, paneMaxWidthForViewport(viewportWidth, 0.42, 280, 680)));
       setDetailSidebarWidth((current) => clampNumber(current, 280, paneMaxWidthForViewport(viewportWidth, 0.38, 280, 620)));
     };
     clampPaneWidths();
@@ -1098,10 +1297,6 @@ export default function WorkspacePage() {
   useEffect(() => {
     persistStoredValue(navPaneStorageKey, navPaneWidth);
   }, [navPaneStorageKey, navPaneWidth]);
-
-  useEffect(() => {
-    persistStoredValue(modelPaneStorageKey, modelPaneWidth);
-  }, [modelPaneStorageKey, modelPaneWidth]);
 
   useEffect(() => {
     persistStoredValue(detailSidebarStorageKey, detailSidebarWidth);
@@ -1542,6 +1737,20 @@ export default function WorkspacePage() {
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
+
+  const updateSessionPreferences = async (patch: Partial<SessionPreferences>) => {
+    await settingsMutation.mutateAsync({
+      ...currentPreferences,
+      ...patch,
+    });
+  };
+
+  const handleItemDetailViewModeChange = (_event: ReactMouseEvent<HTMLElement> | SyntheticEvent, nextMode: ItemDetailViewMode | null) => {
+    if (!nextMode || nextMode === itemDetailViewMode) {
+      return;
+    }
+    void updateSessionPreferences({ item_detail_view_mode: nextMode });
+  };
 
   const refreshProjectsMutation = useMutation({
     mutationFn: () => api.getProjects(true),
@@ -2064,14 +2273,61 @@ export default function WorkspacePage() {
       <Typography color="text.secondary">{emptyText}</Typography>
     );
 
-  const renderReferenceList = (references: ItemReference[], emptyText: string) =>
+  const renderSpecificationTable = (rows: InspectorRow[], emptyText: string) =>
+    rows.length ? (
+      <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+        {rows.map((row, index) => (
+          <Box
+            key={row.key}
+            sx={{
+              display: "grid",
+              gridTemplateColumns: {
+                xs: "1fr",
+                sm: compactUi ? "180px minmax(0, 1fr)" : "220px minmax(0, 1fr)",
+              },
+              gap: 1.5,
+              px: compactUi ? 1.5 : 2,
+              py: compactUi ? 1 : 1.25,
+              borderTop: index ? "1px solid" : "none",
+              borderColor: "divider",
+              alignItems: "start",
+            }}
+          >
+            <Typography variant="body2" fontWeight={600} color="text.secondary">
+              {row.label}
+            </Typography>
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              {row.value || "Not provided"}
+            </Typography>
+          </Box>
+        ))}
+      </Paper>
+    ) : (
+      <Typography color="text.secondary">{emptyText}</Typography>
+    );
+
+  const renderReferenceList = (
+    references: ItemReference[],
+    emptyText: string,
+    options?: {
+      inlineTypeOnly?: boolean;
+    },
+  ) =>
     references.length ? (
       <List dense disablePadding sx={{ maxHeight: 320, overflow: "auto" }}>
         {references.map((reference) => (
           <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
             <ListItemText
-              primary={itemReferenceDisplayName(reference, referenceNameById)}
-              secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
+              primary={
+                options?.inlineTypeOnly
+                  ? `${itemReferenceDisplayName(reference, referenceNameById)} · ${itemReferenceTypeLabel(reference)}`
+                  : itemReferenceDisplayName(reference, referenceNameById)
+              }
+              secondary={
+                options?.inlineTypeOnly
+                  ? undefined
+                  : `${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`
+              }
             />
           </ListItemButton>
         ))}
@@ -2370,218 +2626,221 @@ export default function WorkspacePage() {
         <Alert severity="info">Refreshing the shared access map from Teamwork Cloud permissions.</Alert>
       ) : null}
       {selectedProject && selectedBranchId ? (
-        <Box
-          sx={{
-            display: "grid",
-            gridTemplateColumns: {
-              xs: "1fr",
-              lg: `${modelPaneWidth}px 12px minmax(0, 1fr)`,
-            },
-            gap: 0,
-            alignItems: "stretch",
-          }}
-        >
-          <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
-            <Stack spacing={sectionSpacing}>
-              <Typography variant="h6">Containment Tree</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Walk the published branch snapshot the same way you would browse the containment tree in Cameo. Expand packages and elements on the left, then inspect the selected node on the right.
-              </Typography>
-              {branchAccessManifestStatus ? (
-                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                  <Chip label={`${branchAccessManifestStatus.accessible_user_count} viewers`} variant="outlined" />
-                  <Chip label={`${branchAccessManifestStatus.editable_user_count} editors`} variant="outlined" />
-                  <Chip label={`${branchAccessManifestStatus.admin_user_count} admins`} variant="outlined" />
-                </Stack>
-              ) : null}
-              {selectedNodeTrail.length ? (
-                <Paper variant="outlined" sx={{ p: compactUi ? 1 : 1.5, borderRadius: 2 }}>
-                  <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-                    {selectedNodeTrail.map((node, index) => (
-                      <Chip
-                        key={node.id}
-                        label={node.label}
-                        size="small"
-                        variant={index === selectedNodeTrail.length - 1 ? "filled" : "outlined"}
-                        onClick={() => selectContainmentNode(node, "models")}
-                        clickable
-                      />
-                    ))}
+        <Box sx={{ minWidth: 0 }}>
+          {selectedWorkspaceItem ? (
+            <Paper sx={{ p: panelPadding, borderRadius: 2 }}>
+              <Stack spacing={sectionSpacing}>
+                {branchAccessManifestStatus ? (
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip label={`${branchAccessManifestStatus.accessible_user_count} viewers`} variant="outlined" />
+                    <Chip label={`${branchAccessManifestStatus.editable_user_count} editors`} variant="outlined" />
+                    <Chip label={`${branchAccessManifestStatus.admin_user_count} admins`} variant="outlined" />
                   </Stack>
-                </Paper>
-              ) : selectedContainmentSegments.length ? (
-                <Paper variant="outlined" sx={{ p: compactUi ? 1 : 1.5, borderRadius: 2 }}>
-                  <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-                    {selectedContainmentSegments.map((segment, index) => (
-                      <Chip
-                        key={`${segment}-${index}`}
-                        label={segment}
-                        size="small"
-                        variant={index === selectedContainmentSegments.length - 1 ? "filled" : "outlined"}
-                      />
-                    ))}
-                  </Stack>
-                </Paper>
-              ) : null}
-              {visibleTreeNodes.length ? (
-                <Paper variant="outlined" sx={{ p: compactUi ? 1.25 : 2, borderRadius: 2, maxHeight: viewportPanelMaxHeight, overflow: "auto" }}>
-                  <ProjectTree
-                    nodes={visibleTreeNodes}
-                    selectedId={selectedItemId}
-                    filter={treeFilter}
-                    onSelect={(node) => selectContainmentNode(node, "models")}
-                    onExpand={loadTreeChildren}
-                    loadingIds={loadingTreeNodeIds}
-                    expandedIds={expandedTreeNodeIds}
-                    onExpandedChange={setExpandedTreeNodeIds}
-                  />
-                </Paper>
-              ) : (
-                <Typography color="text.secondary">
-                  {treeNodes.length
-                    ? "The current tree only contains hidden package wrappers. Turn on “Show hidden packages in containment tree” in Settings if you want to see them."
-                    : "No model tree is available for the selected branch snapshot yet."}
-                </Typography>
-              )}
-            </Stack>
-          </Paper>
-          <Box
-            role="separator"
-            aria-orientation="vertical"
-            sx={resizeHandleStyles()}
-            onMouseDown={(event) => beginHorizontalResize(event, modelPaneWidth, setModelPaneWidth, 280, 680)}
-          />
-          <Box sx={{ minWidth: 0 }}>
-            {selectedWorkspaceItem ? (
-              <Paper sx={{ p: panelPadding, borderRadius: 2 }}>
-                <Stack spacing={sectionSpacing}>
-                  {(() => {
+                ) : null}
+                {(() => {
                     const quickIdentity = identityRows(selectedWorkspaceItem, referenceNameById);
                     const quickOverview = overviewRows(selectedWorkspaceItem, referenceNameById);
                     const quickAttributes = mapToInspectorRows(payloadAttributes(selectedWorkspaceItem), referenceNameById);
                     const quickMetadata = mapToInspectorRows(selectedWorkspaceItem.metadata, referenceNameById);
                     const quickReferences = mapToInspectorRows(payloadReferences(selectedWorkspaceItem), referenceNameById);
+                    const quickSpecifications = specificationRows(selectedWorkspaceItem, referenceNameById);
+                    const quickConstraints = constraintRows(selectedWorkspaceItem, referenceNameById);
+                    const quickConstraintReferences = constraintReferenceItems(selectedWorkspaceItem);
+                    const quickSpecificationSheet = specificationWindowRows(selectedWorkspaceItem, referenceNameById, itemDetailViewMode);
                     const quickDiagramPreview = diagramPreviewDataUrl(selectedWorkspaceItem);
+                    const showExpertQuickSections = viewModeIncludes(itemDetailViewMode, "expert");
+                    const showAllQuickSections = itemDetailViewMode === "all";
                     return (
                       <>
-                    <Stack spacing={compactUi ? 0.5 : 0.75}>
-                    <Typography variant="h6">{selectedWorkspaceItemName}</Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {selectedWorkspaceItemPath || `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}`}
-                    </Typography>
-                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                      <Chip label={humanizeFieldLabel(selectedWorkspaceItem.item_type)} />
-                      <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
-                      {selectedWorkspaceItem.editable && canEdit ? <Chip label="Editable" color="success" variant="outlined" /> : null}
-                    </Stack>
-                  </Stack>
-                  {quickDiagramPreview ? (
-                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                      <Stack spacing={1.5}>
-                        <Typography variant="subtitle2">Diagram Preview</Typography>
-                        <Box
-                          component="img"
-                          src={quickDiagramPreview}
-                          alt={selectedWorkspaceItemName}
-                          sx={{
-                            width: "100%",
-                            maxHeight: previewMaxHeight,
-                            objectFit: "contain",
-                            borderRadius: 1,
-                            border: "1px solid",
-                            borderColor: "divider",
-                            bgcolor: "background.default",
-                          }}
-                        />
-                      </Stack>
-                    </Paper>
-                  ) : null}
-                  <Grid container spacing={2}>
-                    <Grid item xs={12} md={6}>
-                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
-                        <Stack spacing={1}>
-                          <Typography variant="subtitle2">Identity</Typography>
-                          {renderInspectorRows(quickIdentity, "No identifying fields were published for this item.")}
-                        </Stack>
-                      </Paper>
-                    </Grid>
-                    <Grid item xs={12} md={6}>
-                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
-                        <Stack spacing={1}>
-                          <Typography variant="subtitle2">Overview</Typography>
-                          {renderInspectorRows(quickOverview, "No overview fields were published for this item.")}
-                        </Stack>
-                      </Paper>
-                    </Grid>
-                    <Grid item xs={12}>
-                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                        <Stack spacing={1}>
-                          <Typography variant="subtitle2">Properties</Typography>
-                          {renderInspectorRows(
-                            quickAttributes.length ? quickAttributes : quickMetadata,
-                            "No presentable properties were published for this item.",
-                          )}
-                        </Stack>
-                      </Paper>
-                    </Grid>
-                    <Grid item xs={12} md={6}>
-                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
-                        <Stack spacing={1}>
-                          <Typography variant="subtitle2">Containment</Typography>
-                          {renderReferenceList(
-                            selectedWorkspaceItem.contained_elements,
-                            "No contained elements were published for this item.",
-                          )}
-                        </Stack>
-                      </Paper>
-                    </Grid>
-                    <Grid item xs={12} md={6}>
-                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
-                        <Stack spacing={1}>
-                          <Typography variant="subtitle2">Relationships</Typography>
-                          {renderReferenceList(
-                            [...selectedWorkspaceItem.type_references, ...selectedWorkspaceItem.related_items],
-                            "No related model references were published for this item.",
-                          )}
-                        </Stack>
-                      </Paper>
-                    </Grid>
-                    {quickReferences.length ? (
-                      <Grid item xs={12}>
-                        <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                          <Stack spacing={1}>
-                            <Typography variant="subtitle2">Reference Buckets</Typography>
-                            {renderInspectorRows(quickReferences, "No reference buckets were published for this item.")}
+                        <Stack spacing={compactUi ? 1 : 1.5}>
+                          <Stack
+                            direction={{ xs: "column", md: "row" }}
+                            spacing={1.5}
+                            justifyContent="space-between"
+                            alignItems={{ xs: "flex-start", md: "center" }}
+                          >
+                            <Stack spacing={compactUi ? 0.5 : 0.75}>
+                              <Typography variant="h6">{selectedWorkspaceItemName}</Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {selectedWorkspaceItemPath || `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}`}
+                              </Typography>
+                              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                <Chip label={humanizeFieldLabel(selectedWorkspaceItem.item_type)} />
+                                <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
+                                {selectedWorkspaceItem.editable && canEdit ? <Chip label="Editable" color="success" variant="outlined" /> : null}
+                              </Stack>
+                            </Stack>
+                            <ToggleButtonGroup
+                              size="small"
+                              exclusive
+                              value={itemDetailViewMode}
+                              onChange={handleItemDetailViewModeChange}
+                              aria-label="Item detail view mode"
+                            >
+                              {ITEM_DETAIL_VIEW_MODES.map((mode) => (
+                                <ToggleButton key={mode} value={mode}>
+                                  {ITEM_DETAIL_VIEW_LABELS[mode]}
+                                </ToggleButton>
+                              ))}
+                            </ToggleButtonGroup>
                           </Stack>
-                        </Paper>
-                      </Grid>
-                    ) : null}
-                  </Grid>
-                  <Stack direction="row" spacing={1}>
-                    <Button size="small" variant="contained" onClick={() => setTab("details")}>
-                      Open Full Details
-                    </Button>
-                    <Button size="small" onClick={() => pickCompareSide("left", selectedWorkspaceItem.id)}>
-                      Compare Left
-                    </Button>
-                    <Button size="small" onClick={() => pickCompareSide("right", selectedWorkspaceItem.id)}>
-                      Compare Right
-                    </Button>
-                  </Stack>
+                          <Grid container spacing={2}>
+                            <Grid item xs={12}>
+                              <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                                <Stack spacing={1}>
+                                  <Typography variant="subtitle2">Specifications</Typography>
+                                  {renderSpecificationTable(
+                                    quickSpecificationSheet,
+                                    "No specification fields were published for this item.",
+                                  )}
+                                </Stack>
+                              </Paper>
+                            </Grid>
+                            {quickDiagramPreview ? (
+                              <Grid item xs={12}>
+                                <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                                  <Stack spacing={1.5}>
+                                    <Typography variant="subtitle2">Diagram Preview</Typography>
+                                    <Box
+                                      component="img"
+                                      src={quickDiagramPreview}
+                                      alt={selectedWorkspaceItemName}
+                                      sx={{
+                                        width: "100%",
+                                        maxHeight: previewMaxHeight,
+                                        objectFit: "contain",
+                                        borderRadius: 1,
+                                        border: "1px solid",
+                                        borderColor: "divider",
+                                        bgcolor: "background.default",
+                                      }}
+                                    />
+                                  </Stack>
+                                </Paper>
+                              </Grid>
+                            ) : null}
+                            {showExpertQuickSections ? (
+                              <>
+                                <Grid item xs={12} md={6}>
+                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
+                                    <Stack spacing={1}>
+                                      <Typography variant="subtitle2">Identity</Typography>
+                                      {renderInspectorRows(quickIdentity, "No identifying fields were published for this item.")}
+                                    </Stack>
+                                  </Paper>
+                                </Grid>
+                                <Grid item xs={12} md={6}>
+                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
+                                    <Stack spacing={1}>
+                                      <Typography variant="subtitle2">Overview</Typography>
+                                      {renderInspectorRows(quickOverview, "No overview fields were published for this item.")}
+                                    </Stack>
+                                  </Paper>
+                                </Grid>
+                                <Grid item xs={12}>
+                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                                    <Stack spacing={1}>
+                                      <Typography variant="subtitle2">Properties</Typography>
+                                      {renderInspectorRows(
+                                        quickAttributes.length ? quickAttributes : quickMetadata,
+                                        "No presentable properties were published for this item.",
+                                      )}
+                                    </Stack>
+                                  </Paper>
+                                </Grid>
+                                <Grid item xs={12} md={6}>
+                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
+                                    <Stack spacing={1}>
+                                      <Typography variant="subtitle2">Containment</Typography>
+                                      {renderReferenceList(
+                                        selectedWorkspaceItem.contained_elements,
+                                        "No contained elements were published for this item.",
+                                      )}
+                                    </Stack>
+                                  </Paper>
+                                </Grid>
+                                <Grid item xs={12} md={6}>
+                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
+                                    <Stack spacing={1}>
+                                      <Typography variant="subtitle2">Relationships</Typography>
+                                      {renderReferenceList(
+                                        [...selectedWorkspaceItem.type_references, ...selectedWorkspaceItem.related_items],
+                                        "No related model references were published for this item.",
+                                      )}
+                                    </Stack>
+                                  </Paper>
+                                </Grid>
+                                {quickReferences.length ? (
+                                  <Grid item xs={12}>
+                                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                                      <Stack spacing={1}>
+                                        <Typography variant="subtitle2">Reference Buckets</Typography>
+                                        {renderInspectorRows(quickReferences, "No reference buckets were published for this item.")}
+                                      </Stack>
+                                    </Paper>
+                                  </Grid>
+                                ) : null}
+                                {quickSpecifications.length ? (
+                                  <Grid item xs={12}>
+                                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                                      <Stack spacing={1}>
+                                        <Typography variant="subtitle2">Specification Fields</Typography>
+                                        {renderInspectorRows(quickSpecifications, "No specifications were published for this item.")}
+                                      </Stack>
+                                    </Paper>
+                                  </Grid>
+                                ) : null}
+                                {quickConstraints.length || quickConstraintReferences.length ? (
+                                  <Grid item xs={12}>
+                                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                                      <Stack spacing={1}>
+                                        <Typography variant="subtitle2">Constraints</Typography>
+                                        {quickConstraints.length ? renderInspectorRows(quickConstraints, "No constraints were published for this item.") : null}
+                                        {quickConstraintReferences.length ? renderReferenceList(quickConstraintReferences, "No constraint-linked items were published for this item.") : null}
+                                      </Stack>
+                                    </Paper>
+                                  </Grid>
+                                ) : null}
+                                {showAllQuickSections && selectedWorkspaceItem.documentation_markdown ? (
+                                  <Grid item xs={12}>
+                                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                                      <Stack spacing={1}>
+                                        <Typography variant="subtitle2">Documentation</Typography>
+                                        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                                          {selectedWorkspaceItem.documentation_markdown}
+                                        </Typography>
+                                      </Stack>
+                                    </Paper>
+                                  </Grid>
+                                ) : null}
+                              </>
+                            ) : null}
+                          </Grid>
+                          <Stack direction="row" spacing={1}>
+                            <Button size="small" variant="contained" onClick={() => setTab("details")}>
+                              Open Full Details
+                            </Button>
+                            <Button size="small" onClick={() => pickCompareSide("left", selectedWorkspaceItem.id)}>
+                              Compare Left
+                            </Button>
+                            <Button size="small" onClick={() => pickCompareSide("right", selectedWorkspaceItem.id)}>
+                              Compare Right
+                            </Button>
+                          </Stack>
+                        </Stack>
                       </>
                     );
                   })()}
-                </Stack>
-              </Paper>
-            ) : (
-              <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
-                <Typography variant="h6">Select a model item</Typography>
-                <Typography color="text.secondary" sx={{ mt: 1 }}>
-                  Pick any node from the published branch tree to inspect its properties here without leaving Model Browser.
-                </Typography>
-              </Paper>
-            )}
-          </Box>
+              </Stack>
+            </Paper>
+          ) : (
+            <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+              <Typography variant="h6">Select a model item</Typography>
+              <Typography color="text.secondary" sx={{ mt: 1 }}>
+                Use the main containment tree on the left to pick any node from the published branch tree, then inspect it here.
+              </Typography>
+            </Paper>
+          )}
         </Box>
       ) : null}
     </Stack>
@@ -2610,16 +2869,23 @@ export default function WorkspacePage() {
     const attributeRows = mapToInspectorRows(payloadAttributes(itemDraft), referenceNameById);
     const metadataRows = mapToInspectorRows(itemDraft.metadata, referenceNameById);
     const referenceRows = mapToInspectorRows(payloadReferences(itemDraft), referenceNameById);
+    const specificationSectionRows = specificationRows(itemDraft, referenceNameById);
+    const constraintSectionRows = constraintRows(itemDraft, referenceNameById);
+    const constraintLinkedItems = constraintReferenceItems(itemDraft);
+    const specificationWindowSectionRows = specificationWindowRows(itemDraft, referenceNameById, itemDetailViewMode);
     const extraSections = payloadExtraSections(itemDraft);
     const identitySectionRows = identityRows(itemDraft, referenceNameById);
     const overviewSectionRows = overviewRows(itemDraft, referenceNameById);
     const detailDiagramPreview = diagramPreviewDataUrl(itemDraft);
+    const showExpertDetailSections = viewModeIncludes(itemDetailViewMode, "expert");
+    const showAllDetailSections = itemDetailViewMode === "all";
 
     return (
-        <Stack spacing={2}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", lg: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", lg: "center" }}>
+          <Stack spacing={1}>
             <Box>
-              <Typography variant="h5">Model Viewer / Editor</Typography>
+              <Typography variant="h5">Item Details</Typography>
               <Typography variant="body2" color="text.secondary">
                 {displayEntityName(itemDraft.name, selectedItemId, itemDraft.item_type, referenceNameById, itemDraft.path)}
               </Typography>
@@ -2629,9 +2895,23 @@ export default function WorkspacePage() {
                 </Typography>
               ) : null}
             </Box>
-            <Stack direction="row" spacing={1}>
-              <Button startIcon={<RefreshRoundedIcon />} onClick={() => refreshItemMutation.mutate()} disabled={refreshItemMutation.isPending}>
-                Refresh
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={itemDetailViewMode}
+              onChange={handleItemDetailViewModeChange}
+              aria-label="Item details view mode"
+            >
+              {ITEM_DETAIL_VIEW_MODES.map((mode) => (
+                <ToggleButton key={mode} value={mode}>
+                  {ITEM_DETAIL_VIEW_LABELS[mode]}
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+          </Stack>
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Button startIcon={<RefreshRoundedIcon />} onClick={() => refreshItemMutation.mutate()} disabled={refreshItemMutation.isPending}>
+              Refresh
             </Button>
             <Button startIcon={<CompareArrowsRoundedIcon />} onClick={() => pickCompareSide("left", selectedItemId)}>
               Compare Left
@@ -2666,102 +2946,88 @@ export default function WorkspacePage() {
           }}
         >
           <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
-              <Stack spacing={sectionSpacing}>
-                <TextField label="Path" value={friendlyPath(itemDraft.path, referenceNameById)} disabled fullWidth />
-                <TextField
-                  label="Name"
-                  value={itemDraft.name}
-                  disabled={!editable}
-                  onChange={(event) => setItemDraft((current) => (current ? { ...current, name: event.target.value } : current))}
-                  fullWidth
-                />
-                <TextField
-                  label="Description"
-                  value={itemDraft.description}
-                  disabled={!editable}
-                  onChange={(event) => setItemDraft((current) => (current ? { ...current, description: event.target.value } : current))}
-                  fullWidth
-                  multiline
-                  minRows={3}
-                />
-                <Accordion defaultExpanded disableGutters>
+            <Stack spacing={sectionSpacing}>
+              <TextField label="Path" value={friendlyPath(itemDraft.path, referenceNameById)} disabled fullWidth />
+              <TextField
+                label="Name"
+                value={itemDraft.name}
+                disabled={!editable}
+                onChange={(event) => setItemDraft((current) => (current ? { ...current, name: event.target.value } : current))}
+                fullWidth
+              />
+              <TextField
+                label="Description"
+                value={itemDraft.description}
+                disabled={!editable}
+                onChange={(event) => setItemDraft((current) => (current ? { ...current, description: event.target.value } : current))}
+                fullWidth
+                multiline
+                minRows={3}
+              />
+              <Accordion defaultExpanded disableGutters>
+                <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                  <Typography variant="subtitle2">Specifications</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  {renderSpecificationTable(
+                    specificationWindowSectionRows,
+                    "No specification fields were published for this item.",
+                  )}
+                </AccordionDetails>
+              </Accordion>
+              {detailDiagramPreview ? (
+                <Accordion disableGutters>
                   <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                    <Typography variant="subtitle2">Overview</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>{renderInspectorRows(overviewSectionRows, "No overview fields were published for this item.")}</AccordionDetails>
-                </Accordion>
-                {hasMeaningfulValue(itemDraft.documentation_markdown) ? (
-                  <Accordion defaultExpanded disableGutters>
-                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                      <Typography variant="subtitle2">Documentation</Typography>
-                    </AccordionSummary>
-                    <AccordionDetails>
-                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                        {itemDraft.documentation_markdown}
-                      </Typography>
-                    </AccordionDetails>
-                  </Accordion>
-                ) : null}
-                <Accordion defaultExpanded disableGutters>
-                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                    <Typography variant="subtitle2">Identity and Placement</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>{renderInspectorRows(identitySectionRows, "No identifying fields were published for this item.")}</AccordionDetails>
-                </Accordion>
-                <Accordion defaultExpanded disableGutters>
-                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                    <Typography variant="subtitle2">Element Properties</Typography>
+                    <Typography variant="subtitle2">Diagram Preview</Typography>
                   </AccordionSummary>
                   <AccordionDetails>
-                    {renderInspectorRows(
-                      attributeRows.length ? attributeRows : metadataRows,
-                      "No structured properties were published for this item.",
-                    )}
+                    <Box
+                      component="img"
+                      src={detailDiagramPreview}
+                      alt={displayEntityName(itemDraft.name, itemDraft.id, itemDraft.item_type, referenceNameById, itemDraft.path)}
+                      sx={{
+                        width: "100%",
+                        maxHeight: detailPreviewMaxHeight,
+                        objectFit: "contain",
+                        borderRadius: 1,
+                        border: "1px solid",
+                        borderColor: "divider",
+                        bgcolor: "background.default",
+                      }}
+                    />
                   </AccordionDetails>
                 </Accordion>
-                {detailDiagramPreview ? (
-                  <Accordion defaultExpanded disableGutters>
-                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                      <Typography variant="subtitle2">Diagram Preview</Typography>
-                    </AccordionSummary>
-                    <AccordionDetails>
-                      <Box
-                        component="img"
-                        src={detailDiagramPreview}
-                        alt={displayEntityName(itemDraft.name, itemDraft.id, itemDraft.item_type, referenceNameById, itemDraft.path)}
-                        sx={{
-                          width: "100%",
-                          maxHeight: detailPreviewMaxHeight,
-                          objectFit: "contain",
-                          borderRadius: 1,
-                          border: "1px solid",
-                          borderColor: "divider",
-                          bgcolor: "background.default",
-                        }}
-                      />
-                    </AccordionDetails>
-                  </Accordion>
-                ) : null}
-                {referenceRows.length ? (
-                  <Accordion disableGutters>
-                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                      <Typography variant="subtitle2">Reference Map</Typography>
-                    </AccordionSummary>
-                    <AccordionDetails>{renderInspectorRows(referenceRows, "No reference map was published for this item.")}</AccordionDetails>
-                  </Accordion>
-                ) : null}
-                {extraSections.map(([key, value]) => (
-                  <Accordion key={key} disableGutters>
-                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                      <Typography variant="subtitle2">{humanizeFieldLabel(key)}</Typography>
-                    </AccordionSummary>
-                    <AccordionDetails>
-                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                        {humanReadableValue(value, referenceNameById)}
-                      </Typography>
-                    </AccordionDetails>
-                  </Accordion>
-                ))}
+              ) : null}
+              {showExpertDetailSections && hasMeaningfulValue(itemDraft.documentation_markdown) ? (
+                <Accordion disableGutters>
+                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                    <Typography variant="subtitle2">Documentation</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                      {itemDraft.documentation_markdown}
+                    </Typography>
+                  </AccordionDetails>
+                </Accordion>
+              ) : null}
+              {showAllDetailSections && extraSections.length ? (
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2">Additional Published Sections</Typography>
+                  {extraSections.map(([key, value]) => (
+                    <Accordion key={key} disableGutters>
+                      <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                        <Typography variant="subtitle2">{humanizeFieldLabel(key)}</Typography>
+                      </AccordionSummary>
+                      <AccordionDetails>
+                        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                          {humanReadableValue(value, referenceNameById)}
+                        </Typography>
+                      </AccordionDetails>
+                    </Accordion>
+                  ))}
+                </Stack>
+              ) : null}
+              {showAllDetailSections ? (
                 <Accordion disableGutters>
                   <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                     <Typography variant="subtitle2">Full Source Payload</Typography>
@@ -2772,7 +3038,8 @@ export default function WorkspacePage() {
                     </Typography>
                   </AccordionDetails>
                 </Accordion>
-              </Stack>
+              ) : null}
+            </Stack>
           </Paper>
           <Box
             role="separator"
@@ -2781,114 +3048,141 @@ export default function WorkspacePage() {
             onMouseDown={(event) => beginHorizontalResize(event, detailSidebarWidth, setDetailSidebarWidth, 280, 620, "grow-left")}
           />
           <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
-              <Stack spacing={sectionSpacing}>
-                <Typography variant="h6">Element Overview</Typography>
-                {selectedNodeTrail.length ? (
-                  <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-                    {selectedNodeTrail.map((node, index) => (
-                      <Chip
-                        key={node.id}
-                        label={node.label}
-                        size="small"
-                        variant={index === selectedNodeTrail.length - 1 ? "filled" : "outlined"}
-                        onClick={() => openElementId(node.id)}
-                        clickable
-                      />
-                    ))}
-                  </Stack>
-                ) : null}
-                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                  <Chip label={humanizeFieldLabel(itemDraft.item_type)} />
-                  <Chip label={`Version ${itemDraft.version}`} variant="outlined" />
-                  {selectedProject ? <Chip label={`Project ${selectedProject.name}`} variant="outlined" /> : null}
-                  <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
-                  {itemDraft.raw_types.map((rawType) => (
-                    <Chip key={rawType} label={humanizeFieldLabel(rawType)} size="small" variant="outlined" />
+            <Stack spacing={sectionSpacing}>
+              <Typography variant="h6">Element Overview</Typography>
+              {selectedNodeTrail.length ? (
+                <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+                  {selectedNodeTrail.map((node, index) => (
+                    <Chip
+                      key={node.id}
+                      label={node.label}
+                      size="small"
+                      variant={index === selectedNodeTrail.length - 1 ? "filled" : "outlined"}
+                      onClick={() => openElementId(node.id)}
+                      clickable
+                    />
                   ))}
                 </Stack>
-                {itemDraft.stereotypes.length ? (
-                  <Stack spacing={1}>
-                    <Typography variant="subtitle2">Applied Stereotypes</Typography>
-                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                      {itemDraft.stereotypes.map((stereotype) => (
-                        <Chip key={stereotype} label={stereotype} size="small" />
-                      ))}
-                    </Stack>
+              ) : null}
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <Chip label={humanizeFieldLabel(itemDraft.item_type)} />
+                <Chip label={`Version ${itemDraft.version}`} variant="outlined" />
+                {selectedProject ? <Chip label={`Project ${selectedProject.name}`} variant="outlined" /> : null}
+                <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
+                {itemDraft.raw_types.map((rawType) => (
+                  <Chip key={rawType} label={humanizeFieldLabel(rawType)} size="small" variant="outlined" />
+                ))}
+              </Stack>
+              {itemDraft.stereotypes.length ? (
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2">Applied Stereotypes</Typography>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    {itemDraft.stereotypes.map((stereotype) => (
+                      <Chip key={stereotype} label={stereotype} size="small" />
+                    ))}
                   </Stack>
-                ) : null}
-                {itemDraft.owner ? (
-                  <Stack spacing={1}>
-                    <Typography variant="subtitle2">Owner</Typography>
-                    <List dense disablePadding>
-                      <ListItemButton dense onClick={() => openElementId(itemDraft.owner!.id)}>
-                        <ListItemText
-                          primary={itemReferenceDisplayName(itemDraft.owner, referenceNameById)}
-                          secondary={itemReferenceSecondaryText(itemDraft.owner, referenceNameById)}
-                        />
-                      </ListItemButton>
-                    </List>
-                  </Stack>
-                ) : null}
-                {itemDraft.type_references.length ? (
-                  <Stack spacing={1}>
-                    <Typography variant="subtitle2">Type and Classifier</Typography>
-                    <List dense disablePadding>
-                      {itemDraft.type_references.map((reference) => (
-                        <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
-                          <ListItemText
-                            primary={itemReferenceDisplayName(reference, referenceNameById)}
-                            secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
-                          />
-                        </ListItemButton>
-                      ))}
-                    </List>
-                  </Stack>
-                ) : null}
-                <Divider />
-                <Typography variant="h6">Properties</Typography>
-                {renderInspectorRows(
-                  attributeRows.length ? attributeRows : metadataRows,
-                  "No presentable properties were published for this item.",
-                )}
-                <Divider />
-                <Typography variant="h6">Contained Elements</Typography>
-                {renderReferenceList(itemDraft.contained_elements, "No contained elements were returned for this item.")}
-                <Divider />
-                <Typography variant="h6">Related Elements</Typography>
-                {itemDraft.related_items.length ? (
-                  renderReferenceList(itemDraft.related_items, "No related elements were returned for this item.")
-                ) : itemDraft.relationships.length ? (
+                </Stack>
+              ) : null}
+              {itemDraft.owner ? (
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2">Owner</Typography>
                   <List dense disablePadding>
-                    {itemDraft.relationships.map((relationship, index) => (
-                      <ListItemButton key={`${relationship.type ?? "relationship"}-${index}`} dense>
+                    <ListItemButton dense onClick={() => openElementId(itemDraft.owner!.id)}>
+                      <ListItemText
+                        primary={itemReferenceDisplayName(itemDraft.owner, referenceNameById)}
+                        secondary={itemReferenceSecondaryText(itemDraft.owner, referenceNameById)}
+                      />
+                    </ListItemButton>
+                  </List>
+                </Stack>
+              ) : null}
+              {itemDraft.type_references.length ? (
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2">Type and Classifier</Typography>
+                  <List dense disablePadding>
+                    {itemDraft.type_references.map((reference) => (
+                      <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
                         <ListItemText
-                          primary={humanizeFieldLabel(String(relationship.type ?? `Relationship ${index + 1}`))}
-                          secondary={
-                            typeof relationship.target_name === "string" && relationship.target_name
-                              ? relationship.target_name
-                              : typeof relationship.target === "string"
-                                ? (humanReadableReference(relationship.target, referenceNameById) !== relationship.target
-                                    ? humanReadableReference(relationship.target, referenceNameById)
-                                    : "Related item")
-                              : humanReadableValue(relationship.target ?? relationship, referenceNameById)
-                          }
+                          primary={itemReferenceDisplayName(reference, referenceNameById)}
+                          secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
                         />
                       </ListItemButton>
                     ))}
                   </List>
-                ) : (
-                  <Typography color="text.secondary">No related elements were returned for this item.</Typography>
-                )}
-                <Divider />
-                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                  <Button size="small" variant="outlined" onClick={revealSelectedInTree} disabled={!selectedItemId}>
-                    Reveal In Tree
-                  </Button>
-                  <Button size="small" variant="outlined" onClick={openSelectedParent} disabled={!selectedOwnerId}>
-                    Open Parent
-                  </Button>
                 </Stack>
+              ) : null}
+              {showExpertDetailSections ? (
+                <>
+                  <Divider />
+                  <Typography variant="h6">Expert View</Typography>
+                  {renderSpecificationTable(identitySectionRows, "No identifying fields were published for this item.")}
+                  {renderSpecificationTable(overviewSectionRows, "No overview fields were published for this item.")}
+                  {renderSpecificationTable(
+                    attributeRows.length ? attributeRows : metadataRows,
+                    "No presentable properties were published for this item.",
+                  )}
+                  {specificationSectionRows.length ? (
+                    <Stack spacing={1}>
+                      <Typography variant="subtitle2">Specification Fields</Typography>
+                      {renderSpecificationTable(specificationSectionRows, "No specifications were published for this item.")}
+                    </Stack>
+                  ) : null}
+                  {constraintSectionRows.length || constraintLinkedItems.length ? (
+                    <Stack spacing={1}>
+                      <Typography variant="subtitle2">Constraints</Typography>
+                      {constraintSectionRows.length ? renderSpecificationTable(constraintSectionRows, "No constraints were published for this item.") : null}
+                      {constraintLinkedItems.length ? renderReferenceList(constraintLinkedItems, "No constraint-linked items were published for this item.") : null}
+                    </Stack>
+                  ) : null}
+                  <Stack spacing={1}>
+                    <Typography variant="subtitle2">Contained Elements</Typography>
+                    {renderReferenceList(itemDraft.contained_elements, "No contained elements were returned for this item.")}
+                  </Stack>
+                </>
+              ) : null}
+              <Divider />
+              <Typography variant="h6">Related Elements</Typography>
+              {itemDraft.related_items.length ? (
+                renderReferenceList(itemDraft.related_items, "No related elements were returned for this item.", { inlineTypeOnly: true })
+              ) : itemDraft.relationships.length ? (
+                <List dense disablePadding>
+                  {itemDraft.relationships.map((relationship, index) => (
+                    <ListItemButton key={`${relationship.type ?? "relationship"}-${index}`} dense>
+                      <ListItemText
+                        primary={humanizeFieldLabel(String(relationship.type ?? `Relationship ${index + 1}`))}
+                        secondary={
+                          typeof relationship.target_name === "string" && relationship.target_name
+                            ? relationship.target_name
+                            : typeof relationship.target === "string"
+                              ? (humanReadableReference(relationship.target, referenceNameById) !== relationship.target
+                                  ? humanReadableReference(relationship.target, referenceNameById)
+                                  : "Related item")
+                              : humanReadableValue(relationship.target ?? relationship, referenceNameById)
+                        }
+                      />
+                    </ListItemButton>
+                  ))}
+                </List>
+              ) : (
+                <Typography color="text.secondary">No related elements were returned for this item.</Typography>
+              )}
+              {showAllDetailSections && referenceRows.length ? (
+                <>
+                  <Divider />
+                  <Typography variant="h6">Reference Map</Typography>
+                  {renderSpecificationTable(referenceRows, "No reference map was published for this item.")}
+                </>
+              ) : null}
+              <Divider />
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <Button size="small" variant="outlined" onClick={revealSelectedInTree} disabled={!selectedItemId}>
+                  Reveal In Tree
+                </Button>
+                <Button size="small" variant="outlined" onClick={openSelectedParent} disabled={!selectedOwnerId}>
+                  Open Parent
+                </Button>
               </Stack>
+            </Stack>
           </Paper>
         </Box>
       </Stack>
@@ -4078,8 +4372,19 @@ export default function WorkspacePage() {
           p: workspaceOuterPadding,
         }}
       >
-        <Paper component="aside" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "fit-content", minWidth: 0 }}>
-          <Stack spacing={sectionSpacing}>
+        <Paper
+          component="aside"
+          sx={{
+            p: compactUi ? 1.5 : 2,
+            borderRadius: 2,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+            maxHeight: { xs: "none", lg: "calc(100vh - 110px)" },
+            overflow: "hidden",
+          }}
+        >
+          <Stack spacing={sectionSpacing} sx={{ minHeight: 0, flex: 1 }}>
             <TextField
               select
               label="Project"
@@ -4153,16 +4458,25 @@ export default function WorkspacePage() {
               </Paper>
             ) : null}
             <Divider />
-            <ProjectTree
-              nodes={visibleTreeNodes}
-              selectedId={selectedItemId}
-              filter={treeFilter}
-              onSelect={(node) => selectContainmentNode(node, "models")}
-              onExpand={loadTreeChildren}
-              loadingIds={loadingTreeNodeIds}
-              expandedIds={expandedTreeNodeIds}
-              onExpandedChange={setExpandedTreeNodeIds}
-            />
+            <Box
+              sx={{
+                minHeight: 0,
+                flex: 1,
+                overflow: "auto",
+                pr: 0.5,
+              }}
+            >
+              <ProjectTree
+                nodes={visibleTreeNodes}
+                selectedId={selectedItemId}
+                filter={treeFilter}
+                onSelect={(node) => selectContainmentNode(node, "models")}
+                onExpand={loadTreeChildren}
+                loadingIds={loadingTreeNodeIds}
+                expandedIds={expandedTreeNodeIds}
+                onExpandedChange={setExpandedTreeNodeIds}
+              />
+            </Box>
           </Stack>
         </Paper>
         <Box
@@ -4200,7 +4514,7 @@ export default function WorkspacePage() {
       </Box>
       <SettingsDialog
         open={settingsOpen}
-        preferences={session?.preferences ?? { theme_mode: "system", font_scale: 1, request_timeout_seconds: 30, live_log_poll_interval_ms: 2500, presentation_font_scale: 1.2, compact_ui: true, show_hidden_packages_in_tree: false }}
+        preferences={currentPreferences}
         saving={settingsMutation.isPending}
         extraContent={renderSettingsExtras()}
         onClose={() => {

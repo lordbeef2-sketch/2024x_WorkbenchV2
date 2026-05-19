@@ -64,8 +64,9 @@ public class TWCWorkbenchCameoPlugin extends Plugin {
                 java.util.function.Consumer<String> reporter = message -> super.publish(message);
                 reporter.accept("[INFO] Capturing current project snapshot...");
                 BranchSnapshotPayload payload = snapshotExportService.capture(project, config, reporter);
-                reporter.accept("[INFO] Sending snapshot to Workbench...");
-                ingestClient.publishSnapshot(payload, "manual", reporter);
+                reporter.accept("[INFO] Planning the best Workbench publish mode...");
+                WorkbenchIngestClient.PublishResult result = ingestClient.publishWithPrecheck(payload, null, deltaExportService, "manual", reporter);
+                reporter.accept("[INFO] " + result.message);
                 projectListener.rememberBaseline(project, payload);
                 return payload;
             }

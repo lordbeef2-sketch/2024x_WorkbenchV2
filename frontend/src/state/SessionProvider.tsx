@@ -33,6 +33,7 @@ function createEmptySession(): SessionSnapshot {
       presentation_font_scale: 1.2,
       compact_ui: true,
       show_hidden_packages_in_tree: false,
+      item_detail_view_mode: "standard",
     },
     bookmarks: [],
     saved_searches: [],

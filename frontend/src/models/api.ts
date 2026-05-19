@@ -1,5 +1,6 @@
 export type TWCVersion = "auto" | "2022x" | "2024x";
 export type ThemeMode = "light" | "dark" | "system";
+export type ItemDetailViewMode = "standard" | "expert" | "all";
 export type CapabilityState = "ready" | "restricted" | "not_available" | "unknown";
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type JobType = "simulation" | "publish" | "export" | "model_cache";
@@ -75,6 +76,7 @@ export interface SessionPreferences {
   presentation_font_scale: number;
   compact_ui: boolean;
   show_hidden_packages_in_tree: boolean;
+  item_detail_view_mode: ItemDetailViewMode;
 }
 
 export interface Bookmark {

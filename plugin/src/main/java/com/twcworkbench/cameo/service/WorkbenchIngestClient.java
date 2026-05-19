@@ -3,11 +3,13 @@ package com.twcworkbench.cameo.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nomagic.magicdraw.core.Application;
 import com.twcworkbench.cameo.config.PluginConfig;
+import com.twcworkbench.cameo.model.BranchIngestState;
 import com.twcworkbench.cameo.model.BranchDeltaPayload;
 import com.twcworkbench.cameo.model.BranchSnapshotPayload;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -32,6 +34,55 @@ public class WorkbenchIngestClient {
         this.objectMapper = new ObjectMapper();
     }
 
+    public PublishResult publishWithPrecheck(
+            BranchSnapshotPayload current,
+            BranchSnapshotPayload previous,
+            DeltaExportService deltaExportService,
+            String reason,
+            Consumer<String> progress
+    ) throws IOException, InterruptedException {
+        requireWorkbenchIngestTarget();
+        validateSnapshotForWorkbench(current);
+
+        BranchIngestState state = fetchBranchState(current, progress);
+        String serverHash = normalizeHash(state != null ? state.snapshotHash : null);
+        String currentHash = normalizeHash(current.snapshotHash);
+        String previousHash = normalizeHash(previous != null ? previous.snapshotHash : null);
+
+        if (state != null && state.exists && currentHash != null && currentHash.equals(serverHash)) {
+            report(progress, "Workbench already has the current branch snapshot fingerprint. Skipping publish.");
+            return PublishResult.skipped("Workbench already has the current stored branch snapshot.");
+        }
+
+        if (previous != null && previousHash != null && serverHash != null && previousHash.equals(serverHash)) {
+            BranchDeltaPayload delta = deltaExportService.createDelta(previous, current);
+            if (!delta.hasChanges()) {
+                report(progress, "Local baseline and current model match. No delta publish needed.");
+                return PublishResult.skipped("No model changes were detected against the stored Workbench branch baseline.");
+            }
+            try {
+                publishDelta(delta, reason, progress);
+                return PublishResult.delta("Published delta after matching the stored Workbench branch baseline.");
+            }
+            catch (IOException exception) {
+                if (!isConflict(exception)) {
+                    throw exception;
+                }
+                report(progress, "Workbench reported a delta baseline mismatch. Falling back to full snapshot rebaseline...");
+                BranchIngestState refreshedState = fetchBranchState(current, progress);
+                String refreshedHash = normalizeHash(refreshedState != null ? refreshedState.snapshotHash : null);
+                if (currentHash != null && currentHash.equals(refreshedHash)) {
+                    report(progress, "Workbench already reflects the current branch snapshot after refresh. Skipping rebaseline.");
+                    return PublishResult.skipped("Workbench already reflects the current branch snapshot after baseline refresh.");
+                }
+            }
+        }
+
+        report(progress, "Publishing a full snapshot to establish or rebaseline the stored Workbench branch.");
+        publishSnapshot(current, reason, progress);
+        return PublishResult.snapshot("Published full snapshot to establish or rebaseline the stored Workbench branch.");
+    }
+
     public void publishSnapshot(BranchSnapshotPayload payload, String reason) throws IOException, InterruptedException {
         publishSnapshot(payload, reason, null);
     }
@@ -52,6 +103,40 @@ public class WorkbenchIngestClient {
         requireWorkbenchIngestTarget();
         validateDeltaForWorkbench(payload);
         postJson("/api/cache-ingest/branch-deltas", payload, progress);
+    }
+
+    public BranchIngestState fetchBranchState(BranchSnapshotPayload payload, Consumer<String> progress) throws IOException, InterruptedException {
+        requireWorkbenchIngestTarget();
+        validateSnapshotForWorkbench(payload);
+        String query = String.format(
+                "serverId=%s&projectId=%s&branchId=%s",
+                encodeQueryValue(payload.serverId),
+                encodeQueryValue(payload.projectId),
+                encodeQueryValue(payload.branchId)
+        );
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(trimTrailingSlash(config.workbenchBaseUrl) + "/api/cache-ingest/branch-state?" + query))
+                .timeout(Duration.ofSeconds(config.readTimeoutSeconds))
+                .header("Authorization", "Bearer " + config.workbenchIngestToken)
+                .header("Accept", "application/json")
+                .header("User-Agent", "twc-workbench-cameo-plugin/0.1.0")
+                .GET()
+                .build();
+        HttpClient httpClient = createHttpClient();
+        report(progress, "Checking stored Workbench branch state...");
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        int statusCode = response.statusCode();
+        if (statusCode < 200 || statusCode >= 300) {
+            throw new IOException("Workbench branch-state lookup failed with status " + statusCode + ": " + response.body());
+        }
+        BranchIngestState state = objectMapper.readValue(response.body(), BranchIngestState.class);
+        if (state.exists) {
+            report(progress, "Workbench branch state: revision " + safe(state.latestRevision) + ", fingerprint " + safe(state.snapshotHash) + ".");
+        }
+        else {
+            report(progress, "Workbench branch state: no stored snapshot exists yet.");
+        }
+        return state;
     }
 
     private void postJson(String path, Object payload, Consumer<String> progress) throws IOException, InterruptedException {
@@ -75,6 +160,10 @@ public class WorkbenchIngestClient {
         }
         report(progress, "Workbench ingest accepted the payload.");
         Application.getInstance().getGUILog().log("[INFO] Posted payload to Workbench ingest endpoint: " + path);
+    }
+
+    private String encodeQueryValue(String value) {
+        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
     }
 
     private HttpClient createHttpClient() throws IOException {
@@ -163,9 +252,50 @@ public class WorkbenchIngestClient {
         return value == null || value.isBlank();
     }
 
+    private String normalizeHash(String value) {
+        if (value == null) {
+            return null;
+        }
+        String cleaned = value.trim();
+        return cleaned.isEmpty() ? null : cleaned;
+    }
+
+    private boolean isConflict(IOException exception) {
+        String message = exception.getMessage();
+        return message != null && message.contains("status 409");
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+
     private void report(Consumer<String> progress, String message) {
         if (progress != null) {
             progress.accept(message);
+        }
+    }
+
+    public static final class PublishResult {
+        public final String mode;
+        public final boolean published;
+        public final String message;
+
+        private PublishResult(String mode, boolean published, String message) {
+            this.mode = mode;
+            this.published = published;
+            this.message = message;
+        }
+
+        public static PublishResult snapshot(String message) {
+            return new PublishResult("snapshot", true, message);
+        }
+
+        public static PublishResult delta(String message) {
+            return new PublishResult("delta", true, message);
+        }
+
+        public static PublishResult skipped(String message) {
+            return new PublishResult("skipped", false, message);
         }
     }
 }

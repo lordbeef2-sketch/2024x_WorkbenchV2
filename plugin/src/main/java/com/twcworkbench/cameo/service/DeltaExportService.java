@@ -10,7 +10,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class DeltaExportService {
+    private final SnapshotHashService snapshotHashService = new SnapshotHashService();
+
     public BranchDeltaPayload createDelta(BranchSnapshotPayload previous, BranchSnapshotPayload current) {
+        snapshotHashService.ensureSnapshotHash(previous);
+        snapshotHashService.ensureSnapshotHash(current);
         BranchDeltaPayload delta = new BranchDeltaPayload();
         delta.exportedAt = OffsetDateTime.now().toString();
         delta.serverId = current.serverId;
@@ -23,6 +27,8 @@ public class DeltaExportService {
         delta.branchName = current.branchName;
         delta.fromRevisionId = previous.revisionId;
         delta.toRevisionId = current.revisionId;
+        delta.baseSnapshotHash = previous.snapshotHash;
+        delta.targetSnapshotHash = current.snapshotHash;
         delta.sourceUser = current.sourceUser;
 
         Map<String, ModelRecord> previousModels = mapModels(previous);

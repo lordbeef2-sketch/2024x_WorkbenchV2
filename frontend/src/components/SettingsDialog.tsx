@@ -15,7 +15,7 @@ import {
 } from "@mui/material";
 import Grid from "@mui/material/GridLegacy";
 
-import { SessionPreferences, ThemeMode } from "../models/api";
+import { ItemDetailViewMode, SessionPreferences, ThemeMode } from "../models/api";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -28,6 +28,11 @@ interface SettingsDialogProps {
 
 export default function SettingsDialog({ open, preferences, saving, extraContent, onClose, onSave }: SettingsDialogProps) {
   const [draft, setDraft] = useState<SessionPreferences>(preferences);
+  const detailViewOptions: Array<{ value: ItemDetailViewMode; label: string }> = [
+    { value: "standard", label: "Standard" },
+    { value: "expert", label: "Expert" },
+    { value: "all", label: "All" },
+  ];
 
   useEffect(() => {
     if (open) {
@@ -91,6 +96,21 @@ export default function SettingsDialog({ open, preferences, saving, extraContent
             </Grid>
           </Grid>
           <Grid container spacing={2}>
+            <Grid item xs={12} md={6}>
+              <TextField
+                select
+                label="Item Details View"
+                value={draft.item_detail_view_mode}
+                onChange={(event) => setField("item_detail_view_mode", event.target.value as ItemDetailViewMode)}
+                fullWidth
+              >
+                {detailViewOptions.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
             <Grid item xs={12} md={6}>
               <TextField
                 label="Request Timeout (seconds)"

@@ -35,6 +35,7 @@ import java.util.function.Consumer;
 
 public class SnapshotExportService {
     private static final Pattern WORKSPACE_RESOURCE_PATTERN = Pattern.compile("/workspaces/([^/]+)/resources/([^/]+)");
+    private final SnapshotHashService snapshotHashService = new SnapshotHashService();
 
     public BranchSnapshotPayload capture(Project project, PluginConfig config) {
         return capture(project, config, null);
@@ -72,6 +73,8 @@ public class SnapshotExportService {
             payload.models.add(modelRecord);
             payload.elements.addAll(traverseElements(project, primaryModel, modelRecord.modelId, progress));
         }
+        payload.snapshotHash = snapshotHashService.ensureSnapshotHash(payload);
+        report(progress, "Computed snapshot fingerprint " + payload.snapshotHash + ".");
         report(progress, "Snapshot capture complete.");
         return payload;
     }

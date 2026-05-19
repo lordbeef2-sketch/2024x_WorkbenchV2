@@ -18,6 +18,8 @@ public class BranchDeltaPayload {
     public String branchName;
     public String fromRevisionId;
     public String toRevisionId;
+    public String baseSnapshotHash;
+    public String targetSnapshotHash;
     public String sourceUser;
     public List<ModelRecord> addedModels = new ArrayList<>();
     public List<ModelRecord> updatedModels = new ArrayList<>();

@@ -24,6 +24,7 @@ from app.integrations.publisher import PublisherAdapter, build_publisher
 from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
     AuthorizationContext,
+    BranchIngestState,
     BranchAccessManifestStatus,
     BranchAccessRecord,
     Bookmark,
@@ -1018,10 +1019,93 @@ class PlatformService:
             model_id=model_id,
         )
 
+    def get_branch_ingest_state(self, server_id: str, project_id: str, branch_id: str) -> BranchIngestState:
+        server = self._require_server(server_id, include_disabled=True)
+        summary = self.repo.get_branch_cache_summary(server.id, project_id, branch_id)
+        if summary is None:
+            return BranchIngestState(
+                server_id=server.id,
+                project_id=project_id,
+                branch_id=branch_id,
+                exists=False,
+            )
+        return BranchIngestState(
+            server_id=summary.server_id,
+            project_id=summary.project_id,
+            branch_id=summary.branch_id,
+            workspace_id=summary.workspace_id,
+            exists=True,
+            project_name=summary.project_name,
+            branch_name=summary.branch_name,
+            latest_revision=summary.latest_revision,
+            snapshot_hash=summary.snapshot_hash,
+            model_count=summary.model_count,
+            element_count=summary.element_count,
+            source_kind=summary.source_kind,
+            source_user=summary.source_user,
+            updated_at=summary.updated_at,
+        )
+
+    def _normalize_snapshot_hash(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    def _snapshot_hash_document(
+        self,
+        models: list[dict[str, Any]],
+        elements: list[dict[str, Any]],
+    ) -> str:
+        document = {
+            "models": sorted(models, key=lambda item: str(item.get("model_id") or "")),
+            "elements": sorted(elements, key=lambda item: str(item.get("element_id") or "")),
+        }
+        encoded = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _snapshot_hash_from_ingest_payload(self, payload: BranchSnapshotIngestRequest) -> str:
+        models = [
+            {
+                "model_id": model.model_id,
+                "name": model.name,
+                "human_name": model.human_name,
+                "qualified_name": model.qualified_name,
+                "owner_id": model.owner_id,
+                "root_element_ids": list(model.root_element_ids),
+            }
+            for model in payload.models
+        ]
+        elements = [
+            {
+                "element_id": element.element_id,
+                "model_id": element.model_id,
+                "local_id": element.local_id,
+                "owner_id": element.owner_id,
+                "name": element.name,
+                "human_name": element.human_name,
+                "qualified_name": element.qualified_name,
+                "human_type": element.human_type,
+                "metaclass": element.metaclass,
+                "documentation": element.documentation,
+                "diagram_type": element.diagram_type,
+                "diagram_preview_format": element.diagram_preview_format,
+                "diagram_preview_base64": element.diagram_preview_base64,
+                "owned_element_ids": list(element.owned_element_ids),
+                "applied_stereotype_ids": list(element.applied_stereotype_ids),
+                "diagram_element_ids": list(element.diagram_element_ids),
+                "attributes": element.attributes,
+                "references": element.references,
+            }
+            for element in payload.elements
+        ]
+        return self._snapshot_hash_document(models, elements)
+
     def ingest_branch_snapshot(self, payload: BranchSnapshotIngestRequest) -> BranchCacheSummary:
         server = self._require_server(payload.server_id, include_disabled=True)
         source_user = self._user_key(payload.source_user)
         ingested_at = utcnow()
+        snapshot_hash = self._normalize_snapshot_hash(payload.snapshot_hash) or self._snapshot_hash_from_ingest_payload(payload)
 
         resolved_models = self._resolve_snapshot_model_records(server.id, payload, source_user, ingested_at)
         resolved_elements = self._resolve_snapshot_element_records(server.id, payload, resolved_models, source_user, ingested_at)
@@ -1083,6 +1167,7 @@ class PlatformService:
             message="Stored from Cameo live model snapshot.",
             model_count=len(finalized_models),
             element_count=len(resolved_elements),
+            snapshot_hash=snapshot_hash,
             source_kind=payload.source,
             source_user=payload.source_user,
             updated_at=ingested_at,
@@ -1113,6 +1198,13 @@ class PlatformService:
         existing_summary = self.repo.get_branch_cache_summary(server.id, payload.project_id, payload.branch_id)
         if existing_summary is None:
             raise ValueError("A branch snapshot must be ingested before deltas can be applied.")
+        existing_snapshot_hash = self._normalize_snapshot_hash(existing_summary.snapshot_hash)
+        base_snapshot_hash = self._normalize_snapshot_hash(payload.base_snapshot_hash)
+        target_snapshot_hash = self._normalize_snapshot_hash(payload.target_snapshot_hash)
+        if base_snapshot_hash and not existing_snapshot_hash:
+            raise RuntimeError("Stored branch snapshot is missing a baseline fingerprint. Publish a full snapshot to rebaseline before applying deltas.")
+        if existing_snapshot_hash and base_snapshot_hash and existing_snapshot_hash != base_snapshot_hash:
+            raise RuntimeError("Stored branch snapshot has changed on the server. Publish a full snapshot to rebaseline before applying this delta.")
 
         source_user = self._user_key(payload.source_user)
         ingested_at = utcnow()
@@ -1272,6 +1364,7 @@ class PlatformService:
                     connection=connection,
                 ),
                 last_job_id=existing_summary.last_job_id,
+                snapshot_hash=target_snapshot_hash or existing_snapshot_hash,
                 source_kind=payload.source,
                 source_user=payload.source_user,
                 updated_at=ingested_at,

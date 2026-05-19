@@ -177,6 +177,7 @@ class SessionPreferences(BaseModel):
     presentation_font_scale: float = 1.2
     compact_ui: bool = True
     show_hidden_packages_in_tree: bool = False
+    item_detail_view_mode: Literal["standard", "expert", "all"] = "standard"
 
 
 class Bookmark(BaseModel):
@@ -537,6 +538,7 @@ class BranchCacheSummary(BaseModel):
     model_count: int = 0
     element_count: int = 0
     last_job_id: str | None = None
+    snapshot_hash: str | None = None
     source_kind: str = "twc-rest"
     source_user: str | None = None
     updated_at: datetime = Field(default_factory=utcnow)
@@ -797,6 +799,7 @@ class BranchSnapshotIngestRequest(BaseModel):
     branch_id: str = Field(alias="branchId")
     branch_name: str = Field(default="", alias="branchName")
     revision_id: str | None = Field(default=None, alias="revisionId")
+    snapshot_hash: str | None = Field(default=None, alias="snapshotHash")
     source_user: str = Field(alias="sourceUser")
     models: list[IngestModelRecord] = Field(default_factory=list)
     elements: list[IngestElementRecord] = Field(default_factory=list)
@@ -819,6 +822,8 @@ class BranchDeltaIngestRequest(BaseModel):
     branch_name: str = Field(default="", alias="branchName")
     from_revision_id: str | None = Field(default=None, alias="fromRevisionId")
     to_revision_id: str | None = Field(default=None, alias="toRevisionId")
+    base_snapshot_hash: str | None = Field(default=None, alias="baseSnapshotHash")
+    target_snapshot_hash: str | None = Field(default=None, alias="targetSnapshotHash")
     source_user: str = Field(alias="sourceUser")
     added_models: list[IngestModelRecord] = Field(default_factory=list, alias="addedModels")
     updated_models: list[IngestModelRecord] = Field(default_factory=list, alias="updatedModels")
@@ -836,6 +841,23 @@ class CacheProjectBranchEntry(BaseModel):
     model_count: int = 0
     element_count: int = 0
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class BranchIngestState(BaseModel):
+    server_id: str
+    project_id: str
+    branch_id: str
+    workspace_id: str | None = None
+    exists: bool = False
+    project_name: str = ""
+    branch_name: str = ""
+    latest_revision: str | None = None
+    snapshot_hash: str | None = None
+    model_count: int = 0
+    element_count: int = 0
+    source_kind: str = "none"
+    source_user: str | None = None
+    updated_at: datetime | None = None
 
 
 class CacheProjectEntry(BaseModel):
