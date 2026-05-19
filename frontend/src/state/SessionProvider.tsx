@@ -31,6 +31,7 @@ function createEmptySession(): SessionSnapshot {
       request_timeout_seconds: 30,
       live_log_poll_interval_ms: 2500,
       presentation_font_scale: 1.2,
+      compact_ui: true,
       show_hidden_packages_in_tree: false,
     },
     bookmarks: [],

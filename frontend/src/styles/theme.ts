@@ -1,7 +1,12 @@
 import { alpha, createTheme, PaletteMode } from "@mui/material/styles";
 
-export function buildTheme(mode: PaletteMode, fontScale: number) {
+export function buildTheme(mode: PaletteMode, fontScale: number, compactUi = true) {
   const isDark = mode === "dark";
+  const baseFontSize = compactUi ? 13 : 14;
+  const controlRadius = compactUi ? 10 : 14;
+  const surfaceRadius = compactUi ? 12 : 20;
+  const tabMinHeight = compactUi ? 40 : 48;
+  const toolbarMinHeight = compactUi ? 46 : 56;
 
   return createTheme({
     palette: {
@@ -31,11 +36,11 @@ export function buildTheme(mode: PaletteMode, fontScale: number) {
       },
     },
     shape: {
-      borderRadius: 18,
+      borderRadius: compactUi ? 12 : 18,
     },
     typography: {
       fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
-      fontSize: Math.round(14 * fontScale),
+      fontSize: Math.round(baseFontSize * fontScale),
       h1: {
         fontFamily: '"Space Grotesk", "IBM Plex Sans", sans-serif',
         fontWeight: 700,
@@ -68,13 +73,23 @@ export function buildTheme(mode: PaletteMode, fontScale: number) {
           },
         },
       },
+      MuiToolbar: {
+        styleOverrides: {
+          root: {
+            minHeight: toolbarMinHeight,
+            "@media (min-width:600px)": {
+              minHeight: toolbarMinHeight,
+            },
+          },
+        },
+      },
       MuiPaper: {
         styleOverrides: {
           root: {
             backgroundImage: "none",
           },
           rounded: {
-            borderRadius: 20,
+            borderRadius: surfaceRadius,
           },
         },
       },
@@ -89,17 +104,54 @@ export function buildTheme(mode: PaletteMode, fontScale: number) {
         },
       },
       MuiButton: {
+        defaultProps: {
+          size: compactUi ? "small" : "medium",
+        },
         styleOverrides: {
           root: {
-            borderRadius: 14,
+            borderRadius: controlRadius,
           },
+        },
+      },
+      MuiIconButton: {
+        defaultProps: {
+          size: compactUi ? "small" : "medium",
+        },
+      },
+      MuiChip: {
+        styleOverrides: {
+          root: {
+            height: compactUi ? 24 : 32,
+            fontSize: compactUi ? "0.75rem" : "0.8125rem",
+          },
+        },
+      },
+      MuiTextField: {
+        defaultProps: {
+          size: compactUi ? "small" : "medium",
         },
       },
       MuiOutlinedInput: {
         styleOverrides: {
           root: {
-            borderRadius: 14,
+            borderRadius: controlRadius,
             backgroundColor: alpha(isDark ? "#132235" : "#ffffff", 0.72),
+          },
+        },
+      },
+      MuiAccordionSummary: {
+        styleOverrides: {
+          root: {
+            minHeight: compactUi ? 40 : 48,
+            "&.Mui-expanded": {
+              minHeight: compactUi ? 40 : 48,
+            },
+          },
+          content: {
+            margin: compactUi ? "8px 0" : "12px 0",
+            "&.Mui-expanded": {
+              margin: compactUi ? "8px 0" : "12px 0",
+            },
           },
         },
       },
@@ -108,6 +160,23 @@ export function buildTheme(mode: PaletteMode, fontScale: number) {
           indicator: {
             height: 4,
             borderRadius: 999,
+          },
+        },
+      },
+      MuiTab: {
+        styleOverrides: {
+          root: {
+            minHeight: tabMinHeight,
+            padding: compactUi ? "6px 12px" : "10px 16px",
+            fontSize: compactUi ? "0.8125rem" : "0.875rem",
+          },
+        },
+      },
+      MuiListItemButton: {
+        styleOverrides: {
+          root: {
+            paddingTop: compactUi ? 4 : 8,
+            paddingBottom: compactUi ? 4 : 8,
           },
         },
       },

@@ -43,7 +43,8 @@ export default function App() {
   const requestedMode = session?.preferences.theme_mode ?? "system";
   const mode = requestedMode === "system" ? (prefersDark ? "dark" : "light") : requestedMode;
   const fontScale = session?.preferences.font_scale ?? 1;
-  const theme = buildTheme(mode, fontScale);
+  const compactUi = session?.preferences.compact_ui ?? true;
+  const theme = buildTheme(mode, fontScale, compactUi);
 
   return (
     <ThemeProvider theme={theme}>

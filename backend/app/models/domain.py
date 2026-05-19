@@ -175,6 +175,7 @@ class SessionPreferences(BaseModel):
     request_timeout_seconds: int = 30
     live_log_poll_interval_ms: int = 2500
     presentation_font_scale: float = 1.2
+    compact_ui: bool = True
     show_hidden_packages_in_tree: bool = False
 
 

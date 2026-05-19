@@ -184,15 +184,15 @@ export default function ProjectTree({
           selected={selectedId === node.id}
           onClick={() => onSelect(node)}
           sx={{
-            pl: 1 + depth * 2,
+            pl: 0.75 + depth * 1.5,
             borderRadius: 2,
-            mb: 0.25,
+            mb: 0.125,
             alignItems: "flex-start",
             "&::before": depth
               ? {
                   content: '""',
                   position: "absolute",
-                  left: 12 + (depth - 1) * 16,
+                  left: 10 + (depth - 1) * 12,
                   top: 0,
                   bottom: 0,
                   borderLeft: "1px solid",
@@ -201,7 +201,7 @@ export default function ProjectTree({
               : undefined,
           }}
         >
-          <Box sx={{ width: 24, display: "flex", alignItems: "center", justifyContent: "center", mr: 0.5 }}>
+          <Box sx={{ width: 22, display: "flex", alignItems: "center", justifyContent: "center", mr: 0.25 }}>
             {hasChildren ? (
               <IconButton
                 size="small"
@@ -224,9 +224,10 @@ export default function ProjectTree({
               </IconButton>
             ) : null}
           </Box>
-          <ListItemIcon sx={{ minWidth: 30 }}>{iconForNode(node.node_type)}</ListItemIcon>
+          <ListItemIcon sx={{ minWidth: 26 }}>{iconForNode(node.node_type)}</ListItemIcon>
           <ListItemText
             primary={node.label}
+            primaryTypographyProps={{ variant: "body2", fontWeight: 500 }}
             secondary={
               <Stack spacing={0.25}>
                 <Typography variant="caption" color="text.secondary">

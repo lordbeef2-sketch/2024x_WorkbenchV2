@@ -100,6 +100,10 @@ function clampNumber(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
+function paneMaxWidthForViewport(viewportWidth: number, fraction: number, minimum: number, maximum: number): number {
+  return clampNumber(Math.floor(viewportWidth * fraction), minimum, maximum);
+}
+
 function readStoredNumber(key: string, fallback: number, minimum: number, maximum: number): number {
   if (typeof window === "undefined") {
     return fallback;
@@ -857,6 +861,7 @@ export default function WorkspacePage() {
   const capabilities = session?.capabilities?.capabilities ?? {};
   const canEdit = capabilities.edit?.state === "ready";
   const isAdmin = Boolean(session?.can_manage_server_presets);
+  const compactUi = session?.preferences.compact_ui ?? true;
   const cacheTimeMs = 1000 * 60 * 60 * 12;
   const sessionCacheKey = [session?.user?.preferred_username ?? "anonymous", session?.server?.id ?? "no-server"];
   const layoutStoragePrefix = `twc-workbench-layout:${sessionCacheKey.join(":")}`;
@@ -882,9 +887,9 @@ export default function WorkspacePage() {
   const [treeNodes, setTreeNodes] = useState<TreeNode[]>([]);
   const [loadingTreeNodeIds, setLoadingTreeNodeIds] = useState<string[]>([]);
   const [expandedTreeNodeIds, setExpandedTreeNodeIds] = useState<string[]>([]);
-  const [navPaneWidth, setNavPaneWidth] = useState(() => readStoredNumber(navPaneStorageKey, 360, 280, 560));
-  const [modelPaneWidth, setModelPaneWidth] = useState(() => readStoredNumber(modelPaneStorageKey, 440, 320, 760));
-  const [detailSidebarWidth, setDetailSidebarWidth] = useState(() => readStoredNumber(detailSidebarStorageKey, 420, 320, 720));
+  const [navPaneWidth, setNavPaneWidth] = useState(() => readStoredNumber(navPaneStorageKey, 320, 260, 520));
+  const [modelPaneWidth, setModelPaneWidth] = useState(() => readStoredNumber(modelPaneStorageKey, 400, 280, 680));
+  const [detailSidebarWidth, setDetailSidebarWidth] = useState(() => readStoredNumber(detailSidebarStorageKey, 360, 280, 620));
   const [itemDraft, setItemDraft] = useState<ItemDetails | null>(null);
   const [compareLeft, setCompareLeft] = useState("");
   const [compareRight, setCompareRight] = useState("");
@@ -919,6 +924,12 @@ export default function WorkspacePage() {
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
   const projectContextActive = tab === "models" || tab === "details" || tab === "compare";
   const treeExpandedStorageKey = `${layoutStoragePrefix}:tree-expanded:${selectedProjectId || "no-project"}:${selectedBranchId || "no-branch"}`;
+  const workspaceOuterPadding = compactUi ? { xs: 1.5, md: 2 } : { xs: 2, md: 3 };
+  const panelPadding = compactUi ? 2 : 3;
+  const sectionSpacing = compactUi ? 1.5 : 2;
+  const viewportPanelMaxHeight = compactUi ? "calc(100vh - 250px)" : "calc(100vh - 220px)";
+  const previewMaxHeight = compactUi ? 460 : 520;
+  const detailPreviewMaxHeight = compactUi ? 620 : 720;
 
   const projectsQuery = useQuery({
     queryKey: ["workspace-projects", ...sessionCacheKey],
@@ -1061,16 +1072,28 @@ export default function WorkspacePage() {
   }, [treeExpandedStorageKey]);
 
   useEffect(() => {
-    setNavPaneWidth(readStoredNumber(navPaneStorageKey, 360, 280, 560));
+    setNavPaneWidth(readStoredNumber(navPaneStorageKey, 320, 260, 520));
   }, [navPaneStorageKey]);
 
   useEffect(() => {
-    setModelPaneWidth(readStoredNumber(modelPaneStorageKey, 440, 320, 760));
+    setModelPaneWidth(readStoredNumber(modelPaneStorageKey, 400, 280, 680));
   }, [modelPaneStorageKey]);
 
   useEffect(() => {
-    setDetailSidebarWidth(readStoredNumber(detailSidebarStorageKey, 420, 320, 720));
+    setDetailSidebarWidth(readStoredNumber(detailSidebarStorageKey, 360, 280, 620));
   }, [detailSidebarStorageKey]);
+
+  useEffect(() => {
+    const clampPaneWidths = () => {
+      const viewportWidth = window.innerWidth;
+      setNavPaneWidth((current) => clampNumber(current, 260, paneMaxWidthForViewport(viewportWidth, 0.34, 260, 520)));
+      setModelPaneWidth((current) => clampNumber(current, 280, paneMaxWidthForViewport(viewportWidth, 0.42, 280, 680)));
+      setDetailSidebarWidth((current) => clampNumber(current, 280, paneMaxWidthForViewport(viewportWidth, 0.38, 280, 620)));
+    };
+    clampPaneWidths();
+    window.addEventListener("resize", clampPaneWidths);
+    return () => window.removeEventListener("resize", clampPaneWidths);
+  }, []);
 
   useEffect(() => {
     persistStoredValue(navPaneStorageKey, navPaneWidth);
@@ -2358,8 +2381,8 @@ export default function WorkspacePage() {
             alignItems: "stretch",
           }}
         >
-          <Paper sx={{ p: 3, borderRadius: 2, minWidth: 0 }}>
-            <Stack spacing={2}>
+          <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
+            <Stack spacing={sectionSpacing}>
               <Typography variant="h6">Containment Tree</Typography>
               <Typography variant="body2" color="text.secondary">
                 Walk the published branch snapshot the same way you would browse the containment tree in Cameo. Expand packages and elements on the left, then inspect the selected node on the right.
@@ -2372,7 +2395,7 @@ export default function WorkspacePage() {
                 </Stack>
               ) : null}
               {selectedNodeTrail.length ? (
-                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                <Paper variant="outlined" sx={{ p: compactUi ? 1 : 1.5, borderRadius: 2 }}>
                   <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
                     {selectedNodeTrail.map((node, index) => (
                       <Chip
@@ -2387,7 +2410,7 @@ export default function WorkspacePage() {
                   </Stack>
                 </Paper>
               ) : selectedContainmentSegments.length ? (
-                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                <Paper variant="outlined" sx={{ p: compactUi ? 1 : 1.5, borderRadius: 2 }}>
                   <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
                     {selectedContainmentSegments.map((segment, index) => (
                       <Chip
@@ -2401,7 +2424,7 @@ export default function WorkspacePage() {
                 </Paper>
               ) : null}
               {visibleTreeNodes.length ? (
-                <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, maxHeight: 860, overflow: "auto" }}>
+                <Paper variant="outlined" sx={{ p: compactUi ? 1.25 : 2, borderRadius: 2, maxHeight: viewportPanelMaxHeight, overflow: "auto" }}>
                   <ProjectTree
                     nodes={visibleTreeNodes}
                     selectedId={selectedItemId}
@@ -2426,12 +2449,12 @@ export default function WorkspacePage() {
             role="separator"
             aria-orientation="vertical"
             sx={resizeHandleStyles()}
-            onMouseDown={(event) => beginHorizontalResize(event, modelPaneWidth, setModelPaneWidth, 320, 760)}
+            onMouseDown={(event) => beginHorizontalResize(event, modelPaneWidth, setModelPaneWidth, 280, 680)}
           />
           <Box sx={{ minWidth: 0 }}>
             {selectedWorkspaceItem ? (
-              <Paper sx={{ p: 3, borderRadius: 2 }}>
-                <Stack spacing={2}>
+              <Paper sx={{ p: panelPadding, borderRadius: 2 }}>
+                <Stack spacing={sectionSpacing}>
                   {(() => {
                     const quickIdentity = identityRows(selectedWorkspaceItem, referenceNameById);
                     const quickOverview = overviewRows(selectedWorkspaceItem, referenceNameById);
@@ -2441,7 +2464,7 @@ export default function WorkspacePage() {
                     const quickDiagramPreview = diagramPreviewDataUrl(selectedWorkspaceItem);
                     return (
                       <>
-                  <Stack spacing={0.75}>
+                    <Stack spacing={compactUi ? 0.5 : 0.75}>
                     <Typography variant="h6">{selectedWorkspaceItemName}</Typography>
                     <Typography variant="body2" color="text.secondary">
                       {selectedWorkspaceItemPath || `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}`}
@@ -2453,7 +2476,7 @@ export default function WorkspacePage() {
                     </Stack>
                   </Stack>
                   {quickDiagramPreview ? (
-                    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
                       <Stack spacing={1.5}>
                         <Typography variant="subtitle2">Diagram Preview</Typography>
                         <Box
@@ -2462,7 +2485,7 @@ export default function WorkspacePage() {
                           alt={selectedWorkspaceItemName}
                           sx={{
                             width: "100%",
-                            maxHeight: 520,
+                            maxHeight: previewMaxHeight,
                             objectFit: "contain",
                             borderRadius: 1,
                             border: "1px solid",
@@ -2475,7 +2498,7 @@ export default function WorkspacePage() {
                   ) : null}
                   <Grid container spacing={2}>
                     <Grid item xs={12} md={6}>
-                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
                         <Stack spacing={1}>
                           <Typography variant="subtitle2">Identity</Typography>
                           {renderInspectorRows(quickIdentity, "No identifying fields were published for this item.")}
@@ -2483,7 +2506,7 @@ export default function WorkspacePage() {
                       </Paper>
                     </Grid>
                     <Grid item xs={12} md={6}>
-                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
                         <Stack spacing={1}>
                           <Typography variant="subtitle2">Overview</Typography>
                           {renderInspectorRows(quickOverview, "No overview fields were published for this item.")}
@@ -2491,7 +2514,7 @@ export default function WorkspacePage() {
                       </Paper>
                     </Grid>
                     <Grid item xs={12}>
-                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
                         <Stack spacing={1}>
                           <Typography variant="subtitle2">Properties</Typography>
                           {renderInspectorRows(
@@ -2502,7 +2525,7 @@ export default function WorkspacePage() {
                       </Paper>
                     </Grid>
                     <Grid item xs={12} md={6}>
-                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
                         <Stack spacing={1}>
                           <Typography variant="subtitle2">Containment</Typography>
                           {renderReferenceList(
@@ -2513,7 +2536,7 @@ export default function WorkspacePage() {
                       </Paper>
                     </Grid>
                     <Grid item xs={12} md={6}>
-                      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                      <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
                         <Stack spacing={1}>
                           <Typography variant="subtitle2">Relationships</Typography>
                           {renderReferenceList(
@@ -2525,7 +2548,7 @@ export default function WorkspacePage() {
                     </Grid>
                     {quickReferences.length ? (
                       <Grid item xs={12}>
-                        <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                        <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
                           <Stack spacing={1}>
                             <Typography variant="subtitle2">Reference Buckets</Typography>
                             {renderInspectorRows(quickReferences, "No reference buckets were published for this item.")}
@@ -2642,8 +2665,8 @@ export default function WorkspacePage() {
             alignItems: "stretch",
           }}
         >
-          <Paper sx={{ p: 3, borderRadius: 2, minWidth: 0 }}>
-              <Stack spacing={2}>
+          <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
+              <Stack spacing={sectionSpacing}>
                 <TextField label="Path" value={friendlyPath(itemDraft.path, referenceNameById)} disabled fullWidth />
                 <TextField
                   label="Name"
@@ -2708,7 +2731,7 @@ export default function WorkspacePage() {
                         alt={displayEntityName(itemDraft.name, itemDraft.id, itemDraft.item_type, referenceNameById, itemDraft.path)}
                         sx={{
                           width: "100%",
-                          maxHeight: 720,
+                          maxHeight: detailPreviewMaxHeight,
                           objectFit: "contain",
                           borderRadius: 1,
                           border: "1px solid",
@@ -2755,10 +2778,10 @@ export default function WorkspacePage() {
             role="separator"
             aria-orientation="vertical"
             sx={resizeHandleStyles()}
-            onMouseDown={(event) => beginHorizontalResize(event, detailSidebarWidth, setDetailSidebarWidth, 320, 720, "grow-left")}
+            onMouseDown={(event) => beginHorizontalResize(event, detailSidebarWidth, setDetailSidebarWidth, 280, 620, "grow-left")}
           />
-          <Paper sx={{ p: 3, borderRadius: 2, minWidth: 0 }}>
-              <Stack spacing={2}>
+          <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
+              <Stack spacing={sectionSpacing}>
                 <Typography variant="h6">Element Overview</Typography>
                 {selectedNodeTrail.length ? (
                   <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
@@ -4016,13 +4039,10 @@ export default function WorkspacePage() {
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
       <AppBar position="sticky" color="default" elevation={1}>
-        <Toolbar sx={{ gap: 2 }}>
+        <Toolbar sx={{ gap: compactUi ? 1.25 : 2 }}>
           <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-            <Typography variant="h6" noWrap>
+            <Typography variant="h6" noWrap sx={{ lineHeight: 1.1 }}>
               TWC Workbench
-            </Typography>
-            <Typography variant="caption" color="text.secondary" noWrap>
-              {session?.server?.name ?? "Teamwork Cloud"} / {session?.user?.preferred_username ?? "authenticated user"}
             </Typography>
           </Box>
           {session?.capabilities ? <CapabilityBadges capabilities={session.capabilities.capabilities} /> : null}
@@ -4055,11 +4075,11 @@ export default function WorkspacePage() {
             lg: `${navPaneWidth}px 12px minmax(0, 1fr)`,
           },
           gap: 0,
-          p: { xs: 2, md: 3 },
+          p: workspaceOuterPadding,
         }}
       >
-        <Paper component="aside" sx={{ p: 2, borderRadius: 2, height: "fit-content", minWidth: 0 }}>
-          <Stack spacing={2}>
+        <Paper component="aside" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "fit-content", minWidth: 0 }}>
+          <Stack spacing={sectionSpacing}>
             <TextField
               select
               label="Project"
@@ -4105,8 +4125,8 @@ export default function WorkspacePage() {
             </TextField>
             <TextField label="Filter model tree" value={treeFilter} onChange={(event) => setTreeFilter(event.target.value)} fullWidth />
             {selectedWorkspaceItem ? (
-              <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
-                <Stack spacing={0.75}>
+              <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                <Stack spacing={compactUi ? 0.5 : 0.75}>
                   <Typography variant="overline" color="text.secondary">
                     Current Selection
                   </Typography>
@@ -4149,9 +4169,9 @@ export default function WorkspacePage() {
           role="separator"
           aria-orientation="vertical"
           sx={resizeHandleStyles()}
-          onMouseDown={(event) => beginHorizontalResize(event, navPaneWidth, setNavPaneWidth, 280, 560)}
+          onMouseDown={(event) => beginHorizontalResize(event, navPaneWidth, setNavPaneWidth, 260, 520)}
         />
-        <Stack spacing={2} component="main" sx={{ minWidth: 0, pl: { xs: 0, lg: 2 } }}>
+        <Stack spacing={sectionSpacing} component="main" sx={{ minWidth: 0, pl: { xs: 0, lg: compactUi ? 1.5 : 2 } }}>
           {notice ? <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.message}</Alert> : null}
           {projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
           <Paper sx={{ borderRadius: 2 }}>
@@ -4180,7 +4200,7 @@ export default function WorkspacePage() {
       </Box>
       <SettingsDialog
         open={settingsOpen}
-        preferences={session?.preferences ?? { theme_mode: "system", font_scale: 1, request_timeout_seconds: 30, live_log_poll_interval_ms: 2500, presentation_font_scale: 1.2, show_hidden_packages_in_tree: false }}
+        preferences={session?.preferences ?? { theme_mode: "system", font_scale: 1, request_timeout_seconds: 30, live_log_poll_interval_ms: 2500, presentation_font_scale: 1.2, compact_ui: true, show_hidden_packages_in_tree: false }}
         saving={settingsMutation.isPending}
         extraContent={renderSettingsExtras()}
         onClose={() => {

@@ -5,8 +5,6 @@ import {
   Alert,
   Box,
   Button,
-  Card,
-  CardContent,
   Chip,
   Container,
   Dialog,
@@ -24,6 +22,7 @@ import LoginRoundedIcon from "@mui/icons-material/LoginRounded";
 import MonitorHeartRoundedIcon from "@mui/icons-material/MonitorHeartRounded";
 import PublicRoundedIcon from "@mui/icons-material/PublicRounded";
 import VpnKeyRoundedIcon from "@mui/icons-material/VpnKeyRounded";
+import VerifiedUserRoundedIcon from "@mui/icons-material/VerifiedUserRounded";
 
 import { ServerHealth, TokenLoginRequest } from "../models/api";
 import { api } from "../services/api";
@@ -108,59 +107,130 @@ export default function LandingPage() {
       <Stack spacing={3}>
         <Paper
           sx={{
-            p: { xs: 3, md: 4 },
-            borderRadius: 6,
             overflow: "hidden",
-            position: "relative",
-            background:
-              "linear-gradient(135deg, rgba(18,103,181,0.92), rgba(10,63,117,0.92) 42%, rgba(15,159,110,0.9) 100%)",
-            color: "white",
+            p: { xs: 2.5, md: 4 },
+            borderRadius: 6,
+            color: "#f8fbff",
+            background: "linear-gradient(120deg, #2d6fb2 0%, #275f98 28%, #247a8d 68%, #28b37a 100%)",
+            boxShadow: "0 28px 60px rgba(12, 38, 73, 0.22)",
           }}
         >
-          <Box
-            sx={{
-              position: "absolute",
-              inset: 0,
-              background:
-                "radial-gradient(circle at top right, rgba(255,255,255,0.18), transparent 30%), radial-gradient(circle at bottom left, rgba(255,255,255,0.15), transparent 28%)",
-              pointerEvents: "none",
-            }}
-          />
-          <Grid container spacing={3} sx={{ position: "relative" }}>
+          <Grid container spacing={3} alignItems="stretch">
             <Grid item xs={12} lg={8}>
-              <Stack spacing={2.5}>
-                <Chip icon={<MonitorHeartRoundedIcon />} label="Teamwork Cloud 2024x" sx={{ width: "fit-content", color: "white", borderColor: "rgba(255,255,255,0.28)" }} variant="outlined" />
-                <Typography variant="h2" sx={{ maxWidth: 900 }}>
-                  Secure enterprise workbench for Teamwork Cloud repository browsing, item details, and compare workflows.
-                </Typography>
-                <Typography variant="h6" sx={{ maxWidth: 900, color: "rgba(255,255,255,0.82)", fontWeight: 400 }}>
-                  This workbench is configured around a Teamwork Cloud 2024x deployment, keeping sign-in, repository browsing, item details, and compare workflows aligned to the active 2024x contract.
-                </Typography>
-                <Button variant="outlined" color="inherit" startIcon={<MonitorHeartRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["server-health"] })}>
+              <Stack spacing={2.5} sx={{ height: "100%" }}>
+                <Chip
+                  icon={<MonitorHeartRoundedIcon sx={{ color: "inherit !important" }} />}
+                  label="Teamwork Cloud 2024x"
+                  size="small"
+                  variant="outlined"
+                  sx={{
+                    alignSelf: "flex-start",
+                    color: "#f8fbff",
+                    borderColor: "rgba(255,255,255,0.32)",
+                    backgroundColor: "rgba(18, 48, 92, 0.18)",
+                  }}
+                />
+                <Box>
+                  <Typography
+                    variant="h1"
+                    sx={{
+                      fontSize: { xs: "2.5rem", md: "4rem" },
+                      lineHeight: 1.05,
+                      letterSpacing: 0,
+                      maxWidth: 920,
+                    }}
+                  >
+                    TWC WorkBench
+                  </Typography>
+                  <Typography
+                    variant="h6"
+                    sx={{
+                      mt: 2,
+                      maxWidth: 940,
+                      fontWeight: 400,
+                      color: "rgba(244, 249, 255, 0.9)",
+                      fontSize: { xs: "1rem", md: "1.15rem" },
+                    }}
+                  >
+                    Secure Enterprise Workbench for teamwork cloud repository browsing,item details and compact work flows
+                  </Typography>
+                </Box>
+                <Button
+                  variant="outlined"
+                  startIcon={<MonitorHeartRoundedIcon />}
+                  onClick={() => queryClient.invalidateQueries({ queryKey: ["server-health"] })}
+                  sx={{
+                    alignSelf: "stretch",
+                    maxWidth: { xs: "100%", lg: 880 },
+                    color: "#f8fbff",
+                    borderColor: "rgba(255,255,255,0.78)",
+                    backgroundColor: "rgba(17, 48, 93, 0.12)",
+                    "&:hover": {
+                      borderColor: "#f8fbff",
+                      backgroundColor: "rgba(17, 48, 93, 0.22)",
+                    },
+                  }}
+                >
                   Refresh Health
                 </Button>
               </Stack>
             </Grid>
             <Grid item xs={12} lg={4}>
-              <Paper sx={{ p: 3, borderRadius: 5, bgcolor: "rgba(7, 22, 39, 0.28)", color: "white" }}>
+              <Paper
+                sx={{
+                  height: "100%",
+                  p: 3,
+                  borderRadius: 5,
+                  backgroundColor: "rgba(16, 61, 78, 0.56)",
+                  color: "#f8fbff",
+                  boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.08)",
+                }}
+              >
                 <Stack spacing={2}>
-                  <Typography variant="h5">Platform Summary</Typography>
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip label={`${servers.length} available presets`} sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
-                    <Chip label="Central admin catalog" sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
-                    <Chip label="User-scoped TWC auth" sx={{ color: "white", borderColor: "rgba(255,255,255,0.22)" }} variant="outlined" />
-                  </Stack>
-                  <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.8)" }}>
-                    TWC remains the authentication and authorization authority. Sign in via TWC uses the selected server's Authentication Server and its configured SAML login, while token sign-in remains available as a fallback.
+                  <Typography variant="h4" sx={{ color: "#f8fbff", fontSize: { xs: "1.85rem", md: "2.1rem" } }}>
+                    Platform Summary
                   </Typography>
-                  <Stack spacing={1.5}>
-                    <Stack direction="row" spacing={1.5} alignItems="center">
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip
+                      label={`${servers.length} available presets`}
+                      size="small"
+                      variant="outlined"
+                      sx={{ color: "#f8fbff", borderColor: "rgba(255,255,255,0.22)", backgroundColor: "rgba(10, 34, 51, 0.14)" }}
+                    />
+                    <Chip
+                      label="Central admin catalog"
+                      size="small"
+                      variant="outlined"
+                      sx={{ color: "#f8fbff", borderColor: "rgba(255,255,255,0.22)", backgroundColor: "rgba(10, 34, 51, 0.14)" }}
+                    />
+                    <Chip
+                      label="User-scoped TWC auth"
+                      size="small"
+                      variant="outlined"
+                      sx={{ color: "#f8fbff", borderColor: "rgba(255,255,255,0.22)", backgroundColor: "rgba(10, 34, 51, 0.14)" }}
+                    />
+                  </Stack>
+                  <Typography variant="body1" sx={{ color: "rgba(244, 249, 255, 0.92)", lineHeight: 1.5 }}>
+                    TWC remains the authentication and authorization authority. Sign in via TWC uses the selected server&apos;s Authentication Server and its configured SAML login, while token sign-in remains available as a fallback.
+                  </Typography>
+                  <Stack spacing={1.1}>
+                    <Stack direction="row" spacing={1.25} alignItems="center">
                       <HttpsRoundedIcon fontSize="small" />
-                      <Typography variant="body2">TLS verification and custom CA bundle support</Typography>
+                      <Typography variant="body2" sx={{ color: "#f8fbff" }}>
+                        TLS verification and custom CA bundle support
+                      </Typography>
                     </Stack>
-                    <Stack direction="row" spacing={1.5} alignItems="center">
+                    <Stack direction="row" spacing={1.25} alignItems="center">
                       <PublicRoundedIcon fontSize="small" />
-                      <Typography variant="body2">RealSwagger-backed repository workflows</Typography>
+                      <Typography variant="body2" sx={{ color: "#f8fbff" }}>
+                        RealSwagger-backed repository workflows
+                      </Typography>
+                    </Stack>
+                    <Stack direction="row" spacing={1.25} alignItems="center">
+                      <VerifiedUserRoundedIcon fontSize="small" />
+                      <Typography variant="body2" sx={{ color: "#f8fbff" }}>
+                        Permissions stay aligned to the active Teamwork Cloud user session
+                      </Typography>
                     </Stack>
                   </Stack>
                 </Stack>
@@ -203,8 +273,7 @@ export default function LandingPage() {
                     const health = healthById.get(server.id);
                     return (
                       <Grid item xs={12} md={6} key={server.id}>
-                        <Card sx={{ borderRadius: 5, height: "100%" }}>
-                          <CardContent sx={{ p: 3 }}>
+                        <Paper sx={{ p: 3, borderRadius: 2, height: "100%" }}>
                             <Stack spacing={2.5} sx={{ height: "100%" }}>
                               <Stack spacing={1}>
                                 <Box>
@@ -257,8 +326,7 @@ export default function LandingPage() {
                                 ) : null}
                               </Stack>
                             </Stack>
-                          </CardContent>
-                        </Card>
+                        </Paper>
                       </Grid>
                     );
                   })}

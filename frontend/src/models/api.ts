@@ -73,6 +73,7 @@ export interface SessionPreferences {
   request_timeout_seconds: number;
   live_log_poll_interval_ms: number;
   presentation_font_scale: number;
+  compact_ui: boolean;
   show_hidden_packages_in_tree: boolean;
 }
 

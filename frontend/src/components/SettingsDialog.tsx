@@ -113,6 +113,15 @@ export default function SettingsDialog({ open, preferences, saving, extraContent
           <FormControlLabel
             control={
               <Checkbox
+                checked={draft.compact_ui}
+                onChange={(event) => setField("compact_ui", event.target.checked)}
+              />
+            }
+            label="Use compact workspace layout"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
                 checked={draft.show_hidden_packages_in_tree}
                 onChange={(event) => setField("show_hidden_packages_in_tree", event.target.checked)}
               />
