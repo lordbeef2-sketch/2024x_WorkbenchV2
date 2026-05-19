@@ -68,15 +68,6 @@ function matchesFilter(node: TreeNode, filter: string): boolean {
   return node.children.some((child) => matchesFilter(child, filter));
 }
 
-function humanizeNodeType(nodeType: string): string {
-  return nodeType
-    .replace(/[_:.-]+/g, " ")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
 function declaredChildCount(node: TreeNode): number {
   return typeof node.metadata.child_count === "number"
     ? node.metadata.child_count
@@ -168,11 +159,10 @@ export default function ProjectTree({
       ? (node.metadata.stereotypes as unknown[]).filter((value) => typeof value === "string" && value.trim()).slice(0, 2) as string[]
       : [];
     const details = [
-      humanizeNodeType(node.node_type),
       Number.isFinite(childCount) && childCount > 0 ? `${childCount} children` : "",
       ...stereotypes,
     ].filter(Boolean);
-    if (subtitle && !details.includes(subtitle)) {
+    if (subtitle && subtitle !== node.label && !details.includes(subtitle)) {
       details.push(subtitle);
     }
     return details.join(" · ");

@@ -10,6 +10,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
+import re
 from typing import Any
 
 import httpx
@@ -127,6 +128,9 @@ PLUGIN_CACHE_SOURCE_KIND = "cameo-plugin"
 
 def normalize_lookup_key(value: str) -> str:
     return value.strip().lower()
+
+
+OPAQUE_IDENTIFIER_RE = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24,32})$", re.IGNORECASE)
 
 
 class PlatformService:
@@ -409,8 +413,11 @@ class PlatformService:
         if secret is None:
             raise ValueError("Save an Open WebUI base URL and API key before loading models.")
         url = f"{secret.base_url}/api/models"
-        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
-            response = await client.get(url, headers=self._openwebui_headers(secret.api_key))
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+                response = await client.get(url, headers=self._openwebui_headers(secret.api_key))
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Open WebUI model listing failed: {self._openwebui_http_error_message(exc)}") from exc
         if response.status_code >= 400:
             raise RuntimeError(f"Open WebUI model listing failed: {response.text or response.reason_phrase}")
         try:
@@ -436,16 +443,20 @@ class PlatformService:
             raise ValueError("The selected stored project branch is not available to this Workbench user.")
 
         file_name, file_content = self._build_workbench_agent_knowledge_document(session, project_id, branch_id)
-        upload_url = f"{secret.base_url}/api/v1/files/?process=true&process_in_background=false"
-        async with httpx.AsyncClient(timeout=180.0, verify=False, follow_redirects=True) as client:
-            response = await client.post(
-                upload_url,
-                headers={
-                    "Authorization": f"Bearer {secret.api_key}",
-                    "Accept": "application/json",
-                },
-                files={"file": (file_name, file_content, "text/markdown")},
-            )
+        upload_url = f"{secret.base_url}/api/v1/files/?process=true&process_in_background=true"
+        upload_timeout = httpx.Timeout(connect=30.0, read=120.0, write=900.0, pool=60.0)
+        try:
+            async with httpx.AsyncClient(timeout=upload_timeout, verify=False, follow_redirects=True) as client:
+                response = await client.post(
+                    upload_url,
+                    headers={
+                        "Authorization": f"Bearer {secret.api_key}",
+                        "Accept": "application/json",
+                    },
+                    files={"file": (file_name, file_content, "application/json")},
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Open WebUI knowledge upload failed: {self._openwebui_http_error_message(exc)}") from exc
         if response.status_code >= 400:
             raise RuntimeError(f"Open WebUI knowledge upload failed: {response.text or response.reason_phrase}")
         try:
@@ -456,6 +467,7 @@ class PlatformService:
         file_id = self._openwebui_file_id(payload)
         if not file_id:
             raise RuntimeError("Open WebUI did not return a knowledge file id after upload.")
+        await self._wait_for_openwebui_file_processing(secret, file_id)
 
         updated_secret = secret.model_copy(
             update={
@@ -511,15 +523,19 @@ class PlatformService:
             "messages": request_messages,
             "files": [{"type": "file", "id": working_secret.knowledge_file_id}],
         }
-        async with httpx.AsyncClient(timeout=180.0, verify=False, follow_redirects=True) as client:
-            response = await client.post(
-                f"{working_secret.base_url}/api/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {working_secret.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=request_body,
-            )
+        chat_timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=60.0)
+        try:
+            async with httpx.AsyncClient(timeout=chat_timeout, verify=False, follow_redirects=True) as client:
+                response = await client.post(
+                    f"{working_secret.base_url}/api/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {working_secret.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=request_body,
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Open WebUI chat request failed: {self._openwebui_http_error_message(exc)}") from exc
         if response.status_code >= 400:
             raise RuntimeError(f"Open WebUI chat request failed: {response.text or response.reason_phrase}")
         try:
@@ -3002,6 +3018,27 @@ class PlatformService:
         )
         return normalized_type in {"model", "sysml model", "uml model"}
 
+    def _final_named_segment(self, path: str) -> str:
+        return next((segment.strip() for segment in reversed(path.split("/")) if segment.strip()), "")
+
+    def _looks_like_opaque_identifier(self, value: str) -> bool:
+        return bool(OPAQUE_IDENTIFIER_RE.fullmatch(value.strip()))
+
+    def _presentable_name_from_path(
+        self,
+        raw_label: str,
+        *,
+        qualified_name: str = "",
+        fallback_path: str = "",
+    ) -> str:
+        clean_label = raw_label.strip()
+        for candidate in (qualified_name, fallback_path):
+            final_segment = self._final_named_segment(candidate)
+            if not final_segment or self._looks_like_opaque_identifier(final_segment):
+                continue
+            return final_segment
+        return clean_label
+
     def _tree_node_summary_from_record(
         self,
         *,
@@ -3046,6 +3083,7 @@ class PlatformService:
         record: CachedElementRecord,
     ) -> str:
         raw_label = str(record.name or record.element_id).strip() or record.element_id
+        qualified_name = str(record.payload.get("qualified_name") or record.path or "").strip()
         normalized_type = normalize_lookup_key(str(record.item_type or record.payload.get("metaclass") or "element"))
         references = record.payload.get("references") or {}
         if normalized_type in {"package import", "element import"} and isinstance(references, dict):
@@ -3064,7 +3102,11 @@ class PlatformService:
                 first_line = documentation.splitlines()[0].strip()
                 if first_line:
                     return first_line[:96]
-        return raw_label
+        return self._presentable_name_from_path(
+            raw_label,
+            qualified_name=qualified_name,
+            fallback_path=str(record.path or "").strip(),
+        ) or raw_label
 
     def _presentable_tree_subtitle(
         self,
@@ -3087,12 +3129,15 @@ class PlatformService:
             for candidate_id in candidate_ids:
                 target = self.repo.get_cached_element(server_id, project_id, branch_id, candidate_id)
                 if target is not None and target.path:
-                    return target.path
+                    return self._presentable_name_from_path(
+                        str(target.name or target.element_id).strip() or target.element_id,
+                        qualified_name=str(target.payload.get("qualified_name") or "").strip(),
+                        fallback_path=str(target.path or "").strip(),
+                    )
                 if target is not None and target.name:
                     return target.name
             return "Imported reference"
-        metaclass = str(record.payload.get("metaclass") or record.item_type or "element").strip()
-        return metaclass or record.item_type
+        return ""
 
     def _tree_children_for_model_root(
         self,
@@ -3242,6 +3287,7 @@ class PlatformService:
     def _build_tree_node_from_record(
         self,
         *,
+        server_id: str,
         project_id: str,
         branch_id: str,
         model_id: str,
@@ -3265,7 +3311,12 @@ class PlatformService:
                 metadata={"project_id": project_id, "branch_id": branch_id, "model_id": model_id},
             )
 
-        node_name = record.name or record.element_id
+        node_name = self._presentable_tree_label(
+            server_id=server_id,
+            project_id=project_id,
+            branch_id=branch_id,
+            record=record,
+        ) or record.name or record.element_id
         qualified_name = str(record.payload.get("qualified_name") or record.path or "").strip()
         node_path = qualified_name or f"{parent_path}/{node_name}"
         if element_id in trail:
@@ -3294,6 +3345,7 @@ class PlatformService:
         else:
             child_nodes = [
                 self._build_tree_node_from_record(
+                    server_id=server_id,
                     project_id=project_id,
                     branch_id=branch_id,
                     model_id=model_id,
@@ -3310,6 +3362,12 @@ class PlatformService:
             ]
         stereotypes = [str(value).strip() for value in record.payload.get("applied_stereotype_ids") or [] if str(value).strip()]
         metaclass = str(record.payload.get("metaclass") or record.item_type or "element").strip()
+        subtitle = self._presentable_tree_subtitle(
+            server_id,
+            project_id,
+            branch_id,
+            record,
+        )
         return TreeNode(
             id=record.element_id,
             label=node_name,
@@ -3325,7 +3383,7 @@ class PlatformService:
                 "qualified_name": qualified_name,
                 "metaclass": metaclass,
                 "stereotypes": stereotypes,
-                "subtitle": qualified_name or metaclass or record.item_type,
+                "subtitle": subtitle,
             },
         )
 
@@ -3340,7 +3398,11 @@ class PlatformService:
         depth: int | None = None,
         include_orphans: bool = True,
     ) -> TreeNode:
-        model_name = model.name or model.model_id
+        model_name = self._presentable_name_from_path(
+            str(model.name or model.model_id).strip() or model.model_id,
+            qualified_name=str(model.payload.get("qualified_name") or "").strip(),
+            fallback_path=str(model.payload.get("human_name") or "").strip(),
+        ) or model.name or model.model_id
         model_path = f"{project_id}/{branch_id}/{model_name}"
         sanitized_root_ids = self._sanitize_model_root_ids(model, model_records)
         if depth is not None and depth <= 0:
@@ -3389,6 +3451,7 @@ class PlatformService:
 
         children = [
             self._build_tree_node_from_record(
+                server_id=model.server_id,
                 project_id=project_id,
                 branch_id=branch_id,
                 model_id=model.model_id,
@@ -3417,6 +3480,7 @@ class PlatformService:
                         path=f"{model_path}/Additional Elements",
                         children=[
                             self._build_tree_node_from_record(
+                                server_id=model.server_id,
                                 project_id=project_id,
                                 branch_id=branch_id,
                                 model_id=model.model_id,
@@ -5082,6 +5146,13 @@ class PlatformService:
             "Accept": "application/json",
         }
 
+    def _openwebui_http_error_message(self, exc: httpx.HTTPError) -> str:
+        if isinstance(exc, httpx.TimeoutException):
+            return "the request timed out while waiting on Open WebUI"
+        if isinstance(exc, httpx.ConnectError):
+            return "Workbench could not connect to the configured Open WebUI host"
+        return str(exc).strip() or exc.__class__.__name__
+
     def _parse_openwebui_models(self, payload: Any) -> list[OpenWebUIModelEntry]:
         if isinstance(payload, dict):
             candidates = payload.get("data") if isinstance(payload.get("data"), list) else payload.get("models")
@@ -5116,6 +5187,42 @@ class PlatformService:
             if isinstance(nested, dict):
                 return self._openwebui_file_id(nested)
         return None
+
+    async def _wait_for_openwebui_file_processing(self, secret: WorkbenchAgentSecret, file_id: str) -> None:
+        status_url = f"{secret.base_url}/api/v1/files/{file_id}/process/status"
+        status_timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=60.0)
+        deadline = datetime.now(UTC) + timedelta(minutes=15)
+
+        async with httpx.AsyncClient(timeout=status_timeout, verify=False, follow_redirects=True) as client:
+            while datetime.now(UTC) < deadline:
+                try:
+                    response = await client.get(status_url, headers=self._openwebui_headers(secret.api_key))
+                except httpx.HTTPError as exc:
+                    raise RuntimeError(
+                        f"Open WebUI knowledge processing check failed: {self._openwebui_http_error_message(exc)}"
+                    ) from exc
+                if response.status_code >= 400:
+                    raise RuntimeError(
+                        f"Open WebUI knowledge processing check failed: {response.text or response.reason_phrase}"
+                    )
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    raise RuntimeError("Open WebUI did not return JSON while checking knowledge processing status.") from exc
+
+                status_value = str((payload or {}).get("status") or "").strip().lower()
+                if status_value == "completed":
+                    return
+                if status_value == "failed":
+                    error_text = str((payload or {}).get("error") or "").strip()
+                    raise RuntimeError(
+                        f"Open WebUI knowledge processing failed{': ' + error_text if error_text else '.'}"
+                    )
+                await asyncio.sleep(2)
+
+        raise RuntimeError(
+            "Open WebUI accepted the uploaded knowledge file, but processing did not finish within 15 minutes."
+        )
 
     def _openwebui_assistant_message(self, payload: Any) -> str:
         if not isinstance(payload, dict):
@@ -5161,7 +5268,7 @@ class PlatformService:
             "If the user asks for code, return complete scripts instead of snippets whenever practical."
         )
 
-    def _workbench_agent_example_text(self) -> str:
+    def _workbench_agent_example_payload(self) -> dict[str, str]:
         examples_dir = Path(__file__).resolve().parents[3] / "examples"
         selected_files = [
             "22_workbench_cache_api_manifest.py",
@@ -5172,17 +5279,18 @@ class PlatformService:
             "28_workbench_cache_api_search_elements.py",
             "29_workbench_cache_api_element_graph.py",
         ]
-        sections: list[str] = []
+        payload: dict[str, str] = {}
         for name in selected_files:
             path = examples_dir / name
             if not path.exists():
                 continue
             try:
-                content = path.read_text(encoding="utf-8")
+                content = path.read_text(encoding="utf-8").strip()
             except Exception:
                 continue
-            sections.append(f"### {name}\n```python\n{content.strip()}\n```")
-        return "\n\n".join(sections)
+            if content:
+                payload[name] = content
+        return payload
 
     def _build_workbench_agent_knowledge_document(
         self,
@@ -5209,71 +5317,63 @@ class PlatformService:
 
         project_name = summary.project_name or project_id
         branch_name = summary.branch_name or branch_id
-        lines = [
-            "# TWC Workbench Agent Knowledge Bundle",
-            "",
-            "## Context",
-            f"- User: {session.user.preferred_username}",
-            f"- Server: {session.server.name} ({session.server.id})",
-            f"- Project: {project_name} ({project_id})",
-            f"- Branch: {branch_name} ({branch_id})",
-            f"- Revision: {summary.latest_revision or 'unknown'}",
-            f"- Stored models: {summary.model_count}",
-            f"- Stored elements: {summary.element_count}",
-            "",
-            "## Workbench Cache API Manifest",
-            manifest.message,
-            "",
-            "### Available Routes",
-            *[f"- {route}" for route in manifest.available_routes],
-            "",
-            "## Full Python Examples",
-            self._workbench_agent_example_text(),
-            "",
-            "## Stored Models",
-        ]
+        knowledge_payload: dict[str, Any] = {
+            "kind": "twc-workbench-agent-knowledge",
+            "version": "1.1",
+            "context": {
+                "preferred_username": session.user.preferred_username,
+                "server_id": session.server.id,
+                "server_name": session.server.name,
+                "project_id": project_id,
+                "project_name": project_name,
+                "branch_id": branch_id,
+                "branch_name": branch_name,
+                "revision": summary.latest_revision or "",
+                "model_count": summary.model_count,
+                "element_count": summary.element_count,
+            },
+            "workbench_cache_api": {
+                "message": manifest.message,
+                "available_routes": manifest.available_routes,
+            },
+            "python_examples": self._workbench_agent_example_payload(),
+            "models": [],
+            "elements": [],
+        }
         if snapshot is not None:
-            for model_view in snapshot.models:
-                lines.extend(
-                    [
-                        f"- {model_view.model.name or model_view.model.model_id}",
-                        f"  - model_id: {model_view.model.model_id}",
-                        f"  - root_ids: {', '.join(model_view.model.root_ids) if model_view.model.root_ids else 'none'}",
-                        f"  - element_count: {model_view.model.element_count}",
-                    ]
-                )
-        lines.extend(["", "## Stored Elements"])
-        for record in elements:
-            payload = record.payload if isinstance(record.payload, dict) else {}
-            lines.extend(
-                [
-                    f"### {record.name or record.element_id}",
-                    f"- element_id: {record.element_id}",
-                    f"- model_id: {record.model_id}",
-                    f"- item_type: {record.item_type}",
-                    f"- metaclass: {payload.get('metaclass') or record.item_type}",
-                    f"- path: {record.path}",
-                    f"- qualified_name: {payload.get('qualified_name') or record.path}",
-                    f"- owner_id: {payload.get('owner_id') or ''}",
-                    f"- child_count: {record.child_count}",
-                    f"- stereotypes: {json.dumps(payload.get('applied_stereotype_ids') or [])}",
-                    f"- documentation: {str(payload.get('documentation') or '').strip()}",
-                    "#### Attributes",
-                    "```json",
-                    json.dumps(payload.get("attributes") or {}, indent=2, ensure_ascii=False),
-                    "```",
-                    "#### References",
-                    "```json",
-                    json.dumps(payload.get("references") or {}, indent=2, ensure_ascii=False),
-                    "```",
-                    "",
-                ]
-            )
+            knowledge_payload["models"] = [
+                {
+                    "model_id": model_view.model.model_id,
+                    "name": model_view.model.name or model_view.model.model_id,
+                    "root_ids": model_view.model.root_ids,
+                    "element_count": model_view.model.element_count,
+                    "qualified_name": str(model_view.model.payload.get("qualified_name") or "").strip(),
+                }
+                for model_view in snapshot.models
+            ]
+        knowledge_payload["elements"] = [
+            {
+                "element_id": record.element_id,
+                "model_id": record.model_id,
+                "item_type": record.item_type,
+                "name": record.name,
+                "path": record.path,
+                "child_count": record.child_count,
+                "metaclass": str((record.payload or {}).get("metaclass") or record.item_type or "").strip(),
+                "qualified_name": str((record.payload or {}).get("qualified_name") or record.path or "").strip(),
+                "owner_id": str((record.payload or {}).get("owner_id") or "").strip(),
+                "documentation": str((record.payload or {}).get("documentation") or "").strip(),
+                "stereotypes": list((record.payload or {}).get("applied_stereotype_ids") or []),
+                "attributes": (record.payload or {}).get("attributes") or {},
+                "references": (record.payload or {}).get("references") or {},
+            }
+            for record in elements
+        ]
 
         safe_project = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in project_name).strip("-") or project_id
         safe_branch = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in branch_name).strip("-") or branch_id
-        file_name = f"workbench-{safe_project}-{safe_branch}-knowledge.md"
-        return file_name, "\n".join(lines).encode("utf-8")
+        file_name = f"workbench-{safe_project}-{safe_branch}-knowledge.json"
+        return file_name, json.dumps(knowledge_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     def _shared_oslc_secret_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"

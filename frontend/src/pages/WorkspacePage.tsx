@@ -323,6 +323,18 @@ function friendlyPath(path: string, lookup: Record<string, string>): string {
     .join(" / ");
 }
 
+function finalPathSegment(path: string, lookup: Record<string, string>): string {
+  const formattedPath = friendlyPath(path, lookup);
+  if (!formattedPath) {
+    return "";
+  }
+  const segments = formattedPath
+    .split(" / ")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  return segments[segments.length - 1] ?? "";
+}
+
 function humanReadableReference(value: string, lookup: Record<string, string>): string {
   const cleaned = value.trim();
   if (!cleaned) {
@@ -342,7 +354,11 @@ function humanReadableReference(value: string, lookup: Record<string, string>): 
   return isOpaqueIdentifier(cleaned) ? "Referenced item" : cleaned;
 }
 
-function displayEntityName(name: string, id: string, itemType: string, lookup: Record<string, string>): string {
+function displayEntityName(name: string, id: string, itemType: string, lookup: Record<string, string>, path = ""): string {
+  const pathTail = finalPathSegment(path, lookup);
+  if (pathTail && normalizeLookupKey(pathTail) !== normalizeLookupKey(id)) {
+    return pathTail;
+  }
   const cleanedName = name.trim();
   if (cleanedName && normalizeLookupKey(cleanedName) !== normalizeLookupKey(id)) {
     return cleanedName;
@@ -351,7 +367,7 @@ function displayEntityName(name: string, id: string, itemType: string, lookup: R
 }
 
 function itemReferenceDisplayName(reference: ItemReference, lookup: Record<string, string>): string {
-  return displayEntityName(reference.name, reference.id, reference.item_type, lookup);
+  return displayEntityName(reference.name, reference.id, reference.item_type, lookup, reference.path);
 }
 
 function itemReferenceSecondaryText(reference: ItemReference, lookup: Record<string, string>): string {
@@ -1430,7 +1446,7 @@ export default function WorkspacePage() {
   }, [loadedFlatNodes, projects, selectedProjectBranches, selectedWorkspaceItem]);
 
   const selectedWorkspaceItemName = selectedWorkspaceItem
-    ? displayEntityName(selectedWorkspaceItem.name, selectedWorkspaceItem.id, selectedWorkspaceItem.item_type, referenceNameById)
+    ? displayEntityName(selectedWorkspaceItem.name, selectedWorkspaceItem.id, selectedWorkspaceItem.item_type, referenceNameById, selectedWorkspaceItem.path)
     : "";
   const selectedWorkspaceItemPath = selectedWorkspaceItem ? friendlyPath(selectedWorkspaceItem.path, referenceNameById) : "";
   const selectedTreeNode = useMemo(
@@ -2582,7 +2598,7 @@ export default function WorkspacePage() {
             <Box>
               <Typography variant="h5">Model Viewer / Editor</Typography>
               <Typography variant="body2" color="text.secondary">
-                {displayEntityName(itemDraft.name, selectedItemId, itemDraft.item_type, referenceNameById)}
+                {displayEntityName(itemDraft.name, selectedItemId, itemDraft.item_type, referenceNameById, itemDraft.path)}
               </Typography>
               {itemDraft.path ? (
                 <Typography variant="caption" color="text.secondary">
@@ -2689,7 +2705,7 @@ export default function WorkspacePage() {
                       <Box
                         component="img"
                         src={detailDiagramPreview}
-                        alt={displayEntityName(itemDraft.name, itemDraft.id, itemDraft.item_type, referenceNameById)}
+                        alt={displayEntityName(itemDraft.name, itemDraft.id, itemDraft.item_type, referenceNameById, itemDraft.path)}
                         sx={{
                           width: "100%",
                           maxHeight: 720,
