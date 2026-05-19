@@ -30,6 +30,8 @@ interface ProjectTreeProps {
   onSelect: (node: TreeNode) => void;
   onExpand?: (node: TreeNode) => void | Promise<void>;
   loadingIds?: string[];
+  expandedIds?: string[];
+  onExpandedChange?: (expandedIds: string[]) => void;
 }
 
 function iconForNode(nodeType: string) {
@@ -83,8 +85,38 @@ function declaredChildCount(node: TreeNode): number {
       : node.children.length;
 }
 
-export default function ProjectTree({ nodes, selectedId, filter, onSelect, onExpand, loadingIds = [] }: ProjectTreeProps) {
+export default function ProjectTree({
+  nodes,
+  selectedId,
+  filter,
+  onSelect,
+  onExpand,
+  loadingIds = [],
+  expandedIds,
+  onExpandedChange,
+}: ProjectTreeProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!expandedIds) {
+      return;
+    }
+    setExpanded(
+      expandedIds.reduce<Record<string, boolean>>((lookup, nodeId) => {
+        lookup[nodeId] = true;
+        return lookup;
+      }, {}),
+    );
+  }, [expandedIds]);
+
+  const commitExpanded = (next: Record<string, boolean>) => {
+    setExpanded(next);
+    onExpandedChange?.(
+      Object.entries(next)
+        .filter(([, isOpen]) => isOpen)
+        .map(([nodeId]) => nodeId),
+    );
+  };
 
   const visibleNodes = useMemo(() => nodes.filter((node) => matchesFilter(node, filter)), [filter, nodes]);
 
@@ -118,9 +150,16 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect, onExp
           changed = true;
         }
       });
+      if (changed) {
+        onExpandedChange?.(
+          Object.entries(next)
+            .filter(([, isOpen]) => isOpen)
+            .map(([nodeId]) => nodeId),
+        );
+      }
       return changed ? next : current;
     });
-  }, [nodes, selectedId]);
+  }, [nodes, onExpandedChange, selectedId]);
 
   const secondaryText = (node: TreeNode) => {
     const subtitle = typeof node.metadata.subtitle === "string" ? node.metadata.subtitle.trim() : "";
@@ -188,7 +227,7 @@ export default function ProjectTree({ nodes, selectedId, filter, onSelect, onExp
                   ) {
                     void onExpand(node);
                   }
-                  setExpanded((current) => ({ ...current, [node.id]: nextOpen }));
+                  commitExpanded({ ...expanded, [node.id]: nextOpen });
                 }}
               >
                 {isLoading ? <CircularProgress size={16} /> : isOpen ? <ExpandMoreRoundedIcon fontSize="small" /> : <ChevronRightRoundedIcon fontSize="small" />}

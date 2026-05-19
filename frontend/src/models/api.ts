@@ -73,6 +73,7 @@ export interface SessionPreferences {
   request_timeout_seconds: number;
   live_log_poll_interval_ms: number;
   presentation_font_scale: number;
+  show_hidden_packages_in_tree: boolean;
 }
 
 export interface Bookmark {
@@ -460,6 +461,71 @@ export interface CacheApiManifest {
   scopes: CacheApiKeyScope[];
   message: string;
   available_routes: string[];
+}
+
+export interface OpenWebUIModelEntry {
+  id: string;
+  name: string;
+  owned_by?: string | null;
+  description: string;
+}
+
+export interface WorkbenchAgentConfigRequest {
+  base_url: string;
+  api_key: string;
+  model_id: string;
+  model_name: string;
+}
+
+export interface WorkbenchAgentStatus {
+  configured: boolean;
+  base_url?: string | null;
+  model_id?: string | null;
+  model_name?: string | null;
+  has_api_key: boolean;
+  knowledge_file_id?: string | null;
+  knowledge_file_name?: string | null;
+  knowledge_project_id?: string | null;
+  knowledge_branch_id?: string | null;
+  updated_at?: string | null;
+  knowledge_synced_at?: string | null;
+  message: string;
+}
+
+export interface WorkbenchAgentKnowledgeSyncRequest {
+  project_id: string;
+  branch_id: string;
+}
+
+export interface WorkbenchAgentKnowledgeStatus {
+  project_id: string;
+  branch_id: string;
+  knowledge_file_id: string;
+  knowledge_file_name: string;
+  synced_at: string;
+  message: string;
+}
+
+export interface WorkbenchAgentChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface WorkbenchAgentChatRequest {
+  project_id: string;
+  branch_id: string;
+  messages: WorkbenchAgentChatMessage[];
+  sync_knowledge: boolean;
+}
+
+export interface WorkbenchAgentChatResponse {
+  model_id: string;
+  model_name: string;
+  assistant_message: string;
+  knowledge_file_id?: string | null;
+  knowledge_file_name?: string | null;
+  raw_response: Record<string, unknown>;
+  message: string;
 }
 
 export interface OSLCStoreConsumerRequest {

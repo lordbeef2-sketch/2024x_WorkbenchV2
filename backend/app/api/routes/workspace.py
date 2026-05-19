@@ -18,6 +18,9 @@ from app.models.domain import (
     SessionPreferences,
     StereotypeElementSearchResponse,
     SwaggerExecuteRequest,
+    WorkbenchAgentChatRequest,
+    WorkbenchAgentConfigRequest,
+    WorkbenchAgentKnowledgeSyncRequest,
 )
 from app.services.platform import ApplicationContainer
 
@@ -627,6 +630,69 @@ async def compare(
 @router.post("/capabilities/refresh")
 async def refresh_capabilities(session=Depends(require_csrf), container: ApplicationContainer = Depends(get_container)):
     return await container.platform.refresh_capabilities(session)
+
+
+@router.get("/agent")
+def workbench_agent_status(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+    return container.platform.get_workbench_agent_status(session)
+
+
+@router.put("/agent")
+def update_workbench_agent_config(
+    payload: WorkbenchAgentConfigRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.set_workbench_agent_config(session, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.delete("/agent")
+def clear_workbench_agent_config(
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.clear_workbench_agent_config(session)
+
+
+@router.get("/agent/models")
+async def workbench_agent_models(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+    try:
+        return await container.platform.list_openwebui_models(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post("/agent/knowledge/sync")
+async def sync_workbench_agent_knowledge(
+    payload: WorkbenchAgentKnowledgeSyncRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.sync_workbench_agent_knowledge(session, payload.project_id, payload.branch_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post("/agent/chat")
+async def workbench_agent_chat(
+    payload: WorkbenchAgentChatRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.run_workbench_agent_chat(session, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
 @router.get("/preferences")

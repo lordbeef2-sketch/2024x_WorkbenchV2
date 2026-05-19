@@ -1,4 +1,4 @@
-import { type SyntheticEvent, useEffect, useMemo, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, type SyntheticEvent, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -46,6 +46,7 @@ import {
   CacheApiKeyScope,
   CacheApiKeySummary,
   ItemReference,
+  OpenWebUIModelEntry,
   ItemDetails,
   OSLCExecuteResponse,
   ProjectSummary,
@@ -55,11 +56,25 @@ import {
   SwaggerOperationSpec,
   SwaggerParameterSpec,
   TreeNode,
+  WorkbenchAgentChatMessage,
 } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
-type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "developer" | "api";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "details" | "compare" | "agent" | "developer" | "api";
+
+const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "details", "compare", "agent", "developer", "api"];
+
+function parseWorkspaceTab(value: string | null, isAdmin = false): WorkspaceTab {
+  const fallback: WorkspaceTab = "dashboard";
+  if (!value || !WORKSPACE_TABS.includes(value as WorkspaceTab)) {
+    return fallback;
+  }
+  if (value === "api" && !isAdmin) {
+    return fallback;
+  }
+  return value as WorkspaceTab;
+}
 
 function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : "The request failed.";
@@ -79,6 +94,99 @@ function flattenTree(nodes: TreeNode[]): TreeNode[] {
     }
   }
   return flattened;
+}
+
+function clampNumber(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function readStoredNumber(key: string, fallback: number, minimum: number, maximum: number): number {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+  const raw = window.localStorage.getItem(key);
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+  return clampNumber(parsed, minimum, maximum);
+}
+
+function readStoredStringArray(key: string): string[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  const raw = window.localStorage.getItem(key);
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistStoredValue(key: string, value: number | string[] | null): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (value === null) {
+    window.localStorage.removeItem(key);
+    return;
+  }
+  if (typeof value === "number") {
+    window.localStorage.setItem(key, String(value));
+    return;
+  }
+  window.localStorage.setItem(key, JSON.stringify(value));
+}
+
+function findNodeTrail(nodes: TreeNode[], targetId: string): TreeNode[] {
+  const trail: TreeNode[] = [];
+  const walk = (candidates: TreeNode[]): boolean => {
+    for (const node of candidates) {
+      trail.push(node);
+      if (node.id === targetId) {
+        return true;
+      }
+      if (walk(node.children)) {
+        return true;
+      }
+      trail.pop();
+    }
+    return false;
+  };
+  return walk(nodes) ? [...trail] : [];
+}
+
+function resizeHandleStyles() {
+  return {
+    display: { xs: "none", lg: "block" },
+    width: 12,
+    borderRadius: 2,
+    cursor: "col-resize",
+    position: "relative",
+    "&::before": {
+      content: '""',
+      position: "absolute",
+      top: 8,
+      bottom: 8,
+      left: "50%",
+      width: 4,
+      transform: "translateX(-50%)",
+      borderRadius: 999,
+      bgcolor: "divider",
+      transition: "background-color 150ms ease",
+    },
+    "&:hover::before": {
+      bgcolor: "text.secondary",
+    },
+  } as const;
 }
 
 function replaceNodeChildren(nodes: TreeNode[], targetId: string, children: TreeNode[]): TreeNode[] {
@@ -156,6 +264,32 @@ function humanizeFieldLabel(value: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function normalizeContainmentKind(value: unknown): string {
+  return String(value ?? "")
+    .replace(/[_:.-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function isHiddenContainmentPackage(node: TreeNode): boolean {
+  const nodeType = normalizeContainmentKind(node.node_type);
+  const metaclass = normalizeContainmentKind(node.metadata.metaclass);
+  return nodeType === "package import" || nodeType === "element import" || metaclass === "package import" || metaclass === "element import";
+}
+
+function filterContainmentTree(nodes: TreeNode[], showHiddenPackages: boolean): TreeNode[] {
+  if (showHiddenPackages) {
+    return nodes;
+  }
+  return nodes
+    .filter((node) => !isHiddenContainmentPackage(node))
+    .map((node) => ({
+      ...node,
+      children: filterContainmentTree(node.children, showHiddenPackages),
+    }));
 }
 
 function projectSummaryText(project: ProjectSummary): string {
@@ -708,6 +842,10 @@ export default function WorkspacePage() {
   const isAdmin = Boolean(session?.can_manage_server_presets);
   const cacheTimeMs = 1000 * 60 * 60 * 12;
   const sessionCacheKey = [session?.user?.preferred_username ?? "anonymous", session?.server?.id ?? "no-server"];
+  const layoutStoragePrefix = `twc-workbench-layout:${sessionCacheKey.join(":")}`;
+  const navPaneStorageKey = `${layoutStoragePrefix}:nav-pane-width`;
+  const modelPaneStorageKey = `${layoutStoragePrefix}:model-pane-width`;
+  const detailSidebarStorageKey = `${layoutStoragePrefix}:detail-sidebar-width`;
 
   const toggleNewCacheApiKeyScope = (scope: CacheApiKeyScope, checked: boolean) => {
     setNewCacheApiKeyScopes((current) => {
@@ -718,14 +856,18 @@ export default function WorkspacePage() {
     });
   };
 
-  const [tab, setTab] = useState<WorkspaceTab>("dashboard");
+  const [tab, setTab] = useState<WorkspaceTab>(() => parseWorkspaceTab(searchParams.get("tab")));
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState("");
-  const [selectedBranchId, setSelectedBranchId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState(() => searchParams.get("project") ?? "");
+  const [selectedBranchId, setSelectedBranchId] = useState(() => searchParams.get("branch") ?? "");
   const [treeFilter, setTreeFilter] = useState("");
-  const [selectedItemId, setSelectedItemId] = useState("");
+  const [selectedItemId, setSelectedItemId] = useState(() => searchParams.get("item") ?? "");
   const [treeNodes, setTreeNodes] = useState<TreeNode[]>([]);
   const [loadingTreeNodeIds, setLoadingTreeNodeIds] = useState<string[]>([]);
+  const [expandedTreeNodeIds, setExpandedTreeNodeIds] = useState<string[]>([]);
+  const [navPaneWidth, setNavPaneWidth] = useState(() => readStoredNumber(navPaneStorageKey, 360, 280, 560));
+  const [modelPaneWidth, setModelPaneWidth] = useState(() => readStoredNumber(modelPaneStorageKey, 440, 320, 760));
+  const [detailSidebarWidth, setDetailSidebarWidth] = useState(() => readStoredNumber(detailSidebarStorageKey, 420, 320, 720));
   const [itemDraft, setItemDraft] = useState<ItemDetails | null>(null);
   const [compareLeft, setCompareLeft] = useState("");
   const [compareRight, setCompareRight] = useState("");
@@ -750,8 +892,16 @@ export default function WorkspacePage() {
   const [newCacheApiKeyLabel, setNewCacheApiKeyLabel] = useState("");
   const [revealedCacheApiKey, setRevealedCacheApiKey] = useState("");
   const [newCacheApiKeyScopes, setNewCacheApiKeyScopes] = useState<CacheApiKeyScope[]>(["read"]);
+  const [agentBaseUrlDraft, setAgentBaseUrlDraft] = useState("");
+  const [agentApiKeyDraft, setAgentApiKeyDraft] = useState("");
+  const [agentSelectedModelId, setAgentSelectedModelId] = useState("");
+  const [agentSelectedModelName, setAgentSelectedModelName] = useState("");
+  const [agentChatInput, setAgentChatInput] = useState("");
+  const [agentMessages, setAgentMessages] = useState<WorkbenchAgentChatMessage[]>([]);
+  const [agentSyncKnowledgeBeforeChat, setAgentSyncKnowledgeBeforeChat] = useState(true);
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
   const projectContextActive = tab === "models" || tab === "details" || tab === "compare";
+  const treeExpandedStorageKey = `${layoutStoragePrefix}:tree-expanded:${selectedProjectId || "no-project"}:${selectedBranchId || "no-branch"}`;
 
   const projectsQuery = useQuery({
     queryKey: ["workspace-projects", ...sessionCacheKey],
@@ -804,6 +954,29 @@ export default function WorkspacePage() {
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
   });
+  const workbenchAgentStatusQuery = useQuery({
+    queryKey: ["workspace-agent", ...sessionCacheKey],
+    queryFn: api.getWorkbenchAgentStatus,
+    enabled: Boolean(session?.user?.preferred_username),
+    staleTime: 1000 * 60,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const workbenchAgentStatus = workbenchAgentStatusQuery.data ?? null;
+  const workbenchAgentModelsQuery = useQuery({
+    queryKey: [
+      "workspace-agent-models",
+      ...sessionCacheKey,
+      workbenchAgentStatus?.base_url ?? "",
+      workbenchAgentStatus?.updated_at ?? "",
+    ],
+    queryFn: api.listWorkbenchAgentModels,
+    enabled: tab === "agent" && Boolean(workbenchAgentStatus?.configured && workbenchAgentStatus?.has_api_key),
+    staleTime: 1000 * 60 * 5,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const workbenchAgentModels = workbenchAgentModelsQuery.data ?? [];
 
   const projects = useMemo(
     () =>
@@ -861,6 +1034,91 @@ export default function WorkspacePage() {
     setSelectedItemId("");
     setItemDraft(null);
   }, [selectedBranchId]);
+
+  useEffect(() => {
+    setAgentMessages([]);
+  }, [selectedProjectId, selectedBranchId]);
+
+  useEffect(() => {
+    setExpandedTreeNodeIds(readStoredStringArray(treeExpandedStorageKey));
+  }, [treeExpandedStorageKey]);
+
+  useEffect(() => {
+    setNavPaneWidth(readStoredNumber(navPaneStorageKey, 360, 280, 560));
+  }, [navPaneStorageKey]);
+
+  useEffect(() => {
+    setModelPaneWidth(readStoredNumber(modelPaneStorageKey, 440, 320, 760));
+  }, [modelPaneStorageKey]);
+
+  useEffect(() => {
+    setDetailSidebarWidth(readStoredNumber(detailSidebarStorageKey, 420, 320, 720));
+  }, [detailSidebarStorageKey]);
+
+  useEffect(() => {
+    persistStoredValue(navPaneStorageKey, navPaneWidth);
+  }, [navPaneStorageKey, navPaneWidth]);
+
+  useEffect(() => {
+    persistStoredValue(modelPaneStorageKey, modelPaneWidth);
+  }, [modelPaneStorageKey, modelPaneWidth]);
+
+  useEffect(() => {
+    persistStoredValue(detailSidebarStorageKey, detailSidebarWidth);
+  }, [detailSidebarStorageKey, detailSidebarWidth]);
+
+  useEffect(() => {
+    persistStoredValue(treeExpandedStorageKey, expandedTreeNodeIds);
+  }, [expandedTreeNodeIds, treeExpandedStorageKey]);
+
+  useEffect(() => {
+    const urlTab = parseWorkspaceTab(searchParams.get("tab"), isAdmin);
+    const urlProjectId = searchParams.get("project") ?? "";
+    const urlBranchId = searchParams.get("branch") ?? "";
+    const urlItemId = searchParams.get("item") ?? "";
+    if (urlTab !== tab) {
+      setTab(urlTab);
+    }
+    if (urlProjectId !== selectedProjectId) {
+      setSelectedProjectId(urlProjectId);
+    }
+    if (urlBranchId !== selectedBranchId) {
+      setSelectedBranchId(urlBranchId);
+    }
+    if (urlItemId !== selectedItemId) {
+      setSelectedItemId(urlItemId);
+    }
+  }, [isAdmin, searchParams, selectedBranchId, selectedItemId, selectedProjectId, tab]);
+
+  useEffect(() => {
+    const nextParams = new URLSearchParams(searchParams);
+    const nextTab = parseWorkspaceTab(tab, isAdmin);
+    if (nextTab === "dashboard") {
+      nextParams.delete("tab");
+    } else {
+      nextParams.set("tab", nextTab);
+    }
+    if (selectedProjectId) {
+      nextParams.set("project", selectedProjectId);
+    } else {
+      nextParams.delete("project");
+    }
+    if (selectedBranchId) {
+      nextParams.set("branch", selectedBranchId);
+    } else {
+      nextParams.delete("branch");
+    }
+    if (selectedItemId) {
+      nextParams.set("item", selectedItemId);
+    } else {
+      nextParams.delete("item");
+    }
+    const current = searchParams.toString();
+    const next = nextParams.toString();
+    if (current !== next) {
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [isAdmin, searchParams, selectedBranchId, selectedItemId, selectedProjectId, setSearchParams, tab]);
 
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
@@ -965,6 +1223,30 @@ export default function WorkspacePage() {
   const sharedOslcConsumer = sharedOslcConsumerQuery.data ?? null;
   const cacheIngestTokenStatus = cacheIngestTokenQuery.data ?? null;
   const cacheApiKeys = cacheApiKeysQuery.data ?? [];
+
+  useEffect(() => {
+    if (!workbenchAgentStatus) {
+      return;
+    }
+    setAgentBaseUrlDraft(workbenchAgentStatus.base_url ?? "");
+    setAgentSelectedModelId(workbenchAgentStatus.model_id ?? "");
+    setAgentSelectedModelName(workbenchAgentStatus.model_name ?? "");
+  }, [
+    workbenchAgentStatus?.base_url,
+    workbenchAgentStatus?.configured,
+    workbenchAgentStatus?.model_id,
+    workbenchAgentStatus?.model_name,
+  ]);
+
+  useEffect(() => {
+    if (!agentSelectedModelId || !workbenchAgentModels.length) {
+      return;
+    }
+    const selectedModel = workbenchAgentModels.find((entry) => entry.id === agentSelectedModelId);
+    if (selectedModel && selectedModel.name !== agentSelectedModelName) {
+      setAgentSelectedModelName(selectedModel.name);
+    }
+  }, [agentSelectedModelId, agentSelectedModelName, workbenchAgentModels]);
 
   useEffect(() => {
     if (oslcConsumerName) {
@@ -1153,6 +1435,26 @@ export default function WorkspacePage() {
     .split(" / ")
     .map((segment) => segment.trim())
     .filter(Boolean);
+  const showHiddenPackagesInTree = Boolean(session?.preferences.show_hidden_packages_in_tree);
+  const visibleTreeNodes = useMemo(
+    () => filterContainmentTree(treeNodes, showHiddenPackagesInTree),
+    [showHiddenPackagesInTree, treeNodes],
+  );
+  const selectedNodeTrail = useMemo(
+    () => (selectedItemId ? findNodeTrail(visibleTreeNodes, selectedItemId) : []),
+    [selectedItemId, visibleTreeNodes],
+  );
+  const selectedOwnerId =
+    selectedWorkspaceItem?.owner?.id ??
+    (selectedWorkspaceItem && typeof selectedWorkspaceItem.source_payload?.owner_id === "string"
+      ? selectedWorkspaceItem.source_payload.owner_id
+      : "");
+  const selectedWorkbenchAgentModel = useMemo<OpenWebUIModelEntry | null>(
+    () => workbenchAgentModels.find((entry) => entry.id === agentSelectedModelId) ?? null,
+    [agentSelectedModelId, workbenchAgentModels],
+  );
+  const workbenchAgentProjectLabel = selectedProject?.name || "Select a project";
+  const workbenchAgentBranchLabel = selectedBranchId ? branchLabel(selectedProjectBranches, selectedBranchId) : "Select a branch";
   const compareLeftName = compareLeft.trim() ? humanReadableReference(compareLeft, referenceNameById) : "";
   const compareRightName = compareRight.trim() ? humanReadableReference(compareRight, referenceNameById) : "";
   const compareLeftFieldValue = compareLeftDisplay || compareLeft;
@@ -1426,6 +1728,99 @@ export default function WorkspacePage() {
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
+  const saveWorkbenchAgentConfigMutation = useMutation({
+    mutationFn: () =>
+      api.updateWorkbenchAgentConfig(
+        {
+          base_url: agentBaseUrlDraft.trim(),
+          api_key: agentApiKeyDraft,
+          model_id: agentSelectedModelId,
+          model_name: agentSelectedModelName,
+        },
+        csrfToken,
+      ),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["workspace-agent", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-agent-models", ...sessionCacheKey] }),
+      ]);
+      setNotice({
+        severity: "success",
+        message: agentSelectedModelId
+          ? "Workbench Agent mapping saved in encrypted Workbench storage."
+          : "Open WebUI connection saved. Load models next and map one into Workbench Agent.",
+      });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const clearWorkbenchAgentConfigMutation = useMutation({
+    mutationFn: () => api.clearWorkbenchAgentConfig(csrfToken),
+    onSuccess: async () => {
+      setAgentBaseUrlDraft("");
+      setAgentApiKeyDraft("");
+      setAgentSelectedModelId("");
+      setAgentSelectedModelName("");
+      setAgentMessages([]);
+      setAgentChatInput("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["workspace-agent", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-agent-models", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: "Workbench Agent mapping cleared for this user." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const syncWorkbenchAgentKnowledgeMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedProjectId || !selectedBranchId) {
+        throw new Error("Select a project and branch before syncing Workbench Agent knowledge.");
+      }
+      return api.syncWorkbenchAgentKnowledge(
+        {
+          project_id: selectedProjectId,
+          branch_id: selectedBranchId,
+        },
+        csrfToken,
+      );
+    },
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ["workspace-agent", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: result.message });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const workbenchAgentChatMutation = useMutation({
+    mutationFn: (payload: { messages: WorkbenchAgentChatMessage[]; syncKnowledge: boolean }) => {
+      if (!selectedProjectId || !selectedBranchId) {
+        throw new Error("Select a project and branch before starting a Workbench Agent conversation.");
+      }
+      return api.runWorkbenchAgentChat(
+        {
+          project_id: selectedProjectId,
+          branch_id: selectedBranchId,
+          messages: payload.messages,
+          sync_knowledge: payload.syncKnowledge,
+        },
+        csrfToken,
+      );
+    },
+    onSuccess: async (result, variables) => {
+      setAgentMessages([
+        ...variables.messages,
+        {
+          role: "assistant",
+          content: result.assistant_message,
+        },
+      ]);
+      await queryClient.invalidateQueries({ queryKey: ["workspace-agent", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: result.message });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
   const disconnectOslcMutation = useMutation({
     mutationFn: () => api.disconnectOslc(csrfToken),
     onSuccess: async () => {
@@ -1517,6 +1912,47 @@ export default function WorkspacePage() {
     setTab("details");
   };
 
+  const revealSelectedInTree = () => {
+    if (!selectedItemId) {
+      return;
+    }
+    setTab("models");
+  };
+
+  const openSelectedParent = () => {
+    if (!selectedOwnerId) {
+      return;
+    }
+    setSelectedItemId(selectedOwnerId);
+    setTab("details");
+  };
+
+  const beginHorizontalResize = (
+    event: ReactMouseEvent,
+    startWidth: number,
+    setWidth: (next: number) => void,
+    minimum: number,
+    maximum: number,
+    direction: "grow-right" | "grow-left" = "grow-right",
+  ) => {
+    event.preventDefault();
+    const originX = event.clientX;
+    const handleMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - originX;
+      const nextWidth =
+        direction === "grow-left"
+          ? clampNumber(startWidth - delta, minimum, maximum)
+          : clampNumber(startWidth + delta, minimum, maximum);
+      setWidth(nextWidth);
+    };
+    const handleUp = () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  };
+
   const loadTreeChildren = async (node: TreeNode) => {
     if (!selectedProjectId || !selectedBranchId) {
       return;
@@ -1540,6 +1976,26 @@ export default function WorkspacePage() {
     } finally {
       setLoadingTreeNodeIds((current) => current.filter((value) => value !== node.id));
     }
+  };
+
+  const sendWorkbenchAgentPrompt = () => {
+    const prompt = agentChatInput.trim();
+    if (!prompt) {
+      return;
+    }
+    const nextMessages: WorkbenchAgentChatMessage[] = [
+      ...agentMessages,
+      {
+        role: "user",
+        content: prompt,
+      },
+    ];
+    setAgentMessages(nextMessages);
+    setAgentChatInput("");
+    workbenchAgentChatMutation.mutate({
+      messages: nextMessages,
+      syncKnowledge: agentSyncKnowledgeBeforeChat,
+    });
   };
 
   const renderInspectorRows = (rows: InspectorRow[], emptyText: string) =>
@@ -1868,53 +2324,88 @@ export default function WorkspacePage() {
         <Alert severity="info">Refreshing the shared access map from Teamwork Cloud permissions.</Alert>
       ) : null}
       {selectedProject && selectedBranchId ? (
-        <Grid container spacing={2}>
-          <Grid item xs={12} lg={5}>
-            <Paper sx={{ p: 3, borderRadius: 2, height: "100%" }}>
-              <Stack spacing={2}>
-                <Typography variant="h6">Containment Tree</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Walk the published branch snapshot the same way you would browse the containment tree in Cameo. Expand packages and elements on the left, then inspect the selected node on the right.
-                </Typography>
-                {branchAccessManifestStatus ? (
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip label={`${branchAccessManifestStatus.accessible_user_count} viewers`} variant="outlined" />
-                    <Chip label={`${branchAccessManifestStatus.editable_user_count} editors`} variant="outlined" />
-                    <Chip label={`${branchAccessManifestStatus.admin_user_count} admins`} variant="outlined" />
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "1fr",
+              lg: `${modelPaneWidth}px 12px minmax(0, 1fr)`,
+            },
+            gap: 0,
+            alignItems: "stretch",
+          }}
+        >
+          <Paper sx={{ p: 3, borderRadius: 2, minWidth: 0 }}>
+            <Stack spacing={2}>
+              <Typography variant="h6">Containment Tree</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Walk the published branch snapshot the same way you would browse the containment tree in Cameo. Expand packages and elements on the left, then inspect the selected node on the right.
+              </Typography>
+              {branchAccessManifestStatus ? (
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                  <Chip label={`${branchAccessManifestStatus.accessible_user_count} viewers`} variant="outlined" />
+                  <Chip label={`${branchAccessManifestStatus.editable_user_count} editors`} variant="outlined" />
+                  <Chip label={`${branchAccessManifestStatus.admin_user_count} admins`} variant="outlined" />
+                </Stack>
+              ) : null}
+              {selectedNodeTrail.length ? (
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                  <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+                    {selectedNodeTrail.map((node, index) => (
+                      <Chip
+                        key={node.id}
+                        label={node.label}
+                        size="small"
+                        variant={index === selectedNodeTrail.length - 1 ? "filled" : "outlined"}
+                        onClick={() => selectContainmentNode(node, "models")}
+                        clickable
+                      />
+                    ))}
                   </Stack>
-                ) : null}
-                {selectedContainmentSegments.length ? (
-                  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
-                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-                      {selectedContainmentSegments.map((segment, index) => (
-                        <Chip
-                          key={`${segment}-${index}`}
-                          label={segment}
-                          size="small"
-                          variant={index === selectedContainmentSegments.length - 1 ? "filled" : "outlined"}
-                        />
-                      ))}
-                    </Stack>
-                  </Paper>
-                ) : null}
-                {treeNodes.length ? (
-                  <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, maxHeight: 860, overflow: "auto" }}>
-                    <ProjectTree
-                      nodes={treeNodes}
-                      selectedId={selectedItemId}
-                      filter={treeFilter}
-                      onSelect={(node) => selectContainmentNode(node, "models")}
-                      onExpand={loadTreeChildren}
-                      loadingIds={loadingTreeNodeIds}
-                    />
-                  </Paper>
-                ) : (
-                  <Typography color="text.secondary">No model tree is available for the selected branch snapshot yet.</Typography>
-                )}
-              </Stack>
-            </Paper>
-          </Grid>
-          <Grid item xs={12} lg={7}>
+                </Paper>
+              ) : selectedContainmentSegments.length ? (
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                  <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+                    {selectedContainmentSegments.map((segment, index) => (
+                      <Chip
+                        key={`${segment}-${index}`}
+                        label={segment}
+                        size="small"
+                        variant={index === selectedContainmentSegments.length - 1 ? "filled" : "outlined"}
+                      />
+                    ))}
+                  </Stack>
+                </Paper>
+              ) : null}
+              {visibleTreeNodes.length ? (
+                <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, maxHeight: 860, overflow: "auto" }}>
+                  <ProjectTree
+                    nodes={visibleTreeNodes}
+                    selectedId={selectedItemId}
+                    filter={treeFilter}
+                    onSelect={(node) => selectContainmentNode(node, "models")}
+                    onExpand={loadTreeChildren}
+                    loadingIds={loadingTreeNodeIds}
+                    expandedIds={expandedTreeNodeIds}
+                    onExpandedChange={setExpandedTreeNodeIds}
+                  />
+                </Paper>
+              ) : (
+                <Typography color="text.secondary">
+                  {treeNodes.length
+                    ? "The current tree only contains hidden package wrappers. Turn on “Show hidden packages in containment tree” in Settings if you want to see them."
+                    : "No model tree is available for the selected branch snapshot yet."}
+                </Typography>
+              )}
+            </Stack>
+          </Paper>
+          <Box
+            role="separator"
+            aria-orientation="vertical"
+            sx={resizeHandleStyles()}
+            onMouseDown={(event) => beginHorizontalResize(event, modelPaneWidth, setModelPaneWidth, 320, 760)}
+          />
+          <Box sx={{ minWidth: 0 }}>
             {selectedWorkspaceItem ? (
               <Paper sx={{ p: 3, borderRadius: 2 }}>
                 <Stack spacing={2}>
@@ -2044,8 +2535,8 @@ export default function WorkspacePage() {
                 </Typography>
               </Paper>
             )}
-          </Grid>
-        </Grid>
+          </Box>
+        </Box>
       ) : null}
     </Stack>
   );
@@ -2117,9 +2608,18 @@ export default function WorkspacePage() {
             Editing is disabled for this item unless TWC marks it editable and the RealSwagger element update capability is available to the current session.
           </Alert>
         ) : null}
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={7}>
-            <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "1fr",
+              lg: `minmax(0, 1fr) 12px ${detailSidebarWidth}px`,
+            },
+            gap: 0,
+            alignItems: "stretch",
+          }}
+        >
+          <Paper sx={{ p: 3, borderRadius: 2, minWidth: 0 }}>
               <Stack spacing={2}>
                 <TextField label="Path" value={friendlyPath(itemDraft.path, referenceNameById)} disabled fullWidth />
                 <TextField
@@ -2227,12 +2727,30 @@ export default function WorkspacePage() {
                   </AccordionDetails>
                 </Accordion>
               </Stack>
-            </Paper>
-          </Grid>
-          <Grid item xs={12} md={5}>
-            <Paper sx={{ p: 3, borderRadius: 2 }}>
+          </Paper>
+          <Box
+            role="separator"
+            aria-orientation="vertical"
+            sx={resizeHandleStyles()}
+            onMouseDown={(event) => beginHorizontalResize(event, detailSidebarWidth, setDetailSidebarWidth, 320, 720, "grow-left")}
+          />
+          <Paper sx={{ p: 3, borderRadius: 2, minWidth: 0 }}>
               <Stack spacing={2}>
                 <Typography variant="h6">Element Overview</Typography>
+                {selectedNodeTrail.length ? (
+                  <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+                    {selectedNodeTrail.map((node, index) => (
+                      <Chip
+                        key={node.id}
+                        label={node.label}
+                        size="small"
+                        variant={index === selectedNodeTrail.length - 1 ? "filled" : "outlined"}
+                        onClick={() => openElementId(node.id)}
+                        clickable
+                      />
+                    ))}
+                  </Stack>
+                ) : null}
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                   <Chip label={humanizeFieldLabel(itemDraft.item_type)} />
                   <Chip label={`Version ${itemDraft.version}`} variant="outlined" />
@@ -2315,10 +2833,18 @@ export default function WorkspacePage() {
                 ) : (
                   <Typography color="text.secondary">No related elements were returned for this item.</Typography>
                 )}
+                <Divider />
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                  <Button size="small" variant="outlined" onClick={revealSelectedInTree} disabled={!selectedItemId}>
+                    Reveal In Tree
+                  </Button>
+                  <Button size="small" variant="outlined" onClick={openSelectedParent} disabled={!selectedOwnerId}>
+                    Open Parent
+                  </Button>
+                </Stack>
               </Stack>
-            </Paper>
-          </Grid>
-        </Grid>
+          </Paper>
+        </Box>
       </Stack>
     );
   };
@@ -3005,6 +3531,237 @@ export default function WorkspacePage() {
     </Stack>
   );
 
+  const renderWorkbenchAgent = () => (
+    <Stack spacing={2}>
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="h5">Workbench Agent</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Map an Open WebUI model to this Workbench user, then sync the selected stored project branch as agent knowledge. The uploaded knowledge bundle includes all stored model data you can access for that branch plus the full Python API scripts from Developer API.
+            </Typography>
+          </Box>
+          {workbenchAgentStatusQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentStatusQuery.error)}</Alert> : null}
+          {workbenchAgentModelsQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentModelsQuery.error)}</Alert> : null}
+          <Alert severity="info">
+            Workbench Agent uses your current Workbench permissions. It only syncs and chats against stored project data that this Workbench user can already read, and it uploads Workbench API knowledge so the model can produce runnable scripts instead of vague pseudocode.
+          </Alert>
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={6}>
+              <TextField
+                label="Open WebUI Base URL"
+                value={agentBaseUrlDraft}
+                onChange={(event) => setAgentBaseUrlDraft(event.target.value)}
+                helperText="Use the root Open WebUI host, like https://openwebui.company.com"
+                fullWidth
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <TextField
+                label="Open WebUI API Key"
+                type="password"
+                value={agentApiKeyDraft}
+                onChange={(event) => setAgentApiKeyDraft(event.target.value)}
+                helperText={workbenchAgentStatus?.has_api_key ? "Leave blank to keep the saved API key, or paste a new one to rotate it." : "Required the first time you save this Open WebUI connection."}
+                fullWidth
+              />
+            </Grid>
+          </Grid>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+            <Button
+              variant="contained"
+              startIcon={<SaveRoundedIcon />}
+              disabled={!csrfToken || saveWorkbenchAgentConfigMutation.isPending || !agentBaseUrlDraft.trim()}
+              onClick={() => saveWorkbenchAgentConfigMutation.mutate()}
+            >
+              {workbenchAgentStatus?.configured ? "Save Mapping" : "Save Connection"}
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              disabled={!workbenchAgentStatus?.configured || workbenchAgentModelsQuery.isFetching}
+              onClick={() => void workbenchAgentModelsQuery.refetch()}
+            >
+              Load Models
+            </Button>
+            <Button
+              color="error"
+              variant="outlined"
+              disabled={!workbenchAgentStatus?.configured || clearWorkbenchAgentConfigMutation.isPending || !csrfToken}
+              onClick={() => clearWorkbenchAgentConfigMutation.mutate()}
+            >
+              Clear Mapping
+            </Button>
+            {saveWorkbenchAgentConfigMutation.isPending || clearWorkbenchAgentConfigMutation.isPending || workbenchAgentModelsQuery.isFetching ? (
+              <CircularProgress size={22} />
+            ) : null}
+          </Stack>
+          <TextField
+            select
+            label="Mapped Open WebUI Agent / Model"
+            value={agentSelectedModelId}
+            onChange={(event) => {
+              const nextId = event.target.value;
+              const entry = workbenchAgentModels.find((candidate) => candidate.id === nextId) ?? null;
+              setAgentSelectedModelId(nextId);
+              setAgentSelectedModelName(entry?.name ?? "");
+            }}
+            fullWidth
+            disabled={!workbenchAgentStatus?.configured || (!workbenchAgentModels.length && !workbenchAgentModelsQuery.isFetching)}
+            helperText={
+              selectedWorkbenchAgentModel?.description ||
+              workbenchAgentStatus?.model_name ||
+              "Load models after saving the Open WebUI connection, then choose the mapped agent/model here."
+            }
+          >
+            <MenuItem value="">
+              <em>Select an Open WebUI model</em>
+            </MenuItem>
+            {workbenchAgentModels.map((entry) => (
+              <MenuItem key={entry.id} value={entry.id}>
+                {entry.name} ({entry.id})
+              </MenuItem>
+            ))}
+          </TextField>
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Chip label={workbenchAgentStatus?.configured ? "Connection saved" : "Connection not saved"} color={workbenchAgentStatus?.configured ? "success" : "default"} />
+            <Chip label={workbenchAgentStatus?.model_name || "No mapped model yet"} variant="outlined" />
+            <Chip label={workbenchAgentStatus?.knowledge_file_name || "Knowledge not synced"} variant="outlined" />
+          </Stack>
+          {workbenchAgentStatus?.updated_at ? (
+            <Typography variant="caption" color="text.secondary">
+              Mapping updated {new Date(workbenchAgentStatus.updated_at).toLocaleString()}.
+            </Typography>
+          ) : null}
+        </Stack>
+      </Paper>
+
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="h6">Knowledge Sync</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Sync the selected stored project branch into Open WebUI before chatting. Workbench uploads the full stored branch data you can access, plus API manifest guidance and full Python script examples.
+            </Typography>
+          </Box>
+          {!selectedProjectId || !selectedBranchId ? (
+            <Alert severity="warning">Select a project and branch first so Workbench Agent knows which stored branch knowledge to upload.</Alert>
+          ) : null}
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Chip label={`Project: ${workbenchAgentProjectLabel}`} />
+            <Chip label={`Branch: ${workbenchAgentBranchLabel}`} variant="outlined" />
+            {branchAccessManifestStatus ? (
+              <Chip
+                label={`${branchAccessManifestStatus.accessible_user_count} accessible users`}
+                variant="outlined"
+              />
+            ) : null}
+          </Stack>
+          {workbenchAgentStatus?.knowledge_project_id && workbenchAgentStatus?.knowledge_branch_id ? (
+            <Alert severity="success">
+              Current synced knowledge: {workbenchAgentStatus.knowledge_file_name || workbenchAgentStatus.knowledge_file_id} for {workbenchAgentStatus.knowledge_project_id} / {workbenchAgentStatus.knowledge_branch_id}
+              {workbenchAgentStatus.knowledge_synced_at ? ` at ${new Date(workbenchAgentStatus.knowledge_synced_at).toLocaleString()}` : ""}.
+            </Alert>
+          ) : null}
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+            <Button
+              variant="contained"
+              disabled={!selectedProjectId || !selectedBranchId || !workbenchAgentStatus?.configured || !csrfToken || syncWorkbenchAgentKnowledgeMutation.isPending}
+              onClick={() => syncWorkbenchAgentKnowledgeMutation.mutate()}
+            >
+              Sync Current Branch Knowledge
+            </Button>
+            {syncWorkbenchAgentKnowledgeMutation.isPending ? <CircularProgress size={22} /> : null}
+          </Stack>
+        </Stack>
+      </Paper>
+
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="h6">Agent Chat</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Use the mapped Open WebUI model against the selected stored project branch. Chat turns can auto-sync knowledge first, so the model sees the latest branch data and the full Python API examples Workbench exposes.
+            </Typography>
+          </Box>
+          {!workbenchAgentStatus?.configured ? (
+            <Alert severity="warning">Save the Open WebUI connection and mapped model before starting a Workbench Agent conversation.</Alert>
+          ) : null}
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={agentSyncKnowledgeBeforeChat}
+                onChange={(event) => setAgentSyncKnowledgeBeforeChat(event.target.checked)}
+              />
+            }
+            label="Auto-sync the selected stored project branch before each chat request"
+          />
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, minHeight: 220 }}>
+            <Stack spacing={1.5}>
+              {agentMessages.length ? (
+                agentMessages.map((message, index) => (
+                  <Paper
+                    key={`${message.role}-${index}`}
+                    variant="outlined"
+                    sx={{
+                      p: 1.5,
+                      borderRadius: 2,
+                      bgcolor: message.role === "assistant" ? "action.hover" : "background.paper",
+                    }}
+                  >
+                    <Typography variant="subtitle2" sx={{ textTransform: "capitalize", mb: 0.5 }}>
+                      {message.role}
+                    </Typography>
+                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                      {message.content}
+                    </Typography>
+                  </Paper>
+                ))
+              ) : (
+                <Typography color="text.secondary">
+                  Start a conversation once a model is mapped. The agent will answer using your selected stored project branch plus the Workbench API script examples already bundled into its knowledge file.
+                </Typography>
+              )}
+            </Stack>
+          </Paper>
+          <TextField
+            label="Prompt"
+            value={agentChatInput}
+            onChange={(event) => setAgentChatInput(event.target.value)}
+            fullWidth
+            multiline
+            minRows={5}
+            helperText="Ask for scripts, model searches, stereotype reports, diagram-related questions, or analysis of the selected stored project branch."
+          />
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+            <Button
+              variant="contained"
+              disabled={
+                !workbenchAgentStatus?.configured ||
+                !selectedProjectId ||
+                !selectedBranchId ||
+                !agentChatInput.trim() ||
+                !csrfToken ||
+                workbenchAgentChatMutation.isPending
+              }
+              onClick={sendWorkbenchAgentPrompt}
+            >
+              Send to Workbench Agent
+            </Button>
+            <Button
+              variant="outlined"
+              disabled={!agentMessages.length}
+              onClick={() => setAgentMessages([])}
+            >
+              Clear Conversation
+            </Button>
+            {workbenchAgentChatMutation.isPending ? <CircularProgress size={22} /> : null}
+          </Stack>
+        </Stack>
+      </Paper>
+    </Stack>
+  );
+
   const renderSettingsExtras = () => (
     <Stack spacing={2}>
       {renderCacheApiKeys()}
@@ -3267,8 +4024,18 @@ export default function WorkspacePage() {
           </Tooltip>
         </Toolbar>
       </AppBar>
-      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "360px 1fr" }, gap: 2, p: { xs: 2, md: 3 } }}>
-        <Paper component="aside" sx={{ p: 2, borderRadius: 2, height: "fit-content" }}>
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: {
+            xs: "1fr",
+            lg: `${navPaneWidth}px 12px minmax(0, 1fr)`,
+          },
+          gap: 0,
+          p: { xs: 2, md: 3 },
+        }}
+      >
+        <Paper component="aside" sx={{ p: 2, borderRadius: 2, height: "fit-content", minWidth: 0 }}>
           <Stack spacing={2}>
             <TextField
               select
@@ -3344,16 +4111,24 @@ export default function WorkspacePage() {
             ) : null}
             <Divider />
             <ProjectTree
-              nodes={treeNodes}
+              nodes={visibleTreeNodes}
               selectedId={selectedItemId}
               filter={treeFilter}
               onSelect={(node) => selectContainmentNode(node, "models")}
               onExpand={loadTreeChildren}
               loadingIds={loadingTreeNodeIds}
+              expandedIds={expandedTreeNodeIds}
+              onExpandedChange={setExpandedTreeNodeIds}
             />
           </Stack>
         </Paper>
-        <Stack spacing={2} component="main">
+        <Box
+          role="separator"
+          aria-orientation="vertical"
+          sx={resizeHandleStyles()}
+          onMouseDown={(event) => beginHorizontalResize(event, navPaneWidth, setNavPaneWidth, 280, 560)}
+        />
+        <Stack spacing={2} component="main" sx={{ minWidth: 0, pl: { xs: 0, lg: 2 } }}>
           {notice ? <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.message}</Alert> : null}
           {projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
           <Paper sx={{ borderRadius: 2 }}>
@@ -3363,6 +4138,7 @@ export default function WorkspacePage() {
               <Tab label="Model Browser" value="models" />
               <Tab label="Item Details" value="details" />
               <Tab label="Compare" value="compare" />
+              <Tab label="Workbench Agent" value="agent" />
               <Tab label="Developer API" value="developer" />
               {isAdmin ? <Tab label="API Explorer" value="api" /> : null}
             </Tabs>
@@ -3373,6 +4149,7 @@ export default function WorkspacePage() {
             {tab === "models" ? renderModels() : null}
             {tab === "details" ? renderDetails() : null}
             {tab === "compare" ? renderCompare() : null}
+            {tab === "agent" ? renderWorkbenchAgent() : null}
             {tab === "developer" ? renderDeveloperApi() : null}
             {tab === "api" ? renderApiExplorer() : null}
           </Box>
@@ -3380,7 +4157,7 @@ export default function WorkspacePage() {
       </Box>
       <SettingsDialog
         open={settingsOpen}
-        preferences={session?.preferences ?? { theme_mode: "system", font_scale: 1, request_timeout_seconds: 30, live_log_poll_interval_ms: 2500, presentation_font_scale: 1.2 }}
+        preferences={session?.preferences ?? { theme_mode: "system", font_scale: 1, request_timeout_seconds: 30, live_log_poll_interval_ms: 2500, presentation_font_scale: 1.2, show_hidden_packages_in_tree: false }}
         saving={settingsMutation.isPending}
         extraContent={renderSettingsExtras()}
         onClose={() => {

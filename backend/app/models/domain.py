@@ -175,6 +175,7 @@ class SessionPreferences(BaseModel):
     request_timeout_seconds: int = 30
     live_log_poll_interval_ms: int = 2500
     presentation_font_scale: float = 1.2
+    show_hidden_packages_in_tree: bool = False
 
 
 class Bookmark(BaseModel):
@@ -1091,6 +1092,120 @@ class CacheApiManifest(BaseModel):
     scopes: list[CacheApiKeyScope] = Field(default_factory=list)
     message: str = ""
     available_routes: list[str] = Field(default_factory=list)
+
+
+class OpenWebUIModelEntry(BaseModel):
+    id: str
+    name: str
+    owned_by: str | None = None
+    description: str = ""
+
+
+class WorkbenchAgentSecret(BaseModel):
+    base_url: str
+    api_key: str
+    model_id: str = ""
+    model_name: str = ""
+    knowledge_file_id: str | None = None
+    knowledge_file_name: str | None = None
+    knowledge_project_id: str | None = None
+    knowledge_branch_id: str | None = None
+    updated_at: datetime = Field(default_factory=utcnow)
+    knowledge_synced_at: datetime | None = None
+
+
+class WorkbenchAgentConfigRequest(BaseModel):
+    base_url: str
+    api_key: str
+    model_id: str = ""
+    model_name: str = ""
+
+    @field_validator("base_url", "api_key", "model_id", "model_name", mode="before")
+    @classmethod
+    def normalize_string_fields(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchAgentStatus(BaseModel):
+    configured: bool = False
+    base_url: str | None = None
+    model_id: str | None = None
+    model_name: str | None = None
+    has_api_key: bool = False
+    knowledge_file_id: str | None = None
+    knowledge_file_name: str | None = None
+    knowledge_project_id: str | None = None
+    knowledge_branch_id: str | None = None
+    updated_at: datetime | None = None
+    knowledge_synced_at: datetime | None = None
+    message: str = ""
+
+
+class WorkbenchAgentKnowledgeSyncRequest(BaseModel):
+    project_id: str
+    branch_id: str
+
+    @field_validator("project_id", "branch_id", mode="before")
+    @classmethod
+    def normalize_sync_strings(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchAgentKnowledgeStatus(BaseModel):
+    project_id: str
+    branch_id: str
+    knowledge_file_id: str
+    knowledge_file_name: str
+    synced_at: datetime
+    message: str = ""
+
+
+class WorkbenchAgentChatMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def normalize_message_content(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+
+class WorkbenchAgentChatRequest(BaseModel):
+    project_id: str
+    branch_id: str
+    messages: list[WorkbenchAgentChatMessage] = Field(default_factory=list)
+    sync_knowledge: bool = True
+
+    @field_validator("project_id", "branch_id", mode="before")
+    @classmethod
+    def normalize_chat_strings(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchAgentChatResponse(BaseModel):
+    model_id: str
+    model_name: str
+    assistant_message: str
+    knowledge_file_id: str | None = None
+    knowledge_file_name: str | None = None
+    raw_response: dict[str, Any] = Field(default_factory=dict)
+    message: str = ""
 
 
 class CacheElementEditRequest(BaseModel):

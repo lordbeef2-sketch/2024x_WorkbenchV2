@@ -1,10 +1,12 @@
 import { ReactNode, useEffect, useState } from "react";
 import {
   Button,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   MenuItem,
   Slider,
   Stack,
@@ -108,6 +110,15 @@ export default function SettingsDialog({ open, preferences, saving, extraContent
               />
             </Grid>
           </Grid>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={draft.show_hidden_packages_in_tree}
+                onChange={(event) => setField("show_hidden_packages_in_tree", event.target.checked)}
+              />
+            }
+            label="Show hidden packages in containment tree"
+          />
           {extraContent ? <>{extraContent}</> : null}
         </Stack>
       </DialogContent>

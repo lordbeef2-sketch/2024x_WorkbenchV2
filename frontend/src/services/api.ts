@@ -33,6 +33,12 @@ import {
   SwaggerExecuteResponse,
   TokenLoginRequest,
   TreeNode,
+  OpenWebUIModelEntry,
+  WorkbenchAgentChatRequest,
+  WorkbenchAgentChatResponse,
+  WorkbenchAgentConfigRequest,
+  WorkbenchAgentKnowledgeStatus,
+  WorkbenchAgentStatus,
 } from "../models/api";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -416,6 +422,39 @@ export const api = {
   updatePreferences(payload: SessionPreferences, csrfToken: string) {
     return request<SessionPreferences>("/workspace/preferences", {
       method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  getWorkbenchAgentStatus() {
+    return request<WorkbenchAgentStatus>("/workspace/agent");
+  },
+  updateWorkbenchAgentConfig(payload: WorkbenchAgentConfigRequest, csrfToken: string) {
+    return request<WorkbenchAgentStatus>("/workspace/agent", {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  clearWorkbenchAgentConfig(csrfToken: string) {
+    return request<WorkbenchAgentStatus>("/workspace/agent", {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
+  listWorkbenchAgentModels() {
+    return request<OpenWebUIModelEntry[]>("/workspace/agent/models");
+  },
+  syncWorkbenchAgentKnowledge(payload: { project_id: string; branch_id: string }, csrfToken: string) {
+    return request<WorkbenchAgentKnowledgeStatus>("/workspace/agent/knowledge/sync", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  runWorkbenchAgentChat(payload: WorkbenchAgentChatRequest, csrfToken: string) {
+    return request<WorkbenchAgentChatResponse>("/workspace/agent/chat", {
+      method: "POST",
       headers: jsonHeaders(csrfToken),
       body: JSON.stringify(payload),
     });

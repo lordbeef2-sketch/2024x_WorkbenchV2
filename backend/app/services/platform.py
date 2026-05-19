@@ -74,6 +74,7 @@ from app.models.domain import (
     OSLCExecuteResponse,
     OSLCGenerateConsumerResponse,
     OSLCSharedConsumerStatus,
+    OpenWebUIModelEntry,
     ProjectSummary,
     PublishRequest,
     SavedSearch,
@@ -97,6 +98,12 @@ from app.models.domain import (
     TWCVersion,
     UserServerState,
     UserContext,
+    WorkbenchAgentChatRequest,
+    WorkbenchAgentChatResponse,
+    WorkbenchAgentConfigRequest,
+    WorkbenchAgentKnowledgeStatus,
+    WorkbenchAgentSecret,
+    WorkbenchAgentStatus,
     WebhookRegistrationStatus,
     CacheTreeResponse,
     StereotypeElementSearchResponse,
@@ -339,6 +346,196 @@ class PlatformService:
 
     def update_preferences(self, session: SessionData, preferences: SessionPreferences) -> SessionPreferences:
         return self.sessions.update_preferences(session, preferences).preferences
+
+    def get_workbench_agent_status(self, session: SessionData) -> WorkbenchAgentStatus:
+        secret = self._workbench_agent_secret(session)
+        if secret is None:
+            return WorkbenchAgentStatus(
+                configured=False,
+                message="Map an Open WebUI model here to use your stored project data as agent knowledge inside Workbench.",
+            )
+        return WorkbenchAgentStatus(
+            configured=True,
+            base_url=secret.base_url,
+            model_id=secret.model_id or None,
+            model_name=secret.model_name or None,
+            has_api_key=bool(secret.api_key),
+            knowledge_file_id=secret.knowledge_file_id,
+            knowledge_file_name=secret.knowledge_file_name,
+            knowledge_project_id=secret.knowledge_project_id,
+            knowledge_branch_id=secret.knowledge_branch_id,
+            updated_at=secret.updated_at,
+            knowledge_synced_at=secret.knowledge_synced_at,
+            message="Open WebUI agent mapping is ready. Sync a branch knowledge bundle or start chatting.",
+        )
+
+    def set_workbench_agent_config(self, session: SessionData, payload: WorkbenchAgentConfigRequest) -> WorkbenchAgentStatus:
+        base_url = self._normalize_openwebui_base_url(payload.base_url)
+        api_key = payload.api_key.strip()
+        if not base_url:
+            raise ValueError("Open WebUI base URL is required.")
+        existing = self._workbench_agent_secret(session)
+        if not api_key:
+            if existing and existing.base_url == base_url and existing.api_key:
+                api_key = existing.api_key
+            else:
+                raise ValueError("Open WebUI API key is required the first time you save a connection or when changing the base URL.")
+        secret = WorkbenchAgentSecret(
+            base_url=base_url,
+            api_key=api_key,
+            model_id=payload.model_id.strip(),
+            model_name=payload.model_name.strip(),
+            knowledge_file_id=existing.knowledge_file_id if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
+            knowledge_file_name=existing.knowledge_file_name if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
+            knowledge_project_id=existing.knowledge_project_id if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
+            knowledge_branch_id=existing.knowledge_branch_id if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
+            knowledge_synced_at=existing.knowledge_synced_at if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
+            updated_at=utcnow(),
+        )
+        self._store_workbench_agent_secret(session, secret)
+        return self.get_workbench_agent_status(session).model_copy(
+            update={"message": "Open WebUI agent mapping saved in encrypted Workbench storage."}
+        )
+
+    def clear_workbench_agent_config(self, session: SessionData) -> WorkbenchAgentStatus:
+        self.repo.delete_app_secret(self._workbench_agent_scope(session.server.id, self._user_key(session.user.preferred_username)))
+        return WorkbenchAgentStatus(
+            configured=False,
+            message="Open WebUI agent mapping cleared for this Workbench user.",
+        )
+
+    async def list_openwebui_models(self, session: SessionData) -> list[OpenWebUIModelEntry]:
+        secret = self._workbench_agent_secret(session)
+        if secret is None:
+            raise ValueError("Save an Open WebUI base URL and API key before loading models.")
+        url = f"{secret.base_url}/api/models"
+        async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+            response = await client.get(url, headers=self._openwebui_headers(secret.api_key))
+        if response.status_code >= 400:
+            raise RuntimeError(f"Open WebUI model listing failed: {response.text or response.reason_phrase}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Open WebUI did not return JSON for /api/models.") from exc
+        return self._parse_openwebui_models(payload)
+
+    async def sync_workbench_agent_knowledge(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+    ) -> WorkbenchAgentKnowledgeStatus:
+        secret = self._workbench_agent_secret(session)
+        if secret is None:
+            raise ValueError("Save an Open WebUI mapping before syncing knowledge.")
+        if not secret.model_id:
+            raise ValueError("Choose an Open WebUI agent or model before syncing knowledge.")
+
+        summary = self.get_branch_cache_summary_for_user(session.server.id, session.user.preferred_username, project_id, branch_id)
+        if summary is None:
+            raise ValueError("The selected stored project branch is not available to this Workbench user.")
+
+        file_name, file_content = self._build_workbench_agent_knowledge_document(session, project_id, branch_id)
+        upload_url = f"{secret.base_url}/api/v1/files/?process=true&process_in_background=false"
+        async with httpx.AsyncClient(timeout=180.0, verify=False, follow_redirects=True) as client:
+            response = await client.post(
+                upload_url,
+                headers={
+                    "Authorization": f"Bearer {secret.api_key}",
+                    "Accept": "application/json",
+                },
+                files={"file": (file_name, file_content, "text/markdown")},
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(f"Open WebUI knowledge upload failed: {response.text or response.reason_phrase}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Open WebUI did not return JSON for the uploaded knowledge file.") from exc
+
+        file_id = self._openwebui_file_id(payload)
+        if not file_id:
+            raise RuntimeError("Open WebUI did not return a knowledge file id after upload.")
+
+        updated_secret = secret.model_copy(
+            update={
+                "knowledge_file_id": file_id,
+                "knowledge_file_name": file_name,
+                "knowledge_project_id": project_id,
+                "knowledge_branch_id": branch_id,
+                "knowledge_synced_at": utcnow(),
+                "updated_at": utcnow(),
+            }
+        )
+        self._store_workbench_agent_secret(session, updated_secret)
+        return WorkbenchAgentKnowledgeStatus(
+            project_id=project_id,
+            branch_id=branch_id,
+            knowledge_file_id=file_id,
+            knowledge_file_name=file_name,
+            synced_at=updated_secret.knowledge_synced_at or utcnow(),
+            message="Stored project knowledge and Workbench API examples were uploaded to Open WebUI for this mapped agent/model.",
+        )
+
+    async def run_workbench_agent_chat(
+        self,
+        session: SessionData,
+        payload: WorkbenchAgentChatRequest,
+    ) -> WorkbenchAgentChatResponse:
+        secret = self._workbench_agent_secret(session)
+        if secret is None:
+            raise ValueError("Save an Open WebUI mapping before using Workbench Agent.")
+        if not secret.model_id:
+            raise ValueError("Choose an Open WebUI agent or model before chatting.")
+        if not payload.messages:
+            raise ValueError("At least one message is required.")
+
+        working_secret = secret
+        if payload.sync_knowledge and (
+            not secret.knowledge_file_id
+            or secret.knowledge_project_id != payload.project_id
+            or secret.knowledge_branch_id != payload.branch_id
+        ):
+            await self.sync_workbench_agent_knowledge(session, payload.project_id, payload.branch_id)
+            working_secret = self._workbench_agent_secret(session) or secret
+
+        if not working_secret.knowledge_file_id:
+            raise ValueError("Sync the current project branch knowledge before chatting with Workbench Agent.")
+
+        request_messages = [
+            {"role": "system", "content": self._workbench_agent_system_prompt(session, payload.project_id, payload.branch_id)},
+            *[message.model_dump() for message in payload.messages],
+        ]
+        request_body = {
+            "model": working_secret.model_id,
+            "messages": request_messages,
+            "files": [{"type": "file", "id": working_secret.knowledge_file_id}],
+        }
+        async with httpx.AsyncClient(timeout=180.0, verify=False, follow_redirects=True) as client:
+            response = await client.post(
+                f"{working_secret.base_url}/api/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {working_secret.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=request_body,
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(f"Open WebUI chat request failed: {response.text or response.reason_phrase}")
+        try:
+            raw_payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Open WebUI did not return JSON for the chat completion request.") from exc
+
+        return WorkbenchAgentChatResponse(
+            model_id=working_secret.model_id,
+            model_name=working_secret.model_name or working_secret.model_id,
+            assistant_message=self._openwebui_assistant_message(raw_payload),
+            knowledge_file_id=working_secret.knowledge_file_id,
+            knowledge_file_name=working_secret.knowledge_file_name,
+            raw_response=raw_payload if isinstance(raw_payload, dict) else {"payload": raw_payload},
+            message="Workbench Agent used the mapped Open WebUI model with your accessible stored project knowledge attached.",
+        )
 
     def add_bookmark(self, session: SessionData, bookmark: Bookmark) -> list[Bookmark]:
         return self.sessions.upsert_bookmark(session, bookmark).bookmarks
@@ -4847,6 +5044,236 @@ class PlatformService:
         prefix = f"project:{project_id}:branch:{branch_id}:"
         self.repo.delete_user_cache_prefix_for_server(server_id, prefix)
         self.repo.delete_user_cache_prefix_for_server(server_id, self._branch_cache_key(project_id))
+
+    def _workbench_agent_scope(self, server_id: str, user_id: str) -> str:
+        return f"workbench-agent:{server_id}:{user_id}"
+
+    def _normalize_openwebui_base_url(self, base_url: str) -> str:
+        normalized = base_url.strip().rstrip("/")
+        if normalized.endswith("/api"):
+            normalized = normalized[:-4]
+        return normalized.rstrip("/")
+
+    def _workbench_agent_secret(self, session: SessionData) -> WorkbenchAgentSecret | None:
+        user_id = self._user_key(session.user.preferred_username)
+        stored = self.repo.get_app_secret(self._workbench_agent_scope(session.server.id, user_id))
+        if not stored:
+            return None
+        encrypted_payload, _updated_at_raw = stored
+        try:
+            raw = self.sessions.cipher.decrypt_raw(encrypted_payload)
+            secret = WorkbenchAgentSecret.model_validate_json(raw)
+        except Exception:
+            self.repo.delete_app_secret(self._workbench_agent_scope(session.server.id, user_id))
+            return None
+        if not secret.base_url or not secret.api_key:
+            self.repo.delete_app_secret(self._workbench_agent_scope(session.server.id, user_id))
+            return None
+        return secret
+
+    def _store_workbench_agent_secret(self, session: SessionData, secret: WorkbenchAgentSecret) -> None:
+        user_id = self._user_key(session.user.preferred_username)
+        encrypted_payload = self.sessions.cipher.encrypt_raw(secret.model_dump_json().encode("utf-8"))
+        self.repo.upsert_app_secret(self._workbench_agent_scope(session.server.id, user_id), encrypted_payload)
+
+    def _openwebui_headers(self, api_key: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        }
+
+    def _parse_openwebui_models(self, payload: Any) -> list[OpenWebUIModelEntry]:
+        if isinstance(payload, dict):
+            candidates = payload.get("data") if isinstance(payload.get("data"), list) else payload.get("models")
+        else:
+            candidates = payload
+        if not isinstance(candidates, list):
+            return []
+        models: list[OpenWebUIModelEntry] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            model_id = str(candidate.get("id") or candidate.get("model") or "").strip()
+            if not model_id:
+                continue
+            models.append(
+                OpenWebUIModelEntry(
+                    id=model_id,
+                    name=str(candidate.get("name") or candidate.get("title") or model_id).strip() or model_id,
+                    owned_by=str(candidate.get("owned_by") or candidate.get("ownedBy") or "").strip() or None,
+                    description=str(candidate.get("description") or "").strip(),
+                )
+            )
+        return sorted(models, key=lambda item: (item.name.lower(), item.id.lower()))
+
+    def _openwebui_file_id(self, payload: Any) -> str | None:
+        if isinstance(payload, dict):
+            for key in ("id", "file_id"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            nested = payload.get("data")
+            if isinstance(nested, dict):
+                return self._openwebui_file_id(nested)
+        return None
+
+    def _openwebui_assistant_message(self, payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return json.dumps(payload, indent=2)
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                message = first.get("message")
+                if isinstance(message, dict):
+                    content = message.get("content")
+                    if isinstance(content, str):
+                        return content
+                    if isinstance(content, list):
+                        text_parts = []
+                        for item in content:
+                            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                                text_parts.append(item["text"])
+                            elif isinstance(item, str):
+                                text_parts.append(item)
+                        if text_parts:
+                            return "\n".join(text_parts)
+                if isinstance(first.get("text"), str):
+                    return str(first["text"])
+        if isinstance(payload.get("response"), str):
+            return str(payload["response"])
+        return json.dumps(payload, indent=2)
+
+    def _workbench_agent_system_prompt(self, session: SessionData, project_id: str, branch_id: str) -> str:
+        manifest = self.cache_api_manifest(
+            preferred_username=session.user.preferred_username,
+            source="app-key",
+            scopes=[CacheApiKeyScope.READ, CacheApiKeyScope.WRITE, CacheApiKeyScope.EDIT],
+        )
+        return (
+            "You are the Workbench Agent inside TWC Workbench. "
+            "Use the attached Workbench knowledge file as the primary source of truth for the selected stored project branch. "
+            "That file contains the accessible stored model data for this Workbench user plus the Workbench cache API routes and full Python examples. "
+            "When helping with automation, default to Python requests scripts against the Workbench API. "
+            f"Current user: {session.user.preferred_username}. "
+            f"Current project: {project_id}. Current branch: {branch_id}. "
+            f"Available Workbench cache routes: {', '.join(manifest.available_routes)}. "
+            "If the user asks for code, return complete scripts instead of snippets whenever practical."
+        )
+
+    def _workbench_agent_example_text(self) -> str:
+        examples_dir = Path(__file__).resolve().parents[3] / "examples"
+        selected_files = [
+            "22_workbench_cache_api_manifest.py",
+            "23_workbench_cache_api_list_elements.py",
+            "24_workbench_cache_api_edit_element.py",
+            "26_workbench_cache_api_search_by_stereotype.py",
+            "27_workbench_cache_api_tree.py",
+            "28_workbench_cache_api_search_elements.py",
+            "29_workbench_cache_api_element_graph.py",
+        ]
+        sections: list[str] = []
+        for name in selected_files:
+            path = examples_dir / name
+            if not path.exists():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            sections.append(f"### {name}\n```python\n{content.strip()}\n```")
+        return "\n\n".join(sections)
+
+    def _build_workbench_agent_knowledge_document(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+    ) -> tuple[str, bytes]:
+        summary = self.get_branch_cache_summary_for_user(session.server.id, session.user.preferred_username, project_id, branch_id)
+        if summary is None:
+            raise ValueError("The selected stored project branch is not available to this Workbench user.")
+        snapshot = self.get_branch_cache_snapshot_for_user(session.server.id, session.user.preferred_username, project_id, branch_id)
+        elements = self.list_cached_branch_elements_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+            all_results=True,
+        ).items
+        manifest = self.cache_api_manifest(
+            preferred_username=session.user.preferred_username,
+            source="app-key",
+            scopes=[CacheApiKeyScope.READ, CacheApiKeyScope.WRITE, CacheApiKeyScope.EDIT],
+        )
+
+        project_name = summary.project_name or project_id
+        branch_name = summary.branch_name or branch_id
+        lines = [
+            "# TWC Workbench Agent Knowledge Bundle",
+            "",
+            "## Context",
+            f"- User: {session.user.preferred_username}",
+            f"- Server: {session.server.name} ({session.server.id})",
+            f"- Project: {project_name} ({project_id})",
+            f"- Branch: {branch_name} ({branch_id})",
+            f"- Revision: {summary.latest_revision or 'unknown'}",
+            f"- Stored models: {summary.model_count}",
+            f"- Stored elements: {summary.element_count}",
+            "",
+            "## Workbench Cache API Manifest",
+            manifest.message,
+            "",
+            "### Available Routes",
+            *[f"- {route}" for route in manifest.available_routes],
+            "",
+            "## Full Python Examples",
+            self._workbench_agent_example_text(),
+            "",
+            "## Stored Models",
+        ]
+        if snapshot is not None:
+            for model_view in snapshot.models:
+                lines.extend(
+                    [
+                        f"- {model_view.model.name or model_view.model.model_id}",
+                        f"  - model_id: {model_view.model.model_id}",
+                        f"  - root_ids: {', '.join(model_view.model.root_ids) if model_view.model.root_ids else 'none'}",
+                        f"  - element_count: {model_view.model.element_count}",
+                    ]
+                )
+        lines.extend(["", "## Stored Elements"])
+        for record in elements:
+            payload = record.payload if isinstance(record.payload, dict) else {}
+            lines.extend(
+                [
+                    f"### {record.name or record.element_id}",
+                    f"- element_id: {record.element_id}",
+                    f"- model_id: {record.model_id}",
+                    f"- item_type: {record.item_type}",
+                    f"- metaclass: {payload.get('metaclass') or record.item_type}",
+                    f"- path: {record.path}",
+                    f"- qualified_name: {payload.get('qualified_name') or record.path}",
+                    f"- owner_id: {payload.get('owner_id') or ''}",
+                    f"- child_count: {record.child_count}",
+                    f"- stereotypes: {json.dumps(payload.get('applied_stereotype_ids') or [])}",
+                    f"- documentation: {str(payload.get('documentation') or '').strip()}",
+                    "#### Attributes",
+                    "```json",
+                    json.dumps(payload.get("attributes") or {}, indent=2, ensure_ascii=False),
+                    "```",
+                    "#### References",
+                    "```json",
+                    json.dumps(payload.get("references") or {}, indent=2, ensure_ascii=False),
+                    "```",
+                    "",
+                ]
+            )
+
+        safe_project = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in project_name).strip("-") or project_id
+        safe_branch = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in branch_name).strip("-") or branch_id
+        file_name = f"workbench-{safe_project}-{safe_branch}-knowledge.md"
+        return file_name, "\n".join(lines).encode("utf-8")
 
     def _shared_oslc_secret_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"
