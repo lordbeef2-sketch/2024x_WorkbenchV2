@@ -1,5 +1,6 @@
 package com.twcworkbench.cameo.service;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nomagic.magicdraw.core.Application;
 import com.twcworkbench.cameo.config.PluginConfig;
@@ -31,7 +32,8 @@ public class WorkbenchIngestClient {
 
     public WorkbenchIngestClient(PluginConfig config) {
         this.config = config;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = new ObjectMapper()
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
     }
 
     public PublishResult publishWithPrecheck(
