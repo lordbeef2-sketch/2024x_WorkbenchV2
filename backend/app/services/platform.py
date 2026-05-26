@@ -1978,7 +1978,7 @@ class PlatformService:
                     items=items,
                 )
 
-            parent_record = self.repo.get_cached_element(
+            parent_record = self.repo.get_cached_element_tree_summary(
                 server_id,
                 project_id,
                 branch_id,
@@ -3044,11 +3044,31 @@ class PlatformService:
             )
         return nodes
 
-    def _cached_element_sort_key(self, record: CachedElementRecord | None, fallback_id: str = "") -> tuple[int, str]:
+    def _tree_record_field(self, record: CachedElementRecord | dict[str, Any], field: str, default: Any = "") -> Any:
+        if isinstance(record, CachedElementRecord):
+            if field == "element_id":
+                return record.element_id
+            if field == "name":
+                return record.name
+            if field == "item_type":
+                return record.item_type
+            if field == "path":
+                return record.path
+            if field == "child_count":
+                return record.child_count
+            return record.payload.get(field, default)
+        return record.get(field, default)
+
+    def _cached_element_sort_key(self, record: CachedElementRecord | dict[str, Any] | None, fallback_id: str = "") -> tuple[int, str]:
         if record is None:
             return (99, fallback_id.lower())
-        item_type = str(record.item_type or record.payload.get("metaclass") or "element").strip().lower()
-        display_name = str(record.name or record.payload.get("qualified_name") or record.element_id).strip().lower()
+        item_type = str(self._tree_record_field(record, "item_type") or self._tree_record_field(record, "metaclass") or "element").strip().lower()
+        display_name = str(
+            self._tree_record_field(record, "name")
+            or self._tree_record_field(record, "qualified_name")
+            or self._tree_record_field(record, "element_id")
+            or fallback_id
+        ).strip().lower()
         if item_type in {"package", "model"}:
             rank = 0
         elif "diagram" in item_type or item_type in {"table", "matrix", "chart"}:
@@ -3057,12 +3077,13 @@ class PlatformService:
             rank = 2
         else:
             rank = 3
-        return (rank, display_name or record.element_id.lower())
+        element_id = str(self._tree_record_field(record, "element_id") or fallback_id).lower()
+        return (rank, display_name or element_id)
 
     def _sanitize_model_root_ids(
         self,
         model: CachedModelRecord,
-        model_records: dict[str, CachedElementRecord],
+        model_records: dict[str, CachedElementRecord | dict[str, Any]],
     ) -> list[str]:
         root_ids: list[str] = []
         for root_id in model.root_ids:
@@ -3077,7 +3098,7 @@ class PlatformService:
 
         model_record = model_records.get(model.model_id)
         if model_record is not None:
-            for child_id in [str(value).strip() for value in model_record.payload.get("owned_element_ids") or [] if str(value).strip()]:
+            for child_id in [str(value).strip() for value in self._tree_record_field(model_record, "owned_element_ids", []) or [] if str(value).strip()]:
                 if child_id != model.model_id and child_id in model_records and child_id not in root_ids:
                     root_ids.append(child_id)
         return self._normalize_model_root_ids(model, model_records, root_ids)
@@ -3085,7 +3106,7 @@ class PlatformService:
     def _normalize_model_root_ids(
         self,
         model: CachedModelRecord,
-        model_records: dict[str, CachedElementRecord],
+        model_records: dict[str, CachedElementRecord | dict[str, Any]],
         root_ids: list[str],
     ) -> list[str]:
         normalized_root_ids = [root_id for root_id in root_ids if root_id and root_id != model.model_id]
@@ -3094,20 +3115,25 @@ class PlatformService:
         root_record = model_records.get(normalized_root_ids[0])
         if root_record is None or not self._is_modelish_record(root_record):
             return normalized_root_ids
-        root_name = normalize_lookup_key(str(root_record.name or root_record.payload.get("human_name") or ""))
+        root_name = normalize_lookup_key(str(self._tree_record_field(root_record, "name") or self._tree_record_field(root_record, "human_name") or ""))
         model_name = normalize_lookup_key(str(model.name or model.payload.get("human_name") or ""))
         if not root_name or root_name != model_name:
             return normalized_root_ids
         lifted_ids = [
             child_id
-            for child_id in [str(value).strip() for value in root_record.payload.get("owned_element_ids") or [] if str(value).strip()]
+            for child_id in [str(value).strip() for value in self._tree_record_field(root_record, "owned_element_ids", []) or [] if str(value).strip()]
             if child_id != model.model_id and child_id in model_records
         ]
         return lifted_ids or normalized_root_ids
 
-    def _is_modelish_record(self, record: CachedElementRecord) -> bool:
+    def _is_modelish_record(self, record: CachedElementRecord | dict[str, Any]) -> bool:
         normalized_type = normalize_lookup_key(
-            str(record.payload.get("metaclass") or record.item_type or record.payload.get("human_type") or "element")
+            str(
+                self._tree_record_field(record, "metaclass")
+                or self._tree_record_field(record, "item_type")
+                or self._tree_record_field(record, "human_type")
+                or "element"
+            )
         )
         return normalized_type in {"model", "sysml model", "uml model"}
 
@@ -3139,26 +3165,30 @@ class PlatformService:
         project_id: str,
         branch_id: str,
         model_id: str,
-        record: CachedElementRecord,
+        record: CachedElementRecord | dict[str, Any],
     ) -> TreeNode:
-        qualified_name = str(record.payload.get("qualified_name") or record.path or "").strip()
-        child_ids = [str(value).strip() for value in record.payload.get("owned_element_ids") or [] if str(value).strip()]
-        metaclass = str(record.payload.get("metaclass") or record.item_type or "element").strip()
-        stereotypes = [str(value).strip() for value in record.payload.get("applied_stereotype_ids") or [] if str(value).strip()]
-        child_count = max(record.child_count, len(child_ids))
+        element_id = str(self._tree_record_field(record, "element_id")).strip()
+        item_type = str(self._tree_record_field(record, "item_type") or "element").strip()
+        path = str(self._tree_record_field(record, "path") or "").strip()
+        owner_id = str(self._tree_record_field(record, "owner_id") or "").strip()
+        qualified_name = str(self._tree_record_field(record, "qualified_name") or path).strip()
+        child_ids = [str(value).strip() for value in self._tree_record_field(record, "owned_element_ids", []) or [] if str(value).strip()]
+        metaclass = str(self._tree_record_field(record, "metaclass") or item_type or "element").strip()
+        stereotypes = [str(value).strip() for value in self._tree_record_field(record, "applied_stereotype_ids", []) or [] if str(value).strip()]
+        child_count = max(int(self._tree_record_field(record, "child_count", 0) or 0), len(child_ids))
         label = self._presentable_tree_label(server_id, project_id, branch_id, record)
         subtitle = self._presentable_tree_subtitle(server_id, project_id, branch_id, record)
         return TreeNode(
-            id=record.element_id,
+            id=element_id,
             label=label,
-            node_type=record.item_type,
-            path=qualified_name or record.path or record.name or record.element_id,
+            node_type=item_type,
+            path=qualified_name or path or str(self._tree_record_field(record, "name") or element_id),
             children=[],
             metadata={
                 "project_id": project_id,
                 "branch_id": branch_id,
                 "model_id": model_id,
-                "owner_id": str(record.payload.get("owner_id") or "").strip(),
+                "owner_id": owner_id,
                 "child_count": child_count,
                 "children_loaded": False,
                 "qualified_name": qualified_name,
@@ -3173,24 +3203,15 @@ class PlatformService:
         server_id: str,
         project_id: str,
         branch_id: str,
-        record: CachedElementRecord,
+        record: CachedElementRecord | dict[str, Any],
     ) -> str:
-        raw_label = str(record.name or record.element_id).strip() or record.element_id
-        qualified_name = str(record.payload.get("qualified_name") or record.path or "").strip()
-        normalized_type = normalize_lookup_key(str(record.item_type or record.payload.get("metaclass") or "element"))
-        references = record.payload.get("references") or {}
-        if normalized_type in {"package import", "element import"} and isinstance(references, dict):
-            candidate_ids = []
-            for key in ("importedPackage", "importedElement", "importedMember", "target"):
-                values = references.get(key)
-                if isinstance(values, list):
-                    candidate_ids.extend(str(value).strip() for value in values if str(value).strip())
-            for candidate_id in candidate_ids:
-                target = self.repo.get_cached_element(server_id, project_id, branch_id, candidate_id)
-                if target is not None and target.name and normalize_lookup_key(target.name) != normalize_lookup_key(raw_label):
-                    return f"Import {target.name}"
+        raw_label = str(self._tree_record_field(record, "name") or self._tree_record_field(record, "element_id")).strip() or str(
+            self._tree_record_field(record, "element_id")
+        )
+        qualified_name = str(self._tree_record_field(record, "qualified_name") or self._tree_record_field(record, "path") or "").strip()
+        normalized_type = normalize_lookup_key(str(self._tree_record_field(record, "item_type") or self._tree_record_field(record, "metaclass") or "element"))
         if normalized_type == "comment":
-            documentation = str(record.payload.get("documentation") or "").strip()
+            documentation = str(self._tree_record_field(record, "documentation") or "").strip()
             if documentation:
                 first_line = documentation.splitlines()[0].strip()
                 if first_line:
@@ -3198,7 +3219,7 @@ class PlatformService:
         return self._presentable_name_from_path(
             raw_label,
             qualified_name=qualified_name,
-            fallback_path=str(record.path or "").strip(),
+            fallback_path=str(self._tree_record_field(record, "path") or "").strip(),
         ) or raw_label
 
     def _presentable_tree_subtitle(
@@ -3206,30 +3227,14 @@ class PlatformService:
         server_id: str,
         project_id: str,
         branch_id: str,
-        record: CachedElementRecord,
+        record: CachedElementRecord | dict[str, Any],
     ) -> str:
-        normalized_type = normalize_lookup_key(str(record.item_type or record.payload.get("metaclass") or "element"))
-        diagram_type = str(record.payload.get("diagram_type") or "").strip()
+        normalized_type = normalize_lookup_key(str(self._tree_record_field(record, "item_type") or self._tree_record_field(record, "metaclass") or "element"))
+        diagram_type = str(self._tree_record_field(record, "diagram_type") or "").strip()
         if diagram_type:
             return diagram_type
-        references = record.payload.get("references") or {}
-        if normalized_type in {"package import", "element import"} and isinstance(references, dict):
-            candidate_ids = []
-            for key in ("importedPackage", "importedElement", "importedMember", "target"):
-                values = references.get(key)
-                if isinstance(values, list):
-                    candidate_ids.extend(str(value).strip() for value in values if str(value).strip())
-            for candidate_id in candidate_ids:
-                target = self.repo.get_cached_element(server_id, project_id, branch_id, candidate_id)
-                if target is not None and target.path:
-                    return self._presentable_name_from_path(
-                        str(target.name or target.element_id).strip() or target.element_id,
-                        qualified_name=str(target.payload.get("qualified_name") or "").strip(),
-                        fallback_path=str(target.path or "").strip(),
-                    )
-                if target is not None and target.name:
-                    return target.name
-            return "Imported reference"
+        if normalized_type in {"package import", "element import"}:
+            return ""
         return ""
 
     def _tree_children_for_model_root(
@@ -3239,25 +3244,25 @@ class PlatformService:
         branch_id: str,
         model: CachedModelRecord,
     ) -> list[TreeNode]:
-        initial_records = self.repo.list_cached_elements_by_ids(
+        initial_records = self.repo.list_cached_element_tree_summaries_by_ids(
             server_id,
             project_id,
             branch_id,
             [model.model_id, *model.root_ids],
             model_id=model.model_id,
         )
-        records_by_id = {record.element_id: record for record in initial_records}
+        records_by_id = {str(record["element_id"]): record for record in initial_records}
         root_ids = self._sanitize_model_root_ids(model, records_by_id)
         missing_root_ids = [root_id for root_id in root_ids if root_id not in records_by_id]
         if missing_root_ids:
-            for record in self.repo.list_cached_elements_by_ids(
+            for record in self.repo.list_cached_element_tree_summaries_by_ids(
                 server_id,
                 project_id,
                 branch_id,
                 missing_root_ids,
                 model_id=model.model_id,
             ):
-                records_by_id[record.element_id] = record
+                records_by_id[str(record["element_id"])] = record
         ordered_records = [records_by_id[root_id] for root_id in root_ids if root_id in records_by_id]
         return [
             self._tree_node_summary_from_record(
@@ -3276,40 +3281,40 @@ class PlatformService:
         project_id: str,
         branch_id: str,
         model_id: str,
-        parent_record: CachedElementRecord,
+        parent_record: CachedElementRecord | dict[str, Any],
     ) -> list[TreeNode]:
         owned_child_ids = [
             child_id
-            for child_id in [str(value).strip() for value in parent_record.payload.get("owned_element_ids") or [] if str(value).strip()]
-            if child_id and child_id != parent_record.element_id
+            for child_id in [str(value).strip() for value in self._tree_record_field(parent_record, "owned_element_ids", []) or [] if str(value).strip()]
+            if child_id and child_id != str(self._tree_record_field(parent_record, "element_id"))
         ]
         child_records = {
-            record.element_id: record
-            for record in self.repo.list_cached_elements_by_owner(
+            str(record["element_id"]): record
+            for record in self.repo.list_cached_element_tree_summaries_by_owner(
                 server_id,
                 project_id,
                 branch_id,
                 model_id,
-                parent_record.element_id,
+                str(self._tree_record_field(parent_record, "element_id")),
             )
-            if record.element_id != parent_record.element_id
+            if str(record["element_id"]) != str(self._tree_record_field(parent_record, "element_id"))
         }
         missing_owned_child_ids = [child_id for child_id in owned_child_ids if child_id not in child_records]
         if missing_owned_child_ids:
-            for record in self.repo.list_cached_elements_by_ids(
+            for record in self.repo.list_cached_element_tree_summaries_by_ids(
                 server_id,
                 project_id,
                 branch_id,
                 missing_owned_child_ids,
                 model_id=model_id,
             ):
-                if record.element_id != parent_record.element_id:
-                    child_records[record.element_id] = record
+                if str(record["element_id"]) != str(self._tree_record_field(parent_record, "element_id")):
+                    child_records[str(record["element_id"])] = record
 
         ordered_records = [child_records[child_id] for child_id in owned_child_ids if child_id in child_records]
         extra_records = sorted(
             [record for child_id, record in child_records.items() if child_id not in owned_child_ids],
-            key=lambda item: self._cached_element_sort_key(item, item.element_id),
+            key=lambda item: self._cached_element_sort_key(item, str(item.get("element_id") or "")),
         )
         return [
             self._tree_node_summary_from_record(

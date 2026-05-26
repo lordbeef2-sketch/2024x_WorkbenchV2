@@ -57,15 +57,30 @@ function iconForNode(nodeType: string) {
   return <DescriptionRoundedIcon fontSize="small" />;
 }
 
-function matchesFilter(node: TreeNode, filter: string): boolean {
-  if (!filter) {
-    return true;
+function pruneTreeForFilter(nodes: TreeNode[], filter: string): TreeNode[] {
+  const query = filter.trim().toLowerCase();
+  if (!query) {
+    return nodes;
   }
-  const query = filter.toLowerCase();
-  if (`${node.label} ${node.path}`.toLowerCase().includes(query)) {
-    return true;
-  }
-  return node.children.some((child) => matchesFilter(child, filter));
+  const visit = (node: TreeNode): TreeNode | null => {
+    const matchingChildren = node.children
+      .map((child) => visit(child))
+      .filter((child): child is TreeNode => child !== null);
+    const matchesSelf = `${node.label} ${node.path}`.toLowerCase().includes(query);
+    if (!matchesSelf && !matchingChildren.length) {
+      return null;
+    }
+    if (matchingChildren === node.children) {
+      return node;
+    }
+    return {
+      ...node,
+      children: matchingChildren,
+    };
+  };
+  return nodes
+    .map((node) => visit(node))
+    .filter((node): node is TreeNode => node !== null);
 }
 
 function declaredChildCount(node: TreeNode): number {
@@ -109,7 +124,8 @@ export default function ProjectTree({
     );
   };
 
-  const visibleNodes = useMemo(() => nodes.filter((node) => matchesFilter(node, filter)), [filter, nodes]);
+  const visibleNodes = useMemo(() => pruneTreeForFilter(nodes, filter), [filter, nodes]);
+  const loadingIdSet = useMemo(() => new Set(loadingIds), [loadingIds]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -169,14 +185,12 @@ export default function ProjectTree({
   };
 
   const renderNode = (node: TreeNode, depth = 0) => {
-    if (!matchesFilter(node, filter)) {
-      return null;
-    }
     const childCount = declaredChildCount(node);
     const childrenLoaded = node.metadata.children_loaded === true;
     const hasChildren = node.children.length > 0 || (!childrenLoaded && childCount > 0);
     const isOpen = hasChildren ? (expanded[node.id] ?? Boolean(filter)) : false;
-    const isLoading = loadingIds.includes(node.id);
+    const isLoading = loadingIdSet.has(node.id);
+    const visibleChildren = hasChildren && isOpen ? node.children : [];
 
     return (
       <Fragment key={node.id}>
@@ -238,8 +252,8 @@ export default function ProjectTree({
           />
         </ListItemButton>
         {hasChildren ? (
-          <Collapse in={isOpen}>
-            <Box sx={{ ml: 1 }}>{node.children.map((child) => renderNode(child, depth + 1))}</Box>
+          <Collapse in={isOpen} mountOnEnter unmountOnExit timeout="auto">
+            <Box sx={{ ml: 1 }}>{visibleChildren.map((child) => renderNode(child, depth + 1))}</Box>
           </Collapse>
         ) : null}
       </Fragment>

@@ -237,6 +237,29 @@ function replaceNodeChildren(nodes: TreeNode[], targetId: string, children: Tree
   return changed ? nextNodes : nodes;
 }
 
+function mergeTreeNodesPreservingLoadedChildren(baseNodes: TreeNode[], currentNodes: TreeNode[]): TreeNode[] {
+  const currentById = new Map(currentNodes.map((node) => [node.id, node]));
+  const mergeNode = (baseNode: TreeNode): TreeNode => {
+    const currentNode = currentById.get(baseNode.id);
+    if (!currentNode) {
+      return baseNode;
+    }
+    const hasLoadedChildren = currentNode.children.length > 0 || currentNode.metadata.children_loaded === true;
+    const nextChildren = hasLoadedChildren
+      ? currentNode.children.map((child) => mergeNode(child))
+      : baseNode.children.map((child) => mergeNode(child));
+    return {
+      ...baseNode,
+      children: nextChildren,
+      metadata: {
+        ...baseNode.metadata,
+        ...currentNode.metadata,
+      },
+    };
+  };
+  return baseNodes.map((node) => mergeNode(node));
+}
+
 function valueText(value: unknown): string {
   if (value === null || value === undefined) {
     return "";
@@ -851,33 +874,49 @@ function specificationWindowRows(
   const attributes = payloadAttributes(item);
   const metadata = item.metadata ?? {};
   const references = payloadReferences(item);
-  const baseFields: Record<string, unknown> = {
-    name: item.name,
-    description: item.description,
-    documentation: item.documentation_markdown,
-    path: friendlyPath(item.path, lookup),
-    qualified_name: sourcePayload.qualified_name,
-    type: item.item_type,
-    human_type: sourcePayload.human_type,
-    metaclass: sourcePayload.metaclass,
-    stereotypes: item.stereotypes,
-    version: item.version,
+  const rows: InspectorRow[] = [];
+  const pushRow = (key: string, label: string, value: unknown) => {
+    if (!hasMeaningfulValue(value)) {
+      return;
+    }
+    rows.push({
+      key,
+      label,
+      value: humanReadableValue(value, lookup),
+    });
   };
-  const rows: InspectorRow[] = [
-    ...mapToInspectorRows(baseFields, lookup),
+
+  pushRow("documentation", "Documentation", item.documentation_markdown);
+  pushRow("human_name", "Human Name", sourcePayload.human_name || item.name);
+  pushRow("human_type", "Human Type", sourcePayload.human_type);
+  pushRow("id", "ID", item.id);
+  pushRow("local_id", "Local ID", sourcePayload.local_id);
+  pushRow("metaclass", "Metaclass", sourcePayload.metaclass);
+  pushRow("name", "Name", item.name);
+  pushRow("path", "Path", friendlyPath(item.path, lookup));
+  pushRow("qualified_name", "Qualified Name", sourcePayload.qualified_name);
+  pushRow("type", "Type", item.item_type);
+  pushRow("version", "Version", item.version);
+  pushRow("description", "Description", item.description);
+  pushRow("stereotypes", "Applied Stereotypes", item.stereotypes);
+  pushRow("owner_name", "Owner", item.owner ? itemReferenceDisplayName(item.owner, lookup) : "");
+
+  rows.push(
     ...mapToInspectorRows(attributes, lookup),
     ...specificationRows(item, lookup),
     ...constraintRows(item, lookup),
-  ];
+  );
 
   if (viewModeIncludes(viewMode, "expert")) {
     rows.push(
       ...mapToInspectorRows(
         {
-          local_id: sourcePayload.local_id,
           model_id: sourcePayload.model_id,
+          local_id: sourcePayload.local_id,
           owner_id: sourcePayload.owner_id,
           raw_types: item.raw_types,
+          related_items: item.related_items.map((reference) => itemReferenceDisplayName(reference, lookup)),
+          contained_elements: item.contained_elements.map((reference) => itemReferenceDisplayName(reference, lookup)),
         },
         lookup,
       ),
@@ -896,9 +935,7 @@ function specificationWindowRows(
     }
   }
 
-  return dedupeInspectorRows(
-    rows.sort((left, right) => compareDisplayValues(left.label, right.label)),
-  );
+  return dedupeInspectorRows(rows);
 }
 
 function defaultParameterValue(parameter: SwaggerParameterSpec): string {
@@ -1051,7 +1088,7 @@ export default function WorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const pendingSearchSyncRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
-  const { session, refreshSession } = useSession();
+  const { session, refreshSession, setSessionSnapshot } = useSession();
   const currentPreferences: SessionPreferences = session?.preferences ?? {
     theme_mode: "system",
     font_scale: 1,
@@ -1067,7 +1104,9 @@ export default function WorkspacePage() {
   const canEdit = capabilities.edit?.state === "ready";
   const isAdmin = Boolean(session?.can_manage_server_presets);
   const compactUi = currentPreferences.compact_ui ?? true;
-  const itemDetailViewMode = parseItemDetailViewMode(currentPreferences.item_detail_view_mode);
+  const [itemDetailViewMode, setItemDetailViewMode] = useState<ItemDetailViewMode>(() =>
+    parseItemDetailViewMode(currentPreferences.item_detail_view_mode),
+  );
   const cacheTimeMs = 1000 * 60 * 60 * 12;
   const sessionCacheKey = [session?.user?.preferred_username ?? "anonymous", session?.server?.id ?? "no-server"];
   const layoutStoragePrefix = `twc-workbench-layout:${sessionCacheKey.join(":")}`;
@@ -1124,6 +1163,8 @@ export default function WorkspacePage() {
   const [agentSelectedModelName, setAgentSelectedModelName] = useState("");
   const [agentChatInput, setAgentChatInput] = useState("");
   const [agentMessages, setAgentMessages] = useState<WorkbenchAgentChatMessage[]>([]);
+  const treeContextKey = `${selectedProjectId || "no-project"}:${selectedBranchId || "no-branch"}`;
+  const treeContextRef = useRef<string>(treeContextKey);
   const [agentSyncKnowledgeBeforeChat, setAgentSyncKnowledgeBeforeChat] = useState(true);
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
   const projectContextActive = tab === "models" || tab === "details" || tab === "compare";
@@ -1376,9 +1417,28 @@ export default function WorkspacePage() {
   const baseTreeNodes = treeQuery.data ?? [];
 
   useEffect(() => {
-    setTreeNodes(baseTreeNodes);
-    setLoadingTreeNodeIds([]);
-  }, [baseTreeNodes]);
+    if (treeContextRef.current !== treeContextKey) {
+      treeContextRef.current = treeContextKey;
+      setTreeNodes(baseTreeNodes);
+      setLoadingTreeNodeIds([]);
+      return;
+    }
+    if (!baseTreeNodes.length) {
+      setTreeNodes([]);
+      setLoadingTreeNodeIds([]);
+      return;
+    }
+    setTreeNodes((current) => {
+      if (!current.length) {
+        return baseTreeNodes;
+      }
+      return mergeTreeNodesPreservingLoadedChildren(baseTreeNodes, current);
+    });
+  }, [baseTreeNodes, treeContextKey]);
+
+  useEffect(() => {
+    setItemDetailViewMode(parseItemDetailViewMode(currentPreferences.item_detail_view_mode));
+  }, [currentPreferences.item_detail_view_mode]);
 
   const baseFlatNodes = useMemo(() => flattenTree(baseTreeNodes), [baseTreeNodes]);
   const loadedFlatNodes = useMemo(() => flattenTree(treeNodes), [treeNodes]);
@@ -1731,8 +1791,13 @@ export default function WorkspacePage() {
 
   const settingsMutation = useMutation({
     mutationFn: (preferences: SessionPreferences) => api.updatePreferences(preferences, csrfToken),
-    onSuccess: async () => {
-      await refreshSession();
+    onSuccess: (preferences) => {
+      if (session) {
+        setSessionSnapshot({
+          ...session,
+          preferences,
+        });
+      }
       setNotice({ severity: "success", message: "Workspace settings saved." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
@@ -1745,11 +1810,28 @@ export default function WorkspacePage() {
     });
   };
 
+  const itemDetailViewModeMutation = useMutation({
+    mutationFn: (nextMode: ItemDetailViewMode) =>
+      api.updatePreferences(
+        {
+          ...currentPreferences,
+          item_detail_view_mode: nextMode,
+        },
+        csrfToken,
+      ),
+    onMutate: async (_nextMode) => ({ previousMode: itemDetailViewMode }),
+    onError: (caught, _nextMode, context) => {
+      setItemDetailViewMode(context?.previousMode ?? parseItemDetailViewMode(currentPreferences.item_detail_view_mode));
+      setNotice({ severity: "error", message: errorMessage(caught) });
+    },
+  });
+
   const handleItemDetailViewModeChange = (_event: ReactMouseEvent<HTMLElement> | SyntheticEvent, nextMode: ItemDetailViewMode | null) => {
     if (!nextMode || nextMode === itemDetailViewMode) {
       return;
     }
-    void updateSessionPreferences({ item_detail_view_mode: nextMode });
+    setItemDetailViewMode(nextMode);
+    itemDetailViewModeMutation.mutate(nextMode);
   };
 
   const refreshProjectsMutation = useMutation({
@@ -2306,6 +2388,15 @@ export default function WorkspacePage() {
       <Typography color="text.secondary">{emptyText}</Typography>
     );
 
+  const renderSpecificationPanel = (rows: InspectorRow[], emptyText: string) => (
+    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+      <Stack spacing={1}>
+        <Typography variant="subtitle2">Specifications</Typography>
+        {renderSpecificationTable(rows, emptyText)}
+      </Stack>
+    </Paper>
+  );
+
   const renderReferenceList = (
     references: ItemReference[],
     emptyText: string,
@@ -2684,18 +2775,13 @@ export default function WorkspacePage() {
                               ))}
                             </ToggleButtonGroup>
                           </Stack>
-                          <Grid container spacing={2}>
-                            <Grid item xs={12}>
-                              <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                                <Stack spacing={1}>
-                                  <Typography variant="subtitle2">Specifications</Typography>
-                                  {renderSpecificationTable(
-                                    quickSpecificationSheet,
-                                    "No specification fields were published for this item.",
-                                  )}
-                                </Stack>
-                              </Paper>
-                            </Grid>
+                            <Grid container spacing={2}>
+                              <Grid item xs={12}>
+                                {renderSpecificationPanel(
+                                  quickSpecificationSheet,
+                                  "No specification fields were published for this item.",
+                                )}
+                              </Grid>
                             {quickDiagramPreview ? (
                               <Grid item xs={12}>
                                 <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
@@ -2947,29 +3033,40 @@ export default function WorkspacePage() {
         >
           <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
             <Stack spacing={sectionSpacing}>
-              <TextField label="Path" value={friendlyPath(itemDraft.path, referenceNameById)} disabled fullWidth />
-              <TextField
-                label="Name"
-                value={itemDraft.name}
-                disabled={!editable}
-                onChange={(event) => setItemDraft((current) => (current ? { ...current, name: event.target.value } : current))}
-                fullWidth
-              />
-              <TextField
-                label="Description"
-                value={itemDraft.description}
-                disabled={!editable}
-                onChange={(event) => setItemDraft((current) => (current ? { ...current, description: event.target.value } : current))}
-                fullWidth
-                multiline
-                minRows={3}
-              />
+              {showExpertDetailSections ? (
+                <Accordion disableGutters>
+                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                    <Typography variant="subtitle2">Editable Fields</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    <Stack spacing={1.5}>
+                      <TextField label="Path" value={friendlyPath(itemDraft.path, referenceNameById)} disabled fullWidth />
+                      <TextField
+                        label="Name"
+                        value={itemDraft.name}
+                        disabled={!editable}
+                        onChange={(event) => setItemDraft((current) => (current ? { ...current, name: event.target.value } : current))}
+                        fullWidth
+                      />
+                      <TextField
+                        label="Description"
+                        value={itemDraft.description}
+                        disabled={!editable}
+                        onChange={(event) => setItemDraft((current) => (current ? { ...current, description: event.target.value } : current))}
+                        fullWidth
+                        multiline
+                        minRows={3}
+                      />
+                    </Stack>
+                  </AccordionDetails>
+                </Accordion>
+              ) : null}
               <Accordion defaultExpanded disableGutters>
                 <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                   <Typography variant="subtitle2">Specifications</Typography>
                 </AccordionSummary>
                 <AccordionDetails>
-                  {renderSpecificationTable(
+                  {renderSpecificationPanel(
                     specificationWindowSectionRows,
                     "No specification fields were published for this item.",
                   )}

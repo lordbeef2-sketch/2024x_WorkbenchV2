@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from contextlib import suppress
 from pathlib import Path
-from typing import Callable, Iterable, TypeVar
+from typing import Any, Callable, Iterable, TypeVar
 
 from app.models.domain import (
     BranchAccessRecord,
@@ -35,7 +36,22 @@ class SqliteRepository:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
+        self._apply_pragmas(connection)
         return connection
+
+    def _apply_pragmas(self, connection: sqlite3.Connection) -> None:
+        with suppress(sqlite3.DatabaseError):
+            connection.execute("PRAGMA journal_mode=WAL")
+        with suppress(sqlite3.DatabaseError):
+            connection.execute("PRAGMA synchronous=NORMAL")
+        with suppress(sqlite3.DatabaseError):
+            connection.execute("PRAGMA temp_store=MEMORY")
+        with suppress(sqlite3.DatabaseError):
+            connection.execute("PRAGMA foreign_keys=ON")
+        with suppress(sqlite3.DatabaseError):
+            connection.execute("PRAGMA cache_size=-20000")
+        with suppress(sqlite3.DatabaseError):
+            connection.execute("PRAGMA mmap_size=268435456")
 
     def run_in_transaction(self, callback: Callable[[sqlite3.Connection], TransactionResultT]) -> TransactionResultT:
         with self._lock, self._connect() as connection:
@@ -65,6 +81,38 @@ class SqliteRepository:
             item.synced_at.isoformat(),
             item.model_dump_json(),
         )
+
+    def _cached_element_tree_summary_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload_text = str(row["payload"] or "")
+        try:
+            payload = json.loads(payload_text) if payload_text else {}
+        except json.JSONDecodeError:
+            payload = {}
+        owned_element_ids = [str(value).strip() for value in payload.get("owned_element_ids") or [] if str(value).strip()]
+        applied_stereotype_ids = [str(value).strip() for value in payload.get("applied_stereotype_ids") or [] if str(value).strip()]
+        child_count_value = payload.get("child_count")
+        try:
+            child_count = int(child_count_value) if child_count_value is not None else len(owned_element_ids)
+        except (TypeError, ValueError):
+            child_count = len(owned_element_ids)
+        return {
+            "server_id": str(row["server_id"]),
+            "project_id": str(row["project_id"]),
+            "branch_id": str(row["branch_id"]),
+            "model_id": str(row["model_id"]),
+            "element_id": str(row["element_id"]),
+            "name": str(row["name"] or ""),
+            "item_type": str(row["item_type"] or "element"),
+            "path": str(row["path"] or ""),
+            "owner_id": str(row["owner_id"] or "").strip(),
+            "qualified_name": str(row["qualified_name"] or payload.get("qualified_name") or "").strip(),
+            "metaclass": str(row["metaclass"] or payload.get("metaclass") or row["item_type"] or "element").strip(),
+            "child_count": child_count,
+            "owned_element_ids": owned_element_ids,
+            "applied_stereotype_ids": applied_stereotype_ids,
+            "diagram_type": str(payload.get("diagram_type") or "").strip(),
+            "documentation": str(payload.get("documentation") or "").strip(),
+        }
 
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
@@ -1400,6 +1448,115 @@ class SqliteRepository:
                 branch_id,
                 model_id,
                 owner_id,
+                connection=managed_connection,
+            )
+
+    def list_cached_element_tree_summaries_by_ids(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        element_ids: Iterable[str],
+        *,
+        model_id: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        ids = [element_id for element_id in dict.fromkeys(element_ids) if element_id]
+        if not ids:
+            return []
+        placeholders = ", ".join("?" for _ in ids)
+        clauses = ["server_id = ?", "project_id = ?", "branch_id = ?", f"element_id IN ({placeholders})"]
+        params: list[object] = [server_id, project_id, branch_id, *ids]
+        if model_id:
+            clauses.append("model_id = ?")
+            params.append(model_id)
+        where = " AND ".join(clauses)
+        if connection is not None:
+            rows = connection.execute(
+                f"""
+                SELECT server_id, project_id, branch_id, model_id, element_id, name, item_type, path, owner_id, qualified_name, metaclass, payload
+                FROM twc_cached_elements
+                WHERE {where}
+                """,
+                tuple(params),
+            ).fetchall()
+            return [self._cached_element_tree_summary_from_row(row) for row in rows]
+        with self._lock, self._connect() as managed_connection:
+            return self.list_cached_element_tree_summaries_by_ids(
+                server_id,
+                project_id,
+                branch_id,
+                ids,
+                model_id=model_id,
+                connection=managed_connection,
+            )
+
+    def list_cached_element_tree_summaries_by_owner(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        owner_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        if connection is not None:
+            rows = connection.execute(
+                """
+                SELECT server_id, project_id, branch_id, model_id, element_id, name, item_type, path, owner_id, qualified_name, metaclass, payload
+                FROM twc_cached_elements
+                WHERE server_id = ? AND project_id = ? AND branch_id = ? AND model_id = ? AND owner_id = ?
+                ORDER BY LOWER(name), element_id
+                """,
+                (server_id, project_id, branch_id, model_id, owner_id),
+            ).fetchall()
+            return [self._cached_element_tree_summary_from_row(row) for row in rows]
+        with self._lock, self._connect() as managed_connection:
+            return self.list_cached_element_tree_summaries_by_owner(
+                server_id,
+                project_id,
+                branch_id,
+                model_id,
+                owner_id,
+                connection=managed_connection,
+            )
+
+    def get_cached_element_tree_summary(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        element_id: str,
+        *,
+        model_id: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        clauses = ["server_id = ?", "project_id = ?", "branch_id = ?", "element_id = ?"]
+        params: list[object] = [server_id, project_id, branch_id, element_id]
+        if model_id:
+            clauses.append("model_id = ?")
+            params.append(model_id)
+        where = " AND ".join(clauses)
+        if connection is not None:
+            row = connection.execute(
+                f"""
+                SELECT server_id, project_id, branch_id, model_id, element_id, name, item_type, path, owner_id, qualified_name, metaclass, payload
+                FROM twc_cached_elements
+                WHERE {where}
+                ORDER BY model_id
+                LIMIT 1
+                """,
+                tuple(params),
+            ).fetchone()
+            return self._cached_element_tree_summary_from_row(row) if row else None
+        with self._lock, self._connect() as managed_connection:
+            return self.get_cached_element_tree_summary(
+                server_id,
+                project_id,
+                branch_id,
+                element_id,
+                model_id=model_id,
                 connection=managed_connection,
             )
 
