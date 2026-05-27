@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Deque;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,29 +43,7 @@ public class SnapshotExportService {
     }
 
     public BranchSnapshotPayload capture(Project project, PluginConfig config, Consumer<String> progress) {
-        BranchSnapshotPayload payload = new BranchSnapshotPayload();
-        report(progress, "Resolving project and branch identity...");
-        String resourceId = resolveResourceId(project);
-
-        payload.exportedAt = OffsetDateTime.now().toString();
-        payload.projectName = project.getName();
-        payload.projectId = resolveProjectId(project, resourceId);
-        payload.sourceUser = resolveSourceUser(project);
-        payload.serverUrl = resolveServerUrl(project);
-        payload.serverId = config.serverIdOverride != null ? config.serverIdOverride : payload.serverUrl;
-        payload.resourceId = resourceId;
-        payload.workspaceId = resolveWorkspaceId(project);
-        payload.branchName = "trunk";
-        payload.branchId = "master";
-        payload.revisionId = resolveRevisionId(project);
-
-        if (project.isRemote()) {
-            EsiUtils.EsiBranchInfo branchInfo = EsiUtils.getCurrentBranch(project.getPrimaryProject());
-            if (branchInfo != null) {
-                payload.branchName = branchInfo.getName() == null ? "trunk" : branchInfo.getName();
-                payload.branchId = "trunk".equals(payload.branchName) ? "master" : String.valueOf(branchInfo.getID());
-            }
-        }
+        BranchSnapshotPayload payload = createPayloadMetadata(project, config, progress);
 
         Element primaryModel = project.getPrimaryModel();
         if (primaryModel != null) {
@@ -76,6 +55,49 @@ public class SnapshotExportService {
         payload.snapshotHash = snapshotHashService.ensureSnapshotHash(payload);
         report(progress, "Computed snapshot fingerprint " + payload.snapshotHash + ".");
         report(progress, "Snapshot capture complete.");
+        return payload;
+    }
+
+    public BranchSnapshotPayload captureScoped(
+            Project project,
+            PluginConfig config,
+            Collection<String> elementIds,
+            Consumer<String> progress
+    ) {
+        BranchSnapshotPayload payload = createPayloadMetadata(project, config, progress);
+        Element primaryModel = project.getPrimaryModel();
+        if (primaryModel == null) {
+            report(progress, "No primary model is available for scoped snapshot capture.");
+            return payload;
+        }
+
+        report(progress, "Preparing scoped model snapshot from tracked changes...");
+        ModelRecord modelRecord = mapModel(primaryModel);
+        payload.models.add(modelRecord);
+
+        LinkedHashSet<String> requestedIds = new LinkedHashSet<>();
+        if (elementIds != null) {
+            for (String elementId : elementIds) {
+                if (elementId != null && !elementId.isBlank()) {
+                    requestedIds.add(elementId);
+                }
+            }
+        }
+
+        int captured = 0;
+        for (String elementId : requestedIds) {
+            Object resolved = project.getElementByID(elementId);
+            if (!(resolved instanceof Element)) {
+                continue;
+            }
+            Element element = (Element) resolved;
+            payload.elements.add(mapElement(project, element, modelRecord.modelId));
+            captured += 1;
+            if (captured == 1 || captured % 250 == 0) {
+                report(progress, "Captured " + captured + " scoped element(s) so far...");
+            }
+        }
+        report(progress, "Scoped snapshot capture complete.");
         return payload;
     }
 
@@ -115,6 +137,33 @@ public class SnapshotExportService {
         if (progress != null) {
             progress.accept(message);
         }
+    }
+
+    private BranchSnapshotPayload createPayloadMetadata(Project project, PluginConfig config, Consumer<String> progress) {
+        BranchSnapshotPayload payload = new BranchSnapshotPayload();
+        report(progress, "Resolving project and branch identity...");
+        String resourceId = resolveResourceId(project);
+
+        payload.exportedAt = OffsetDateTime.now().toString();
+        payload.projectName = project.getName();
+        payload.projectId = resolveProjectId(project, resourceId);
+        payload.sourceUser = resolveSourceUser(project);
+        payload.serverUrl = resolveServerUrl(project);
+        payload.serverId = config.serverIdOverride != null ? config.serverIdOverride : payload.serverUrl;
+        payload.resourceId = resourceId;
+        payload.workspaceId = resolveWorkspaceId(project);
+        payload.branchName = "trunk";
+        payload.branchId = "master";
+        payload.revisionId = resolveRevisionId(project);
+
+        if (project.isRemote()) {
+            EsiUtils.EsiBranchInfo branchInfo = EsiUtils.getCurrentBranch(project.getPrimaryProject());
+            if (branchInfo != null) {
+                payload.branchName = branchInfo.getName() == null ? "trunk" : branchInfo.getName();
+                payload.branchId = "trunk".equals(payload.branchName) ? "master" : String.valueOf(branchInfo.getID());
+            }
+        }
+        return payload;
     }
 
     private ModelRecord mapModel(Element model) {

@@ -30,7 +30,7 @@ public class PluginConfig {
         this.deltaOnClose = Boolean.parseBoolean(properties.getProperty("capture.deltaOnClose", "true"));
         this.insecureTls = Boolean.parseBoolean(properties.getProperty("http.insecureTls", "false"));
         this.connectTimeoutSeconds = Integer.parseInt(properties.getProperty("http.connectTimeoutSeconds", "15"));
-        this.readTimeoutSeconds = Integer.parseInt(properties.getProperty("http.readTimeoutSeconds", "60"));
+        this.readTimeoutSeconds = Integer.parseInt(properties.getProperty("http.readTimeoutSeconds", "300"));
         this.serverIdOverride = trimToNull(properties.getProperty("metadata.serverId"));
     }
 

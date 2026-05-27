@@ -6,6 +6,7 @@ import com.nomagic.magicdraw.core.project.ProjectEventListenerAdapter;
 import com.twcworkbench.cameo.config.PluginConfig;
 import com.twcworkbench.cameo.model.BranchDeltaPayload;
 import com.twcworkbench.cameo.model.BranchSnapshotPayload;
+import com.twcworkbench.cameo.service.DirtyTrackingService;
 import com.twcworkbench.cameo.service.DeltaExportService;
 import com.twcworkbench.cameo.service.SnapshotExportService;
 import com.twcworkbench.cameo.service.WorkbenchIngestClient;
@@ -18,6 +19,7 @@ public class TWCWorkbenchProjectListener extends ProjectEventListenerAdapter {
     private final SnapshotExportService snapshotExportService;
     private final DeltaExportService deltaExportService;
     private final WorkbenchIngestClient ingestClient;
+    private final DirtyTrackingService dirtyTrackingService;
     private final Map<String, BranchSnapshotPayload> baselines = new ConcurrentHashMap<>();
 
     public TWCWorkbenchProjectListener(
@@ -30,16 +32,19 @@ public class TWCWorkbenchProjectListener extends ProjectEventListenerAdapter {
         this.snapshotExportService = snapshotExportService;
         this.deltaExportService = deltaExportService;
         this.ingestClient = ingestClient;
+        this.dirtyTrackingService = new DirtyTrackingService(snapshotExportService, deltaExportService);
     }
 
     @Override
     public void projectOpened(Project project) {
+        dirtyTrackingService.register(project);
         if (!config.snapshotOnOpen) {
             return;
         }
         try {
             BranchSnapshotPayload baseline = snapshotExportService.capture(project, config);
             baselines.put(projectKey(project), baseline);
+            dirtyTrackingService.clear(project);
             Application.getInstance().getGUILog().log("[INFO] Captured open baseline for " + baseline.projectName + " [" + baseline.branchName + "].");
         }
         catch (Exception exception) {
@@ -55,9 +60,25 @@ public class TWCWorkbenchProjectListener extends ProjectEventListenerAdapter {
         try {
             String key = projectKey(project);
             BranchSnapshotPayload previous = baselines.get(key);
-            BranchSnapshotPayload current = snapshotExportService.capture(project, config);
-            WorkbenchIngestClient.PublishResult result = ingestClient.publishWithPrecheck(current, previous, deltaExportService, "save", null);
+            DirtyTrackingService.DirtyPublishPlan plan = dirtyTrackingService.preparePublish(project, config, previous, null);
+            if ("no-changes".equals(plan.mode)) {
+                dirtyTrackingService.clear(project);
+                Application.getInstance().getGUILog().log("[INFO] " + plan.message);
+                return;
+            }
+
+            BranchSnapshotPayload current;
+            WorkbenchIngestClient.PublishResult result;
+            if ("scoped-delta".equals(plan.mode)) {
+                current = plan.currentSnapshot;
+                result = ingestClient.publishWithPrecheck(current, previous, plan.deltaPayload, "save", null);
+            }
+            else {
+                current = snapshotExportService.capture(project, config);
+                result = ingestClient.publishWithPrecheck(current, previous, deltaExportService, "save", null);
+            }
             baselines.put(key, current);
+            dirtyTrackingService.clear(project);
             Application.getInstance().getGUILog().log("[INFO] " + result.message + " " + current.projectName + " [" + current.branchName + "].");
         }
         catch (Exception exception) {
@@ -72,20 +93,41 @@ public class TWCWorkbenchProjectListener extends ProjectEventListenerAdapter {
             BranchSnapshotPayload previous = baselines.get(key);
             if (!config.deltaOnClose) {
                 baselines.remove(key);
+                dirtyTrackingService.unregister(project);
                 return;
             }
-            BranchSnapshotPayload current = snapshotExportService.capture(project, config);
-            WorkbenchIngestClient.PublishResult result = ingestClient.publishWithPrecheck(current, previous, deltaExportService, "close", null);
+
+            DirtyTrackingService.DirtyPublishPlan plan = dirtyTrackingService.preparePublish(project, config, previous, null);
+            if ("no-changes".equals(plan.mode)) {
+                baselines.remove(key);
+                dirtyTrackingService.unregister(project);
+                Application.getInstance().getGUILog().log("[INFO] " + plan.message);
+                return;
+            }
+
+            BranchSnapshotPayload current;
+            WorkbenchIngestClient.PublishResult result;
+            if ("scoped-delta".equals(plan.mode)) {
+                current = plan.currentSnapshot;
+                result = ingestClient.publishWithPrecheck(current, previous, plan.deltaPayload, "close", null);
+            }
+            else {
+                current = snapshotExportService.capture(project, config);
+                result = ingestClient.publishWithPrecheck(current, previous, deltaExportService, "close", null);
+            }
             baselines.remove(key);
+            dirtyTrackingService.unregister(project);
             Application.getInstance().getGUILog().log("[INFO] " + result.message + " " + current.projectName + " [" + current.branchName + "].");
         }
         catch (Exception exception) {
+            dirtyTrackingService.unregister(project);
             Application.getInstance().getGUILog().log("[WARNING] Failed to publish project-close delta: " + exception.getMessage());
         }
     }
 
     public void rememberBaseline(Project project, BranchSnapshotPayload payload) {
         baselines.put(projectKey(project), payload);
+        dirtyTrackingService.clear(project);
     }
 
     private String projectKey(Project project) {

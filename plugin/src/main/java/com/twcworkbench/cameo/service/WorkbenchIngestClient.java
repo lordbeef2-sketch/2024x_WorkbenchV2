@@ -14,6 +14,7 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.security.GeneralSecurityException;
@@ -27,6 +28,10 @@ import java.security.cert.X509Certificate;
 import java.util.function.Consumer;
 
 public class WorkbenchIngestClient {
+    private static final int MIN_LONG_RUNNING_POST_TIMEOUT_SECONDS = 300;
+    private static final int POST_COMPLETION_CONFIRMATION_SECONDS = 180;
+    private static final int POST_COMPLETION_POLL_SECONDS = 10;
+
     private final PluginConfig config;
     private final ObjectMapper objectMapper;
 
@@ -39,6 +44,27 @@ public class WorkbenchIngestClient {
     public PublishResult publishWithPrecheck(
             BranchSnapshotPayload current,
             BranchSnapshotPayload previous,
+            DeltaExportService deltaExportService,
+            String reason,
+            Consumer<String> progress
+    ) throws IOException, InterruptedException {
+        return publishWithPrecheckInternal(current, previous, null, deltaExportService, reason, progress);
+    }
+
+    public PublishResult publishWithPrecheck(
+            BranchSnapshotPayload current,
+            BranchSnapshotPayload previous,
+            BranchDeltaPayload preparedDelta,
+            String reason,
+            Consumer<String> progress
+    ) throws IOException, InterruptedException {
+        return publishWithPrecheckInternal(current, previous, preparedDelta, null, reason, progress);
+    }
+
+    private PublishResult publishWithPrecheckInternal(
+            BranchSnapshotPayload current,
+            BranchSnapshotPayload previous,
+            BranchDeltaPayload preparedDelta,
             DeltaExportService deltaExportService,
             String reason,
             Consumer<String> progress
@@ -57,7 +83,9 @@ public class WorkbenchIngestClient {
         }
 
         if (previous != null && previousHash != null && serverHash != null && previousHash.equals(serverHash)) {
-            BranchDeltaPayload delta = deltaExportService.createDelta(previous, current);
+            BranchDeltaPayload delta = preparedDelta != null
+                    ? preparedDelta
+                    : deltaExportService.createDelta(previous, current);
             if (!delta.hasChanges()) {
                 report(progress, "Local baseline and current model match. No delta publish needed.");
                 return PublishResult.skipped("No model changes were detected against the stored Workbench branch baseline.");
@@ -93,7 +121,7 @@ public class WorkbenchIngestClient {
         payload.exportReason = reason;
         requireWorkbenchIngestTarget();
         validateSnapshotForWorkbench(payload);
-        postJson("/api/cache-ingest/branch-snapshots", payload, progress);
+        postJson("/api/cache-ingest/branch-snapshots", payload, progress, payload, normalizeHash(payload.snapshotHash), true);
     }
 
     public void publishDelta(BranchDeltaPayload payload, String reason) throws IOException, InterruptedException {
@@ -104,7 +132,14 @@ public class WorkbenchIngestClient {
         payload.exportReason = reason;
         requireWorkbenchIngestTarget();
         validateDeltaForWorkbench(payload);
-        postJson("/api/cache-ingest/branch-deltas", payload, progress);
+        postJson(
+                "/api/cache-ingest/branch-deltas",
+                payload,
+                progress,
+                branchContext(payload),
+                normalizeHash(payload.targetSnapshotHash),
+                true
+        );
     }
 
     public BranchIngestState fetchBranchState(BranchSnapshotPayload payload, Consumer<String> progress) throws IOException, InterruptedException {
@@ -141,12 +176,22 @@ public class WorkbenchIngestClient {
         return state;
     }
 
-    private void postJson(String path, Object payload, Consumer<String> progress) throws IOException, InterruptedException {
+    private void postJson(
+            String path,
+            Object payload,
+            Consumer<String> progress,
+            BranchSnapshotPayload branchContext,
+            String expectedSnapshotHash,
+            boolean longRunning
+    ) throws IOException, InterruptedException {
         report(progress, "Serializing snapshot payload for Workbench...");
         byte[] body = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(payload);
+        int requestTimeoutSeconds = longRunning
+                ? Math.max(config.readTimeoutSeconds, MIN_LONG_RUNNING_POST_TIMEOUT_SECONDS)
+                : config.readTimeoutSeconds;
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(trimTrailingSlash(config.workbenchBaseUrl) + path))
-                .timeout(Duration.ofSeconds(config.readTimeoutSeconds))
+                .timeout(Duration.ofSeconds(requestTimeoutSeconds))
                 .header("Authorization", "Bearer " + config.workbenchIngestToken)
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "twc-workbench-cameo-plugin/0.1.0")
@@ -155,13 +200,75 @@ public class WorkbenchIngestClient {
 
         HttpClient httpClient = createHttpClient();
         report(progress, "Posting payload to Workbench: " + path);
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        HttpResponse<String> response;
+        try {
+            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        }
+        catch (HttpTimeoutException exception) {
+            if (branchContext != null && expectedSnapshotHash != null) {
+                report(progress, "Workbench publish timed out while waiting for a response. Checking whether the stored branch finished processing...");
+                if (waitForSnapshotHash(branchContext, expectedSnapshotHash, progress)) {
+                    report(progress, "Workbench finished processing the publish after the client timeout. Treating the publish as successful.");
+                    return;
+                }
+            }
+            throw new IOException(
+                    "Workbench ingest timed out before returning a response. Increase the plugin read timeout or retry after Workbench finishes processing the branch snapshot.",
+                    exception
+            );
+        }
         int statusCode = response.statusCode();
         if (statusCode < 200 || statusCode >= 300) {
             throw new IOException("Workbench ingest failed with status " + statusCode + ": " + response.body());
         }
         report(progress, "Workbench ingest accepted the payload.");
         Application.getInstance().getGUILog().log("[INFO] Posted payload to Workbench ingest endpoint: " + path);
+    }
+
+    private BranchSnapshotPayload branchContext(BranchDeltaPayload payload) {
+        BranchSnapshotPayload branchContext = new BranchSnapshotPayload();
+        branchContext.serverId = payload.serverId;
+        branchContext.serverUrl = payload.serverUrl;
+        branchContext.workspaceId = payload.workspaceId;
+        branchContext.resourceId = payload.resourceId;
+        branchContext.projectId = payload.projectId;
+        branchContext.projectName = payload.projectName;
+        branchContext.branchId = payload.branchId;
+        branchContext.branchName = payload.branchName;
+        branchContext.revisionId = payload.toRevisionId;
+        branchContext.snapshotHash = payload.targetSnapshotHash;
+        branchContext.sourceUser = payload.sourceUser;
+        return branchContext;
+    }
+
+    private boolean waitForSnapshotHash(
+            BranchSnapshotPayload branchContext,
+            String expectedSnapshotHash,
+            Consumer<String> progress
+    ) throws InterruptedException {
+        if (branchContext == null || expectedSnapshotHash == null || expectedSnapshotHash.isBlank()) {
+            return false;
+        }
+        long deadline = System.currentTimeMillis() + (POST_COMPLETION_CONFIRMATION_SECONDS * 1000L);
+        boolean announcedWait = false;
+        while (System.currentTimeMillis() < deadline) {
+            if (!announcedWait) {
+                report(progress, "Polling Workbench branch state for up to " + POST_COMPLETION_CONFIRMATION_SECONDS + " seconds...");
+                announcedWait = true;
+            }
+            try {
+                BranchIngestState state = fetchBranchState(branchContext, null);
+                String storedHash = normalizeHash(state != null ? state.snapshotHash : null);
+                if (expectedSnapshotHash.equals(storedHash)) {
+                    return true;
+                }
+            }
+            catch (IOException ignored) {
+                // Keep polling. A transient lookup miss right after a timeout is expected while Workbench finishes processing.
+            }
+            Thread.sleep(POST_COMPLETION_POLL_SECONDS * 1000L);
+        }
+        return false;
     }
 
     private String encodeQueryValue(String value) {
