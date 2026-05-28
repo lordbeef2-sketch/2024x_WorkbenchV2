@@ -13,4 +13,5 @@ __pycache__/
 backend/.env
 frontend/.env
 Knowlege/
+plugin/bin/
 

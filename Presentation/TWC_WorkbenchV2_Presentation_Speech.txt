@@ -1,0 +1,40 @@
+TWC Workbench V2 — By Raymond Reeves
+
+Slide 1 — Title
+This presentation explains TWC Workbench V2 at a practical architecture level. The main point is that this is not just a frontend. It is a server-backed enterprise workbench that keeps Teamwork Cloud access, authentication, tokens, capability discovery, cache materialization, and plugin ingestion behind a controlled FastAPI backend while the React interface gives users a clean workspace experience.
+
+Slide 2 — What the app is built to solve
+The problem this app solves is controlled access to Teamwork Cloud data through a web interface. The frontend gives the user the experience: dashboards, project browsing, model browsing, details, compare, developer API, and admin tools. The backend keeps the sensitive parts server-side: authentication, sessions, tokens, capability checks, and direct Teamwork Cloud calls. The third major purpose is speed and automation: Workbench can use cache-backed data and ingest snapshots or deltas from the Cameo plugin.
+
+Slide 3 — High-level architecture
+At a high level, the browser only talks to the Workbench backend. The backend is the control point. It serves the frontend, manages CORS and secure sessions, routes requests through auth, server, workspace, and cache APIs, then talks outward to Teamwork Cloud and the Authentication Server. Data that needs to persist, such as server profiles, user state, and cache information, lives in SQLite by default, with Redis available for sessions. A second integration path comes from the Cameo plugin, which posts snapshots and deltas into the cache ingest API.
+
+Slide 4 — User sign-in and server selection flow
+The normal sign-in flow starts on the landing page with preset server selection. When the user clicks Sign In via TWC, the backend builds a server-specific authorization URL and redirects the browser to the TWC Authentication Server. After login, the browser returns to the Workbench callback. The backend exchanges the code for tokens and validates the user against Teamwork Cloud. The result is a secure Workbench session. There is also an explicit token fallback for environments where direct AuthServer flow needs troubleshooting.
+
+Slide 5 — Frontend experience: workspace tabs
+The frontend is a React and TypeScript application using Material UI and TanStack Query. The workspace is organized as tabs. Dashboard gives context. Project Browser and Model Browser handle navigation. Item Details shows the selected element or model item. Compare gives revision-oriented workflows. Developer API lets users create scoped API keys and copy runnable examples. API Explorer is admin-only and is tied to the bundled contract. The Workbench Agent tab is present for AI-style model interaction and knowledge synchronization.
+
+Slide 6 — Backend responsibilities
+The backend is where the application actually becomes enterprise-safe. The route groups expose clean areas of functionality: authentication, server management, workspace operations, and cache operations. Behind the routes, PlatformService is the orchestration layer. It decides how to use sessions, server profiles, adapters, cache, jobs, API keys, and agent settings. The Teamwork adapters isolate TWC version differences. Storage is handled through a SQLite repository by default, which keeps deployment simple but still gives the app durable state.
+
+Slide 7 — Verified Teamwork Cloud contract boundary
+A major design choice is that the app is contract-bound. It uses the verified Swagger file instead of inventing endpoints. That matters because Teamwork Cloud surfaces can vary by version and deployment. The app uses the verified parts: workspaces, resources, branches, models, elements, revision diff, and current-user validation. If an area is not defined in the Swagger contract, the app does not pretend it is safely supported. Version-specific behavior is handled behind adapter and capability layers.
+
+Slide 8 — Cache-first model access and Developer API
+The cache design is meant to make the app faster and easier to automate without turning the cache into an unrestricted server-wide data dump. The shared branch payload is stored once, while user permission overlays stay separate. That gives efficiency while preserving user-scoped visibility. The Developer API exposes cache-first access for scripts or external tools through scoped API keys. Read, write, and edit scopes control what each key can do.
+
+Slide 9 — Cameo plugin ingestion path
+The Cameo plugin is the desktop-to-web bridge. It loads inside Cameo or MagicDraw, adds a TWC Workbench menu, and lets the user configure the Workbench connection. When a project opens, it can capture a baseline snapshot. On save or close, it publishes a delta when a baseline exists, or a full snapshot when needed. Those snapshots and deltas go into Workbench through bearer-token-protected ingest endpoints. This is important because it lets Workbench serve rich model data without forcing the browser to crawl the entire live TWC model every time.
+
+Slide 10 — Security and deployment model
+Security is mostly about where control lives. Workbench keeps tokens on the backend, not in browser local storage. It uses server-side session management and secure HTTP-only cookies. Server profiles are centrally configured, so users pick from approved Teamwork Cloud targets instead of manually entering random servers. The launcher can run it as a single-origin application where FastAPI serves both the API and the built React frontend, which helps avoid cross-origin deployment problems.
+
+Slide 11 — End-to-end data flow
+The normal request flow is straightforward. A user does something in the React workspace. The frontend API service sends a request to FastAPI. The route validates the session and delegates to PlatformService. PlatformService then decides whether the request should go live to Teamwork Cloud through an adapter, use the Workbench cache, run a job, modify storage, or return configuration state. The response is normalized and returned to React Query, which updates the visible workspace.
+
+Slide 12 — Current boundaries and validation needs
+The important reality check is that this application is engineered around real components, but the final proof comes from the target environment. Authentication, TLS, redirects, TWC version behavior, and Cameo runtime details all need live validation. The plugin has a real scaffold and packaged outputs, but it should be tested inside the actual Cameo installation. The app also intentionally stays within the verified contract. If new TWC features are needed, they should be added only after the contract or live capture proves the API surface.
+
+Slide 13 — Bottom line
+The bottom line is that TWC Workbench V2 is a controlled bridge. For users, it is a clean web workspace. For admins, it centralizes server presets, authentication behavior, secure sessions, and verified API boundaries. For automation, it exposes a scoped Developer API and receives rich data from the Cameo plugin. That combination gives the project a practical enterprise path: secure frontend, server-controlled TWC access, cache-first model workflows, and plugin-powered ingestion.
