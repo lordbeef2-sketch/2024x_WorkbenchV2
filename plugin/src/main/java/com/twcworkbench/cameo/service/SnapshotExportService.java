@@ -36,6 +36,27 @@ import java.util.function.Consumer;
 
 public class SnapshotExportService {
     private static final Pattern WORKSPACE_RESOURCE_PATTERN = Pattern.compile("/workspaces/([^/]+)/resources/([^/]+)");
+    private static final List<String> NAVIGATION_HINTS = List.of("navigation", "hyperlink", "link", "url", "uri", "target");
+    private static final List<String> TAG_HINTS = List.of("tag", "tagged", "stereotype", "profile", "author", "created", "creation", "modified", "diagraminfo");
+    private static final List<String> CONSTRAINT_HINTS = List.of("constraint", "constrained", "guard", "condition", "rule", "expression");
+    private static final List<String> TRACEABILITY_HINTS = List.of("trace", "traced", "traceability", "satisf", "verify", "refine", "realiz", "specif");
+    private static final List<String> ALLOCATION_HINTS = List.of("allocat");
+    private static final List<String> PROPERTY_HINTS = List.of(
+            "representation",
+            "visibility",
+            "namespace",
+            "context",
+            "diagramtype",
+            "ownerofdiagram",
+            "activehyperlink",
+            "elementid",
+            "elementserverid",
+            "nameexpression",
+            "clientdependency",
+            "supplierdependency",
+            "image",
+            "todo"
+    );
     private final SnapshotHashService snapshotHashService = new SnapshotHashService();
 
     public BranchSnapshotPayload capture(Project project, PluginConfig config) {
@@ -221,6 +242,7 @@ public class SnapshotExportService {
         if (element instanceof Diagram) {
             populateDiagramPreview(project, (Diagram) element, record);
         }
+        record.specSections = buildSpecSections(record);
         return record;
     }
 
@@ -327,6 +349,269 @@ public class SnapshotExportService {
             return ((Enum<?>) value).name();
         }
         return String.valueOf(value);
+    }
+
+    private Map<String, Object> buildSpecSections(ElementRecord record) {
+        Map<String, Object> sections = new LinkedHashMap<>();
+        sections.put("properties", buildPropertiesSection(record));
+        sections.put("documentation", buildDocumentationSection(record));
+        sections.put("navigation", buildHintSection(record, NAVIGATION_HINTS));
+        sections.put("usageDiagrams", buildUsageDiagramsSection(record));
+        sections.put("innerElements", buildInnerElementsSection(record));
+        sections.put("relations", buildRelationsSection(record));
+        sections.put("tags", buildTagsSection(record));
+        sections.put("constraints", buildConstraintsSection(record));
+        sections.put("traceability", buildTraceabilitySection(record));
+        sections.put("allocations", buildAllocationsSection(record));
+        return sections;
+    }
+
+    private Map<String, Object> buildPropertiesSection(ElementRecord record) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        addEntry(entries, "Documentation", record.documentation);
+        addEntry(entries, "Human Name", record.humanName);
+        addEntry(entries, "Human Type", record.humanType);
+        addEntry(entries, "ID", record.elementId);
+        addEntry(entries, "Local ID", record.localId);
+        addEntry(entries, "Metaclass", record.metaclass);
+        addEntry(entries, "Name", record.name);
+        addEntry(entries, "Qualified Name", record.qualifiedName);
+        addEntry(entries, "Type", record.humanType);
+        addEntry(entries, "Representation", attributeValue(record.attributes.get("representation")));
+        addEntry(entries, "Visibility", attributeValue(record.attributes.get("visibility")));
+        addEntry(entries, "Model ID", record.modelId);
+        addEntry(entries, "Owner ID", record.ownerId);
+        addEntry(entries, "Diagram Type", record.diagramType);
+
+        for (Map.Entry<String, Object> entry : record.attributes.entrySet()) {
+            if (matchesHints(entry.getKey(), PROPERTY_HINTS) || matchesHints(entry.getKey(), CONSTRAINT_HINTS)) {
+                addEntry(entries, humanizeFeatureName(entry.getKey()), entry.getValue());
+            }
+        }
+        for (Map.Entry<String, List<String>> entry : record.references.entrySet()) {
+            if (matchesHints(entry.getKey(), PROPERTY_HINTS) || matchesHints(entry.getKey(), CONSTRAINT_HINTS)) {
+                addEntry(entries, humanizeFeatureName(entry.getKey()), entry.getValue());
+            }
+        }
+        return sectionWithEntries(entries);
+    }
+
+    private Map<String, Object> buildDocumentationSection(ElementRecord record) {
+        Map<String, Object> section = new LinkedHashMap<>();
+        List<String> documentation = new ArrayList<>();
+        if (!safeString(record.documentation).isBlank()) {
+            documentation.add(record.documentation);
+        }
+        List<String> comments = new ArrayList<>();
+        collectTextValues(record.attributes.get("comment"), comments);
+        collectTextValues(record.attributes.get("comments"), comments);
+        collectTextValues(record.attributes.get("ownedComment"), comments);
+        collectTextValues(record.attributes.get("ownedComments"), comments);
+        section.put("documentation", documentation);
+        section.put("comments", uniqueStrings(comments));
+        return section;
+    }
+
+    private Map<String, Object> buildUsageDiagramsSection(ElementRecord record) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (String diagramElementId : record.diagramElementIds) {
+            entries.add(referenceEntry("Diagram Symbol", "Diagram Element", diagramElementId));
+        }
+        appendReferenceHintEntries(entries, record.references, List.of("diagram", "symbol", "usage"), "Usage");
+        return sectionWithEntries(entries);
+    }
+
+    private Map<String, Object> buildInnerElementsSection(ElementRecord record) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (String ownedElementId : record.ownedElementIds) {
+            entries.add(referenceEntry("Owned Element", "Owned Element", ownedElementId));
+        }
+        if (!record.diagramElementIds.isEmpty()) {
+            for (String diagramElementId : record.diagramElementIds) {
+                entries.add(referenceEntry("Diagram Element", "Diagram Element", diagramElementId));
+            }
+        }
+        return sectionWithEntries(entries);
+    }
+
+    private Map<String, Object> buildRelationsSection(ElementRecord record) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        if (record.ownerId != null && !record.ownerId.isBlank()) {
+            entries.add(relationshipEntry("Owner", record.elementId, "Parent", record.ownerId));
+        }
+        for (String ownedElementId : record.ownedElementIds) {
+            entries.add(relationshipEntry("Owned Element", record.elementId, "Contains", ownedElementId));
+        }
+        for (Map.Entry<String, List<String>> entry : record.references.entrySet()) {
+            for (String referenceId : entry.getValue()) {
+                entries.add(relationshipEntry(humanizeFeatureName(entry.getKey()), record.elementId, "Related", referenceId));
+            }
+        }
+        return sectionWithEntries(entries);
+    }
+
+    private Map<String, Object> buildTagsSection(ElementRecord record) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (String stereotypeId : record.appliedStereotypeIds) {
+            entries.add(valueEntry("Applied Stereotype", stereotypeId));
+        }
+        appendAttributeHintEntries(entries, record.attributes, TAG_HINTS);
+        appendReferenceHintEntries(entries, record.references, TAG_HINTS, "Reference");
+        return sectionWithEntries(entries);
+    }
+
+    private Map<String, Object> buildConstraintsSection(ElementRecord record) {
+        return buildHintSection(record, CONSTRAINT_HINTS);
+    }
+
+    private Map<String, Object> buildTraceabilitySection(ElementRecord record) {
+        return buildHintSection(record, TRACEABILITY_HINTS);
+    }
+
+    private Map<String, Object> buildAllocationsSection(ElementRecord record) {
+        return buildHintSection(record, ALLOCATION_HINTS);
+    }
+
+    private Map<String, Object> buildHintSection(ElementRecord record, List<String> hints) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        appendAttributeHintEntries(entries, record.attributes, hints);
+        appendReferenceHintEntries(entries, record.references, hints, "Reference");
+        return sectionWithEntries(entries);
+    }
+
+    private void appendAttributeHintEntries(List<Map<String, Object>> entries, Map<String, Object> attributes, List<String> hints) {
+        for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+            if (!matchesHints(entry.getKey(), hints)) {
+                continue;
+            }
+            entries.add(valueEntry(humanizeFeatureName(entry.getKey()), entry.getValue()));
+        }
+    }
+
+    private void appendReferenceHintEntries(List<Map<String, Object>> entries, Map<String, List<String>> references, List<String> hints, String defaultType) {
+        for (Map.Entry<String, List<String>> entry : references.entrySet()) {
+            if (!matchesHints(entry.getKey(), hints)) {
+                continue;
+            }
+            String label = humanizeFeatureName(entry.getKey());
+            for (String referenceId : entry.getValue()) {
+                entries.add(referenceEntry(label, defaultType, referenceId));
+            }
+        }
+    }
+
+    private Map<String, Object> sectionWithEntries(List<Map<String, Object>> entries) {
+        Map<String, Object> section = new LinkedHashMap<>();
+        section.put("entries", entries);
+        return section;
+    }
+
+    private void addEntry(List<Map<String, Object>> entries, String name, Object value) {
+        if (value == null) {
+            return;
+        }
+        if (value instanceof String && ((String) value).isBlank()) {
+            return;
+        }
+        if (value instanceof Collection<?> && ((Collection<?>) value).isEmpty()) {
+            return;
+        }
+        entries.add(valueEntry(name, value));
+    }
+
+    private Map<String, Object> valueEntry(String name, Object value) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("name", name);
+        entry.put("value", value);
+        return entry;
+    }
+
+    private Map<String, Object> referenceEntry(String name, String type, String value) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("name", name);
+        entry.put("type", type);
+        entry.put("value", value);
+        return entry;
+    }
+
+    private Map<String, Object> relationshipEntry(String name, String elementId, String direction, String relatedElementId) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("name", name);
+        entry.put("element", elementId);
+        entry.put("direction", direction);
+        entry.put("relatedElement", relatedElementId);
+        return entry;
+    }
+
+    private boolean matchesHints(String key, List<String> hints) {
+        String normalizedKey = normalizeFeatureKey(key);
+        for (String hint : hints) {
+            if (normalizedKey.contains(normalizeFeatureKey(hint))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String normalizeFeatureKey(String value) {
+        return value == null ? "" : value.replaceAll("[^A-Za-z0-9]", "").toLowerCase();
+    }
+
+    private String humanizeFeatureName(String featureName) {
+        if (featureName == null || featureName.isBlank()) {
+            return "";
+        }
+        String spaced = featureName
+                .replaceAll("([a-z0-9])([A-Z])", "$1 $2")
+                .replaceAll("[_:.\\-]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        StringBuilder humanized = new StringBuilder();
+        for (String part : spaced.split(" ")) {
+            if (part.isBlank()) {
+                continue;
+            }
+            if (humanized.length() > 0) {
+                humanized.append(' ');
+            }
+            humanized.append(Character.toUpperCase(part.charAt(0)));
+            if (part.length() > 1) {
+                humanized.append(part.substring(1));
+            }
+        }
+        return humanized.toString();
+    }
+
+    private Object attributeValue(Object value) {
+        if (value instanceof Collection<?>) {
+            List<Object> collected = new ArrayList<>();
+            for (Object item : (Collection<?>) value) {
+                if (item != null) {
+                    collected.add(item);
+                }
+            }
+            return collected.isEmpty() ? null : collected;
+        }
+        return value;
+    }
+
+    private void collectTextValues(Object value, List<String> target) {
+        if (value instanceof String) {
+            String cleaned = ((String) value).trim();
+            if (!cleaned.isBlank()) {
+                target.add(cleaned);
+            }
+            return;
+        }
+        if (value instanceof Collection<?>) {
+            for (Object item : (Collection<?>) value) {
+                collectTextValues(item, target);
+            }
+        }
+    }
+
+    private List<String> uniqueStrings(List<String> values) {
+        return new ArrayList<>(new LinkedHashSet<>(values));
     }
 
     private String resolveServerUrl(Project project) {

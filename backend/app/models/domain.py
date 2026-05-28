@@ -761,6 +761,7 @@ class IngestElementRecord(BaseModel):
     diagram_element_ids: list[str] = Field(default_factory=list, alias="diagramElementIds")
     attributes: dict[str, Any] = Field(default_factory=dict)
     references: dict[str, list[str]] = Field(default_factory=dict)
+    spec_sections: dict[str, Any] = Field(default_factory=dict, alias="specSections")
 
     @field_validator(
         "name",

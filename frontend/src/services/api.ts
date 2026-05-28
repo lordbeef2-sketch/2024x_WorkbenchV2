@@ -58,28 +58,39 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...options,
   });
 
-  if (!response.ok) {
-    let message = response.statusText;
-    try {
-      const payload = (await response.json()) as { detail?: string };
-      message = payload.detail ?? message;
-    } catch {
-      const text = await response.text();
-      message = text || message;
-    }
-    throw new ApiError(message, response.status);
-  }
-
   if (response.status === 204) {
     return undefined as T;
   }
 
   const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("application/json")) {
-    return (await response.json()) as T;
+  const bodyText = await response.text();
+
+  if (!response.ok) {
+    let message = response.statusText;
+    if (bodyText) {
+      if (contentType.includes("application/json")) {
+        try {
+          const payload = JSON.parse(bodyText) as { detail?: string };
+          message = payload.detail ?? bodyText;
+        } catch {
+          message = bodyText;
+        }
+      } else {
+        message = bodyText;
+      }
+    }
+    throw new ApiError(message, response.status);
   }
 
-  return (await response.text()) as T;
+  if (!bodyText) {
+    return undefined as T;
+  }
+
+  if (contentType.includes("application/json")) {
+    return JSON.parse(bodyText) as T;
+  }
+
+  return bodyText as T;
 }
 
 function jsonHeaders(csrfToken?: string) {

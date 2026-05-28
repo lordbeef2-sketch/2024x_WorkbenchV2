@@ -24,6 +24,7 @@ public class ElementRecord {
     public List<String> diagramElementIds = new ArrayList<>();
     public Map<String, Object> attributes = new LinkedHashMap<>();
     public Map<String, List<String>> references = new LinkedHashMap<>();
+    public Map<String, Object> specSections = new LinkedHashMap<>();
 
     public String comparisonKey() {
         return String.join("|",
@@ -44,7 +45,8 @@ public class ElementRecord {
                 appliedStereotypeIds.toString(),
                 diagramElementIds.toString(),
                 attributes.toString(),
-                references.toString());
+                references.toString(),
+                specSections.toString());
     }
 
     private static String safe(String value) {

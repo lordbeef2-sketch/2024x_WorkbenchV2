@@ -406,6 +406,7 @@ public class DirtyTrackingService {
         copy.diagramElementIds = new ArrayList<>(element.diagramElementIds);
         copy.attributes = copyObjectMap(element.attributes);
         copy.references = copyReferenceMap(element.references);
+        copy.specSections = copyObjectMap(element.specSections);
         return copy;
     }
 

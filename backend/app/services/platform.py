@@ -697,14 +697,20 @@ class PlatformService:
     ) -> list[TreeNode]:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
-            await self._ensure_plugin_branch_permissions(
+            if refresh or not self._plugin_branch_permissions_known_for_user(
                 session,
                 project_id,
                 branch_id,
-                workspace_id=workspace_id,
                 summary=summary,
-                force=refresh,
-            )
+            ):
+                await self._ensure_plugin_branch_permissions(
+                    session,
+                    project_id,
+                    branch_id,
+                    workspace_id=workspace_id,
+                    summary=summary,
+                    force=refresh,
+                )
             response = self.get_cached_branch_children_for_user(
                 session.server.id,
                 session.user.preferred_username,
@@ -729,14 +735,20 @@ class PlatformService:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         resolved_workspace_id = workspace_id or (summary.workspace_id if summary is not None else None)
         if self._is_plugin_managed_summary(summary):
-            await self._ensure_plugin_branch_permissions(
+            if refresh or not self._plugin_branch_permissions_known_for_user(
                 session,
                 project_id,
                 branch_id,
-                workspace_id=resolved_workspace_id,
                 summary=summary,
-                force=refresh,
-            )
+            ):
+                await self._ensure_plugin_branch_permissions(
+                    session,
+                    project_id,
+                    branch_id,
+                    workspace_id=resolved_workspace_id,
+                    summary=summary,
+                    force=refresh,
+                )
             materialized = self._materialized_element_discovery(session, project_id, branch_id, summary)
             if materialized is not None:
                 self.repo.upsert_user_cache(
@@ -1096,6 +1108,7 @@ class PlatformService:
                 "diagram_element_ids": list(element.diagram_element_ids),
                 "attributes": element.attributes,
                 "references": element.references,
+                "spec_sections": element.spec_sections,
             }
             for element in payload.elements
         ]
@@ -3805,14 +3818,20 @@ class PlatformService:
         if project_id and branch_id:
             summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
             if self._is_plugin_managed_summary(summary):
-                await self._ensure_plugin_branch_permissions(
+                if refresh or not self._plugin_branch_permissions_known_for_user(
                     session,
                     project_id,
                     branch_id,
-                    workspace_id=workspace_id,
                     summary=summary,
-                    force=refresh,
-                )
+                ):
+                    await self._ensure_plugin_branch_permissions(
+                        session,
+                        project_id,
+                        branch_id,
+                        workspace_id=workspace_id,
+                        summary=summary,
+                        force=refresh,
+                    )
                 materialized_item = await self._materialized_item_details(session, item_id, project_id, branch_id)
                 if materialized_item is None:
                     raise KeyError(item_id)
@@ -4879,6 +4898,27 @@ class PlatformService:
             self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id),
         )
 
+    def _plugin_branch_permissions_known_for_user(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        *,
+        summary: BranchCacheSummary | None = None,
+    ) -> bool:
+        # Branch/model load is where we refresh live permissions. Browsing paths
+        # should trust the stored branch access we already established there.
+        return (
+            self._plugin_branch_access_or_source_fallback(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                project_id,
+                branch_id,
+                summary,
+            )
+            is not None
+        )
+
     def _plugin_permission_snapshot_from_branch_access(
         self,
         branch_access: BranchAccessRecord,
@@ -5145,6 +5185,7 @@ class PlatformService:
                 "diagram_element_ids": element.diagram_element_ids,
                 "attributes": element.attributes,
                 "references": element.references,
+                "spec_sections": element.spec_sections,
             },
             source_user=source_user,
             synced_at=ingested_at,

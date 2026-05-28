@@ -1,4 +1,4 @@
-import { type MouseEvent as ReactMouseEvent, type SyntheticEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -73,6 +73,42 @@ const ITEM_DETAIL_VIEW_LABELS: Record<ItemDetailViewMode, string> = {
   expert: "Expert",
   all: "All",
 };
+type SpecificationSectionId =
+  | "properties"
+  | "documentation"
+  | "navigation"
+  | "usage-diagrams"
+  | "inner-elements"
+  | "relations"
+  | "tags"
+  | "constraints"
+  | "traceability"
+  | "allocations";
+
+const SPECIFICATION_SECTION_LABELS: Record<SpecificationSectionId, string> = {
+  properties: "Properties",
+  documentation: "Documentation/Comments",
+  navigation: "Navigation/Hyperlinks",
+  "usage-diagrams": "Usage in Diagrams",
+  "inner-elements": "Inner Elements",
+  relations: "Relations",
+  tags: "Tags",
+  constraints: "Constraints",
+  traceability: "Traceability",
+  allocations: "Allocations",
+};
+
+const SPECIFICATION_CHILD_SECTIONS: SpecificationSectionId[] = [
+  "documentation",
+  "navigation",
+  "usage-diagrams",
+  "inner-elements",
+  "relations",
+  "tags",
+  "constraints",
+  "traceability",
+  "allocations",
+];
 
 function parseWorkspaceTab(value: string | null, isAdmin = false): WorkspaceTab {
   const fallback: WorkspaceTab = "dashboard";
@@ -491,8 +527,33 @@ interface InspectorRow {
   value: string;
 }
 
+interface DataTableRow {
+  key: string;
+  cells: Array<string | ReactNode>;
+}
+
 const SPECIFICATION_FIELD_HINTS = ["specification", "expression", "formula", "guard", "condition", "language", "body", "constraint"];
 const CONSTRAINT_FIELD_HINTS = ["constraint", "constrained", "guard", "condition", "rule", "expression"];
+const NAVIGATION_FIELD_HINTS = ["navigation", "hyperlink", "link", "url", "uri", "target"];
+const TAG_FIELD_HINTS = ["tag", "tagged", "stereotype", "profile", "author", "created", "creation", "modified", "diagraminfo"];
+const TRACEABILITY_FIELD_HINTS = ["trace", "traced", "traceability", "satisf", "verify", "refine", "realiz", "specif"];
+const ALLOCATION_FIELD_HINTS = ["allocat"];
+const PROPERTY_FIELD_HINTS = [
+  "representation",
+  "visibility",
+  "namespace",
+  "context",
+  "diagramtype",
+  "ownerofdiagram",
+  "activehyperlink",
+  "elementid",
+  "elementserverid",
+  "nameexpression",
+  "clientdependency",
+  "supplierdependency",
+  "image",
+  "todo",
+];
 
 function normalizedFieldKey(value: string): string {
   return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
@@ -526,6 +587,46 @@ function mapToInspectorRows(source: Record<string, unknown>, lookup: Record<stri
     }));
 }
 
+function isInlineDisplayValue(value: unknown): boolean {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0 && value.length <= 4 && value.every((entry) => typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean");
+  }
+  return false;
+}
+
+function humanReadableInlineValue(value: unknown, lookup: Record<string, string>): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => humanReadableReference(String(entry), lookup)).join(", ");
+  }
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  return humanReadableReference(String(value), lookup);
+}
+
+function mapInlineInspectorRows(source: Record<string, unknown>, lookup: Record<string, string>): InspectorRow[] {
+  return Object.entries(source)
+    .filter(([, value]) => hasMeaningfulValue(value) && isInlineDisplayValue(value))
+    .sort(([leftKey], [rightKey]) => compareDisplayValues(humanizeFieldLabel(leftKey), humanizeFieldLabel(rightKey)))
+    .map(([key, value]) => ({
+      key,
+      label: humanizeFieldLabel(key),
+      value: humanReadableInlineValue(value, lookup),
+    }));
+}
+
 function payloadAttributes(item: ItemDetails): Record<string, unknown> {
   const sourcePayload = item.source_payload ?? {};
   return sourcePayload.attributes && typeof sourcePayload.attributes === "object" && !Array.isArray(sourcePayload.attributes)
@@ -538,6 +639,74 @@ function payloadReferences(item: ItemDetails): Record<string, unknown> {
   return sourcePayload.references && typeof sourcePayload.references === "object" && !Array.isArray(sourcePayload.references)
     ? (sourcePayload.references as Record<string, unknown>)
     : {};
+}
+
+const SPECIFICATION_SECTION_SOURCE_KEYS: Record<SpecificationSectionId, string[]> = {
+  properties: ["properties"],
+  documentation: ["documentation"],
+  navigation: ["navigation"],
+  "usage-diagrams": ["usageDiagrams", "usage_diagrams"],
+  "inner-elements": ["innerElements", "inner_elements"],
+  relations: ["relations"],
+  tags: ["tags"],
+  constraints: ["constraints"],
+  traceability: ["traceability"],
+  allocations: ["allocations"],
+};
+
+function payloadSpecSections(item: ItemDetails): Record<string, unknown> {
+  const sourcePayload = item.source_payload ?? {};
+  const candidate = sourcePayload.spec_sections ?? sourcePayload.specSections;
+  return candidate && typeof candidate === "object" && !Array.isArray(candidate) ? (candidate as Record<string, unknown>) : {};
+}
+
+function payloadSpecSection(item: ItemDetails, section: SpecificationSectionId): Record<string, unknown> {
+  const sections = payloadSpecSections(item);
+  for (const key of SPECIFICATION_SECTION_SOURCE_KEYS[section]) {
+    const candidate = sections[key];
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      return candidate as Record<string, unknown>;
+    }
+  }
+  return {};
+}
+
+function payloadSpecSectionEntries(item: ItemDetails, section: SpecificationSectionId): Array<Record<string, unknown>> {
+  const candidate = payloadSpecSection(item, section).entries;
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+  return candidate.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry));
+}
+
+function payloadSpecSectionStrings(item: ItemDetails, section: SpecificationSectionId, fieldName: string): string[] {
+  const sectionPayload = payloadSpecSection(item, section);
+  const candidate = sectionPayload[fieldName];
+  if (typeof candidate === "string" && candidate.trim()) {
+    return [candidate.trim()];
+  }
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+  return candidate
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function structuredEntryValue(entry: Record<string, unknown>, keys: string[], lookup: Record<string, string>): string {
+  for (const key of keys) {
+    if (!hasMeaningfulValue(entry[key])) {
+      continue;
+    }
+    return humanReadableValue(entry[key], lookup);
+  }
+  return "";
+}
+
+function structuredEntryName(entry: Record<string, unknown>, fallback = "Value"): string {
+  const candidate = entry.name;
+  return typeof candidate === "string" && candidate.trim() ? candidate.trim() : fallback;
 }
 
 function payloadExtraSections(item: ItemDetails): Array<[string, unknown]> {
@@ -563,6 +732,8 @@ function payloadExtraSections(item: ItemDetails): Array<[string, unknown]> {
         "diagram_element_ids",
         "attributes",
         "references",
+        "spec_sections",
+        "specSections",
       ].includes(key)
     ) {
       return false;
@@ -774,10 +945,15 @@ function overviewRows(item: ItemDetails, lookup: Record<string, string>): Inspec
 }
 
 function specificationRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
+  const structuredRows = payloadSpecSectionEntries(item, "properties").map((entry, index) => ({
+    key: `spec.properties.${index}.${structuredEntryName(entry)}`,
+    label: structuredEntryName(entry),
+    value: structuredEntryValue(entry, ["value"], lookup),
+  }));
   const sourcePayload = item.source_payload ?? {};
   const attributes = payloadAttributes(item);
   const references = payloadReferences(item);
-  const rows: InspectorRow[] = [];
+  const rows: InspectorRow[] = [...structuredRows];
 
   const pushRows = (source: Record<string, unknown>, sectionPrefix = "") => {
     for (const [key, value] of Object.entries(source)) {
@@ -812,7 +988,11 @@ function specificationRows(item: ItemDetails, lookup: Record<string, string>): I
 function constraintRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
   const attributes = payloadAttributes(item);
   const references = payloadReferences(item);
-  const rows: InspectorRow[] = [];
+  const rows: InspectorRow[] = payloadSpecSectionEntries(item, "constraints").map((entry, index) => ({
+    key: `spec.constraints.${index}.${structuredEntryName(entry)}`,
+    label: structuredEntryName(entry),
+    value: structuredEntryValue(entry, ["specification", "value"], lookup),
+  }));
 
   const pushRows = (source: Record<string, unknown>, sectionPrefix = "") => {
     for (const [key, value] of Object.entries(source)) {
@@ -853,6 +1033,266 @@ function constraintReferenceItems(item: ItemDetails): ItemReference[] {
     seen.add(key);
     return true;
   });
+}
+
+function collectHintRows(
+  item: ItemDetails,
+  lookup: Record<string, string>,
+  hints: string[],
+  options?: {
+    includeSourcePayload?: boolean;
+    includeAttributes?: boolean;
+    includeReferences?: boolean;
+    includeMetadata?: boolean;
+    inlineOnly?: boolean;
+  },
+): InspectorRow[] {
+  const resolved = {
+    includeSourcePayload: options?.includeSourcePayload ?? true,
+    includeAttributes: options?.includeAttributes ?? true,
+    includeReferences: options?.includeReferences ?? true,
+    includeMetadata: options?.includeMetadata ?? false,
+    inlineOnly: options?.inlineOnly ?? false,
+  };
+  const rows: InspectorRow[] = [];
+  const sourcePayload = item.source_payload ?? {};
+  const sources: Array<[string, Record<string, unknown>]> = [];
+  if (resolved.includeSourcePayload) {
+    sources.push(["payload.", sourcePayload]);
+  }
+  if (resolved.includeAttributes) {
+    sources.push(["attributes.", payloadAttributes(item)]);
+  }
+  if (resolved.includeReferences) {
+    sources.push(["references.", payloadReferences(item)]);
+  }
+  if (resolved.includeMetadata) {
+    sources.push(["metadata.", item.metadata ?? {}]);
+  }
+  for (const [prefix, source] of sources) {
+    for (const [key, value] of Object.entries(source)) {
+      if (!keyMatchesHints(key, hints) || !hasMeaningfulValue(value)) {
+        continue;
+      }
+      if (resolved.inlineOnly && !isInlineDisplayValue(value)) {
+        continue;
+      }
+      rows.push({
+        key: `${prefix}${key}`,
+        label: humanizeFieldLabel(key),
+        value: resolved.inlineOnly ? humanReadableInlineValue(value, lookup) : humanReadableValue(value, lookup),
+      });
+    }
+  }
+  return dedupeInspectorRows(rows.sort((left, right) => compareDisplayValues(left.label, right.label)));
+}
+
+function uniqueItemReferences(references: ItemReference[]): ItemReference[] {
+  const seen = new Set<string>();
+  return references.filter((reference) => {
+    const key = `${reference.relationship_type}:${reference.id}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function collectReferenceMatches(item: ItemDetails, hints: string[]): ItemReference[] {
+  return uniqueItemReferences(
+    [...item.type_references, ...item.related_items, ...item.contained_elements].filter((reference) => {
+      return (
+        keyMatchesHints(reference.relationship_type, hints) ||
+        keyMatchesHints(reference.item_type, hints) ||
+        keyMatchesHints(reference.name, hints) ||
+        keyMatchesHints(reference.path, hints)
+      );
+    }),
+  );
+}
+
+function extractCommentBlocks(item: ItemDetails): string[] {
+  const sourcePayload = item.source_payload ?? {};
+  const candidates = [
+    item.documentation_markdown,
+    item.description,
+    sourcePayload.documentation,
+    sourcePayload.comments,
+    sourcePayload.comment,
+    sourcePayload.owned_comments,
+    sourcePayload.ownedComments,
+  ];
+  const blocks: string[] = [];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      blocks.push(candidate.trim());
+    } else if (Array.isArray(candidate)) {
+      for (const entry of candidate) {
+        if (typeof entry === "string" && entry.trim()) {
+          blocks.push(entry.trim());
+        }
+      }
+    }
+  }
+  return Array.from(new Set(blocks));
+}
+
+function extractDocumentationSections(item: ItemDetails): { documentation: string[]; comments: string[] } {
+  const structuredDocumentation = payloadSpecSectionStrings(item, "documentation", "documentation");
+  const structuredComments = payloadSpecSectionStrings(item, "documentation", "comments");
+  if (structuredDocumentation.length || structuredComments.length) {
+    return {
+      documentation: structuredDocumentation,
+      comments: structuredComments,
+    };
+  }
+  const sourcePayload = item.source_payload ?? {};
+  const documentation = new Set<string>();
+  const comments = new Set<string>();
+
+  const addStrings = (target: Set<string>, value: unknown) => {
+    if (typeof value === "string" && value.trim()) {
+      target.add(value.trim());
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (typeof entry === "string" && entry.trim()) {
+          target.add(entry.trim());
+        }
+      }
+    }
+  };
+
+  addStrings(documentation, sourcePayload.documentation);
+  addStrings(documentation, item.description);
+  addStrings(documentation, item.documentation_markdown);
+
+  addStrings(comments, sourcePayload.comments);
+  addStrings(comments, sourcePayload.comment);
+  addStrings(comments, sourcePayload.owned_comments);
+  addStrings(comments, sourcePayload.ownedComments);
+
+  if (!documentation.size && !comments.size) {
+    for (const block of extractCommentBlocks(item)) {
+      documentation.add(block);
+    }
+  }
+
+  return {
+    documentation: Array.from(documentation),
+    comments: Array.from(comments),
+  };
+}
+
+function hintRowsToTableRows(rows: InspectorRow[]): DataTableRow[] {
+  return rows.map((row) => ({
+    key: row.key,
+    cells: [row.label, row.value || "Not provided"],
+  }));
+}
+
+function referenceRowsToTableRows(references: ItemReference[], lookup: Record<string, string>, typeSelector?: (reference: ItemReference) => string): DataTableRow[] {
+  return references.map((reference) => ({
+    key: `${reference.relationship_type}:${reference.id}`,
+    cells: [
+      itemReferenceDisplayName(reference, lookup),
+      typeSelector?.(reference) ?? itemReferenceTypeLabel(reference),
+    ],
+  }));
+}
+
+function relationshipTableRows(item: ItemDetails, lookup: Record<string, string>): DataTableRow[] {
+  const rows: DataTableRow[] = [];
+  const entityName = displayEntityName(item.name, item.id, item.item_type, lookup, item.path);
+
+  if (item.owner) {
+    rows.push({
+      key: `owner:${item.owner.id}`,
+      cells: ["Owner", entityName, "Parent", itemReferenceDisplayName(item.owner, lookup)],
+    });
+  }
+
+  for (const reference of item.contained_elements) {
+    rows.push({
+      key: `contained:${reference.id}`,
+      cells: ["Owned Element", entityName, "Contains", itemReferenceDisplayName(reference, lookup)],
+    });
+  }
+
+  for (const reference of item.type_references) {
+    rows.push({
+      key: `typed:${reference.id}`,
+      cells: [humanizeFieldLabel(reference.relationship_type), entityName, "References", itemReferenceDisplayName(reference, lookup)],
+    });
+  }
+
+  for (const reference of item.related_items) {
+    rows.push({
+      key: `related:${reference.relationship_type}:${reference.id}`,
+      cells: [humanizeFieldLabel(reference.relationship_type), entityName, "Related", itemReferenceDisplayName(reference, lookup)],
+    });
+  }
+
+  item.relationships.forEach((relationship, index) => {
+    const targetName =
+      typeof relationship.target_name === "string" && relationship.target_name
+        ? relationship.target_name
+        : typeof relationship.target === "string"
+          ? humanReadableReference(relationship.target, lookup)
+          : humanReadableValue(relationship.target ?? relationship, lookup);
+    if (!hasMeaningfulValue(targetName)) {
+      return;
+    }
+    rows.push({
+      key: `relationship:${index}`,
+      cells: [
+        humanizeFieldLabel(String(relationship.type ?? `Relationship ${index + 1}`)),
+        entityName,
+        "Outgoing",
+        String(targetName),
+      ],
+    });
+  });
+
+  const deduped = new Set<string>();
+  return rows.filter((row) => {
+    const key = row.cells.map((cell) => String(cell)).join("::");
+    if (deduped.has(key)) {
+      return false;
+    }
+    deduped.add(key);
+    return true;
+  });
+}
+
+function specificationSectionIntro(section: SpecificationSectionId, item: ItemDetails): string {
+  const typeLabel = humanizeFieldLabel(item.item_type || item.raw_types[0] || "item");
+  switch (section) {
+    case "properties":
+      return `Review the published ${typeLabel} properties. Switch between Standard, Expert, and All to surface more fields.`;
+    case "documentation":
+      return `Review documentation and comments published for the selected ${typeLabel}.`;
+    case "navigation":
+      return `Review navigation targets and hyperlinks published for the selected ${typeLabel}.`;
+    case "usage-diagrams":
+      return `Review published diagram usage references for the selected ${typeLabel}.`;
+    case "inner-elements":
+      return `Review the contained elements published under the selected ${typeLabel}.`;
+    case "relations":
+      return `Review the relationships published for the selected ${typeLabel}.`;
+    case "tags":
+      return `Review published stereotypes, tags, and tagged values for the selected ${typeLabel}.`;
+    case "constraints":
+      return `Review constraints published for the selected ${typeLabel}.`;
+    case "traceability":
+      return `Review traceability references published for the selected ${typeLabel}.`;
+    case "allocations":
+      return `Review allocation references published for the selected ${typeLabel}.`;
+    default:
+      return "";
+  }
 }
 
 function viewModeIncludes(viewMode: ItemDetailViewMode, target: "standard" | "expert" | "all"): boolean {
@@ -902,26 +1342,40 @@ function specificationWindowRows(
   pushRow("owner_name", "Owner", item.owner ? itemReferenceDisplayName(item.owner, lookup) : "");
 
   rows.push(
-    ...mapToInspectorRows(attributes, lookup),
-    ...specificationRows(item, lookup),
-    ...constraintRows(item, lookup),
+    ...collectHintRows(item, lookup, PROPERTY_FIELD_HINTS, {
+      includeSourcePayload: true,
+      includeAttributes: true,
+      includeReferences: false,
+      includeMetadata: false,
+      inlineOnly: true,
+    }),
+    ...collectHintRows(item, lookup, SPECIFICATION_FIELD_HINTS, {
+      includeSourcePayload: true,
+      includeAttributes: true,
+      includeReferences: false,
+      includeMetadata: false,
+      inlineOnly: true,
+    }),
   );
 
   if (viewModeIncludes(viewMode, "expert")) {
     rows.push(
-      ...mapToInspectorRows(
+      ...mapInlineInspectorRows(
         {
           model_id: sourcePayload.model_id,
           local_id: sourcePayload.local_id,
           owner_id: sourcePayload.owner_id,
-          raw_types: item.raw_types,
-          related_items: item.related_items.map((reference) => itemReferenceDisplayName(reference, lookup)),
-          contained_elements: item.contained_elements.map((reference) => itemReferenceDisplayName(reference, lookup)),
+          raw_types: item.raw_types.slice(0, 3),
         },
         lookup,
       ),
-      ...mapToInspectorRows(metadata, lookup),
-      ...mapToInspectorRows(references, lookup),
+      ...mapInlineInspectorRows(metadata, lookup),
+      ...collectHintRows(item, lookup, [...PROPERTY_FIELD_HINTS, ...SPECIFICATION_FIELD_HINTS, ...CONSTRAINT_FIELD_HINTS], {
+        includeSourcePayload: false,
+        includeAttributes: true,
+        includeReferences: true,
+        inlineOnly: true,
+      }),
     );
   }
 
@@ -1111,7 +1565,6 @@ export default function WorkspacePage() {
   const sessionCacheKey = [session?.user?.preferred_username ?? "anonymous", session?.server?.id ?? "no-server"];
   const layoutStoragePrefix = `twc-workbench-layout:${sessionCacheKey.join(":")}`;
   const navPaneStorageKey = `${layoutStoragePrefix}:nav-pane-width`;
-  const detailSidebarStorageKey = `${layoutStoragePrefix}:detail-sidebar-width`;
 
   const toggleNewCacheApiKeyScope = (scope: CacheApiKeyScope, checked: boolean) => {
     setNewCacheApiKeyScopes((current) => {
@@ -1128,11 +1581,11 @@ export default function WorkspacePage() {
   const [selectedBranchId, setSelectedBranchId] = useState(() => searchParams.get("branch") ?? "");
   const [treeFilter, setTreeFilter] = useState("");
   const [selectedItemId, setSelectedItemId] = useState(() => searchParams.get("item") ?? "");
+  const [selectedSpecificationSection, setSelectedSpecificationSection] = useState<SpecificationSectionId>("properties");
   const [treeNodes, setTreeNodes] = useState<TreeNode[]>([]);
   const [loadingTreeNodeIds, setLoadingTreeNodeIds] = useState<string[]>([]);
   const [expandedTreeNodeIds, setExpandedTreeNodeIds] = useState<string[]>([]);
   const [navPaneWidth, setNavPaneWidth] = useState(() => readStoredNumber(navPaneStorageKey, 320, 260, 520));
-  const [detailSidebarWidth, setDetailSidebarWidth] = useState(() => readStoredNumber(detailSidebarStorageKey, 360, 280, 620));
   const [itemDraft, setItemDraft] = useState<ItemDetails | null>(null);
   const [compareLeft, setCompareLeft] = useState("");
   const [compareRight, setCompareRight] = useState("");
@@ -1174,7 +1627,6 @@ export default function WorkspacePage() {
   const sectionSpacing = compactUi ? 1.5 : 2;
   const viewportPanelMaxHeight = compactUi ? "calc(100vh - 250px)" : "calc(100vh - 220px)";
   const previewMaxHeight = compactUi ? 460 : 520;
-  const detailPreviewMaxHeight = compactUi ? 620 : 720;
 
   const projectsQuery = useQuery({
     queryKey: ["workspace-projects", ...sessionCacheKey],
@@ -1321,14 +1773,9 @@ export default function WorkspacePage() {
   }, [navPaneStorageKey]);
 
   useEffect(() => {
-    setDetailSidebarWidth(readStoredNumber(detailSidebarStorageKey, 360, 280, 620));
-  }, [detailSidebarStorageKey]);
-
-  useEffect(() => {
     const clampPaneWidths = () => {
       const viewportWidth = window.innerWidth;
       setNavPaneWidth((current) => clampNumber(current, 260, paneMaxWidthForViewport(viewportWidth, 0.34, 260, 520)));
-      setDetailSidebarWidth((current) => clampNumber(current, 280, paneMaxWidthForViewport(viewportWidth, 0.38, 280, 620)));
     };
     clampPaneWidths();
     window.addEventListener("resize", clampPaneWidths);
@@ -1338,10 +1785,6 @@ export default function WorkspacePage() {
   useEffect(() => {
     persistStoredValue(navPaneStorageKey, navPaneWidth);
   }, [navPaneStorageKey, navPaneWidth]);
-
-  useEffect(() => {
-    persistStoredValue(detailSidebarStorageKey, detailSidebarWidth);
-  }, [detailSidebarStorageKey, detailSidebarWidth]);
 
   useEffect(() => {
     persistStoredValue(treeExpandedStorageKey, expandedTreeNodeIds);
@@ -1678,6 +2121,10 @@ export default function WorkspacePage() {
     setItemDraft(itemQuery.data ?? null);
   }, [itemQuery.data]);
 
+  useEffect(() => {
+    setSelectedSpecificationSection("properties");
+  }, [selectedItemId]);
+
   const selectedWorkspaceItem = itemQuery.data ?? itemDraft ?? null;
   const referenceNameById = useMemo(() => {
     const lookup: Record<string, string> = {};
@@ -1741,15 +2188,6 @@ export default function WorkspacePage() {
     () => filterContainmentTree(treeNodes, showHiddenPackagesInTree),
     [showHiddenPackagesInTree, treeNodes],
   );
-  const selectedNodeTrail = useMemo(
-    () => (selectedItemId ? findNodeTrail(visibleTreeNodes, selectedItemId) : []),
-    [selectedItemId, visibleTreeNodes],
-  );
-  const selectedOwnerId =
-    selectedWorkspaceItem?.owner?.id ??
-    (selectedWorkspaceItem && typeof selectedWorkspaceItem.source_payload?.owner_id === "string"
-      ? selectedWorkspaceItem.source_payload.owner_id
-      : "");
   const selectedWorkbenchAgentModel = useMemo<OpenWebUIModelEntry | null>(
     () => workbenchAgentModels.find((entry) => entry.id === agentSelectedModelId) ?? null,
     [agentSelectedModelId, workbenchAgentModels],
@@ -2256,14 +2694,6 @@ export default function WorkspacePage() {
     setTab("models");
   };
 
-  const openSelectedParent = () => {
-    if (!selectedOwnerId) {
-      return;
-    }
-    setSelectedItemId(selectedOwnerId);
-    setTab("details");
-  };
-
   const beginHorizontalResize = (
     event: ReactMouseEvent,
     startWidth: number,
@@ -2335,26 +2765,6 @@ export default function WorkspacePage() {
     });
   };
 
-  const renderInspectorRows = (rows: InspectorRow[], emptyText: string) =>
-    rows.length ? (
-      <List dense disablePadding>
-        {rows.map((row) => (
-          <ListItemButton key={row.key} dense disableRipple sx={{ alignItems: "flex-start", cursor: "default" }}>
-            <ListItemText
-              primary={row.label}
-              secondary={
-                <Typography component="span" variant="body2" sx={{ whiteSpace: "pre-wrap", display: "block", mt: 0.25 }}>
-                  {row.value || "Not provided"}
-                </Typography>
-              }
-            />
-          </ListItemButton>
-        ))}
-      </List>
-    ) : (
-      <Typography color="text.secondary">{emptyText}</Typography>
-    );
-
   const renderSpecificationTable = (rows: InspectorRow[], emptyText: string) =>
     rows.length ? (
       <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
@@ -2388,15 +2798,6 @@ export default function WorkspacePage() {
       <Typography color="text.secondary">{emptyText}</Typography>
     );
 
-  const renderSpecificationPanel = (rows: InspectorRow[], emptyText: string) => (
-    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-      <Stack spacing={1}>
-        <Typography variant="subtitle2">Specifications</Typography>
-        {renderSpecificationTable(rows, emptyText)}
-      </Stack>
-    </Paper>
-  );
-
   const renderReferenceList = (
     references: ItemReference[],
     emptyText: string,
@@ -2426,6 +2827,470 @@ export default function WorkspacePage() {
     ) : (
       <Typography color="text.secondary">{emptyText}</Typography>
     );
+
+  const renderReferenceTable = (
+    references: ItemReference[],
+    emptyText: string,
+    options?: {
+      secondaryColumnLabel?: string;
+      secondaryColumn?: (reference: ItemReference) => string;
+    },
+  ) =>
+    references.length ? (
+      <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "minmax(0, 1fr)",
+              sm: compactUi ? "minmax(0, 1.2fr) minmax(160px, 0.8fr)" : "minmax(0, 1.3fr) minmax(180px, 0.7fr)",
+            },
+            gap: 1.5,
+            px: compactUi ? 1.5 : 2,
+            py: compactUi ? 1 : 1.25,
+            bgcolor: "action.hover",
+          }}
+        >
+          <Typography variant="body2" fontWeight={600} color="text.secondary">
+            Name
+          </Typography>
+          <Typography variant="body2" fontWeight={600} color="text.secondary">
+            {options?.secondaryColumnLabel ?? "Type"}
+          </Typography>
+        </Box>
+        {references.map((reference, index) => (
+          <Box
+            key={`${reference.relationship_type}:${reference.id}`}
+            sx={{
+              display: "grid",
+              gridTemplateColumns: {
+                xs: "minmax(0, 1fr)",
+                sm: compactUi ? "minmax(0, 1.2fr) minmax(160px, 0.8fr)" : "minmax(0, 1.3fr) minmax(180px, 0.7fr)",
+              },
+              gap: 1.5,
+              px: compactUi ? 1.5 : 2,
+              py: compactUi ? 1 : 1.25,
+              borderTop: "1px solid",
+              borderColor: "divider",
+              alignItems: "start",
+            }}
+          >
+            <Button
+              variant="text"
+              sx={{ justifyContent: "flex-start", px: 0, minWidth: 0, textTransform: "none", fontWeight: 500 }}
+              onClick={() => openElementId(reference.id)}
+            >
+              {itemReferenceDisplayName(reference, referenceNameById)}
+            </Button>
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              {(options?.secondaryColumn?.(reference) ?? itemReferenceTypeLabel(reference)) || "Not provided"}
+            </Typography>
+          </Box>
+        ))}
+      </Paper>
+    ) : (
+      <Typography color="text.secondary">{emptyText}</Typography>
+    );
+
+  const renderDataTable = (
+    headers: string[],
+    rows: DataTableRow[],
+    emptyText: string,
+    options?: {
+      columnTemplate?: { xs: string; sm: string };
+    },
+  ) =>
+    rows.length ? (
+      <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: options?.columnTemplate?.xs ?? "minmax(0, 1fr)",
+              sm: options?.columnTemplate?.sm ?? `repeat(${headers.length}, minmax(0, 1fr))`,
+            },
+            gap: 1.5,
+            px: compactUi ? 1.5 : 2,
+            py: compactUi ? 1 : 1.25,
+            bgcolor: "action.hover",
+          }}
+        >
+          {headers.map((header) => (
+            <Typography key={header} variant="body2" fontWeight={600} color="text.secondary">
+              {header}
+            </Typography>
+          ))}
+        </Box>
+        {rows.map((row) => (
+          <Box
+            key={row.key}
+            sx={{
+              display: "grid",
+              gridTemplateColumns: {
+                xs: options?.columnTemplate?.xs ?? "minmax(0, 1fr)",
+                sm: options?.columnTemplate?.sm ?? `repeat(${headers.length}, minmax(0, 1fr))`,
+              },
+              gap: 1.5,
+              px: compactUi ? 1.5 : 2,
+              py: compactUi ? 1 : 1.25,
+              borderTop: "1px solid",
+              borderColor: "divider",
+              alignItems: "start",
+            }}
+          >
+            {row.cells.map((cell, index) => (
+              <Typography key={`${row.key}-${index}`} variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {cell || "Not provided"}
+              </Typography>
+            ))}
+          </Box>
+        ))}
+      </Paper>
+    ) : (
+      <Typography color="text.secondary">{emptyText}</Typography>
+    );
+
+  const renderTextBlocks = (blocks: string[], emptyText: string) =>
+    blocks.length ? (
+      <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+        {blocks.map((block, index) => (
+          <Box
+            key={`${index}-${block.slice(0, 32)}`}
+            sx={{
+              px: compactUi ? 1.5 : 2,
+              py: compactUi ? 1 : 1.25,
+              borderTop: index ? "1px solid" : "none",
+              borderColor: "divider",
+            }}
+          >
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              {block}
+            </Typography>
+          </Box>
+        ))}
+      </Paper>
+    ) : (
+      <Typography color="text.secondary">{emptyText}</Typography>
+    );
+
+  const renderSpecificationWorkspace = (
+    item: ItemDetails,
+    options: {
+      mode: "browser" | "details";
+      editable: boolean;
+      extraHeader?: ReactNode;
+    },
+  ) => {
+    const sourcePayload = item.source_payload ?? {};
+    const propertiesRows = specificationWindowRows(item, referenceNameById, itemDetailViewMode);
+    const documentationSections = extractDocumentationSections(item);
+    const structuredNavigationRows = payloadSpecSectionEntries(item, "navigation").map((entry, index) => ({
+      key: `navigation-${index}`,
+      cells: [
+        structuredEntryName(entry),
+        structuredEntryValue(entry, ["type"], referenceNameById),
+        structuredEntryValue(entry, ["value", "target"], referenceNameById),
+      ],
+    }));
+    const structuredUsageRows = payloadSpecSectionEntries(item, "usage-diagrams").map((entry, index) => ({
+      key: `usage-${index}`,
+      cells: [
+        structuredEntryValue(entry, ["value", "target"], referenceNameById) || structuredEntryName(entry),
+        structuredEntryValue(entry, ["type"], referenceNameById) || "Diagram",
+      ],
+    }));
+    const structuredInnerElementRows = payloadSpecSectionEntries(item, "inner-elements").map((entry, index) => ({
+      key: `inner-${index}`,
+      cells: [
+        structuredEntryValue(entry, ["value", "target"], referenceNameById) || structuredEntryName(entry),
+        structuredEntryValue(entry, ["type"], referenceNameById) || "Owned Element",
+      ],
+    }));
+    const structuredRelationRows = payloadSpecSectionEntries(item, "relations").map((entry, index) => ({
+      key: `relation-${index}`,
+      cells: [
+        structuredEntryName(entry),
+        structuredEntryValue(entry, ["element"], referenceNameById),
+        structuredEntryValue(entry, ["direction"], referenceNameById),
+        structuredEntryValue(entry, ["relatedElement", "value", "target"], referenceNameById),
+      ],
+    }));
+    const structuredTagRows = payloadSpecSectionEntries(item, "tags").map((entry, index) => ({
+      key: `tag-${index}`,
+      cells: [structuredEntryName(entry), structuredEntryValue(entry, ["value"], referenceNameById)],
+    }));
+    const structuredConstraintRows = payloadSpecSectionEntries(item, "constraints").map((entry, index) => ({
+      key: `constraint-${index}`,
+      cells: [structuredEntryName(entry), structuredEntryValue(entry, ["specification", "value"], referenceNameById)],
+    }));
+    const structuredTraceabilityRows = payloadSpecSectionEntries(item, "traceability").map((entry, index) => ({
+      key: `trace-${index}`,
+      cells: [structuredEntryName(entry), structuredEntryValue(entry, ["value", "target"], referenceNameById)],
+    }));
+    const structuredAllocationRows = payloadSpecSectionEntries(item, "allocations").map((entry, index) => ({
+      key: `allocation-${index}`,
+      cells: [structuredEntryName(entry), structuredEntryValue(entry, ["value", "target"], referenceNameById)],
+    }));
+    const navigationRows = collectHintRows(item, referenceNameById, NAVIGATION_FIELD_HINTS, {
+      includeMetadata: true,
+      inlineOnly: false,
+    });
+    const diagramUsageReferences = collectReferenceMatches(item, ["diagram", "symbol", "usage"]);
+    const navigationTableRows = hintRowsToTableRows(navigationRows);
+    const relationRows = relationshipTableRows(item, referenceNameById);
+    const tagRows = dedupeInspectorRows([
+      ...(item.stereotypes.length
+        ? [
+            {
+              key: "stereotypes",
+              label: "Applied Stereotypes",
+              value: item.stereotypes.join(", "),
+            },
+          ]
+        : []),
+      ...collectHintRows(item, referenceNameById, TAG_FIELD_HINTS, {
+        includeMetadata: true,
+        inlineOnly: false,
+      }),
+      ...mapInlineInspectorRows(item.metadata ?? {}, referenceNameById).filter((row) => keyMatchesHints(row.key, TAG_FIELD_HINTS)),
+    ]);
+    const tagTableRows = hintRowsToTableRows(tagRows);
+    const constraintSectionRows = constraintRows(item, referenceNameById);
+    const constraintLinkedItems = constraintReferenceItems(item);
+    const constraintTableRows = hintRowsToTableRows(constraintSectionRows);
+    const traceabilityRows = collectHintRows(item, referenceNameById, TRACEABILITY_FIELD_HINTS, {
+      includeMetadata: true,
+      inlineOnly: false,
+    });
+    const traceabilityReferences = collectReferenceMatches(item, TRACEABILITY_FIELD_HINTS);
+    const traceabilityTableRows = [
+      ...hintRowsToTableRows(traceabilityRows),
+      ...referenceRowsToTableRows(traceabilityReferences, referenceNameById),
+    ];
+    const allocationRows = collectHintRows(item, referenceNameById, ALLOCATION_FIELD_HINTS, {
+      includeMetadata: true,
+      inlineOnly: false,
+    });
+    const allocationReferences = collectReferenceMatches(item, ALLOCATION_FIELD_HINTS);
+    const allocationTableRows = [
+      ...hintRowsToTableRows(allocationRows),
+      ...referenceRowsToTableRows(allocationReferences, referenceNameById),
+    ];
+    const selectedSectionTitle =
+      selectedSpecificationSection === "properties"
+        ? displayEntityName(item.name, item.id, item.item_type, referenceNameById, item.path)
+        : SPECIFICATION_SECTION_LABELS[selectedSpecificationSection];
+
+    const renderSelectedSectionContent = () => {
+      switch (selectedSpecificationSection) {
+        case "properties":
+          return (
+            <Stack spacing={2}>
+              {options.mode === "details" && options.editable ? (
+                <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                  <Stack spacing={1.5}>
+                    <Typography variant="subtitle2">Editable Fields</Typography>
+                    <TextField label="Path" value={friendlyPath(item.path, referenceNameById)} disabled fullWidth />
+                    <TextField
+                      label="Name"
+                      value={item.name}
+                      disabled={!options.editable}
+                      onChange={(event) => setItemDraft((current) => (current ? { ...current, name: event.target.value } : current))}
+                      fullWidth
+                    />
+                    <TextField
+                      label="Description"
+                      value={item.description}
+                      disabled={!options.editable}
+                      onChange={(event) => setItemDraft((current) => (current ? { ...current, description: event.target.value } : current))}
+                      fullWidth
+                      multiline
+                      minRows={3}
+                    />
+                  </Stack>
+                </Paper>
+              ) : null}
+              {renderSpecificationTable(propertiesRows, "No published properties were returned for this item.")}
+            </Stack>
+          );
+        case "documentation": {
+          const hasDocumentation = documentationSections.documentation.length > 0;
+          const hasComments = documentationSections.comments.length > 0;
+          return (
+            <Stack spacing={2}>
+              <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2">Documentation</Typography>
+                  {renderTextBlocks(documentationSections.documentation, "No documentation was published for this item.")}
+                </Stack>
+              </Paper>
+              <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2">Comments</Typography>
+                  {renderTextBlocks(documentationSections.comments, hasDocumentation ? "No comments were published for this item." : "No documentation or comments were published for this item.")}
+                </Stack>
+              </Paper>
+            </Stack>
+          );
+        }
+        case "navigation":
+          return renderDataTable(
+            structuredNavigationRows.length ? ["Name", "Type", "Value"] : ["Name", "Value"],
+            structuredNavigationRows.length ? structuredNavigationRows : navigationTableRows,
+            "No navigation targets or hyperlinks were published for this item.",
+            structuredNavigationRows.length
+              ? {
+                  columnTemplate: {
+                    xs: "minmax(0, 1fr)",
+                    sm: "minmax(180px, 0.75fr) minmax(160px, 0.55fr) minmax(0, 1.2fr)",
+                  },
+                }
+              : {
+                  columnTemplate: {
+                    xs: "minmax(0, 1fr)",
+                    sm: "minmax(180px, 0.85fr) minmax(0, 1.15fr)",
+                  },
+                },
+          );
+        case "usage-diagrams":
+          return structuredUsageRows.length
+            ? renderDataTable(["Name", "Type"], structuredUsageRows, "No diagram usage references were published for this item.", {
+                columnTemplate: {
+                  xs: "minmax(0, 1fr)",
+                  sm: "minmax(0, 1.2fr) minmax(160px, 0.8fr)",
+                },
+              })
+            : renderReferenceTable(diagramUsageReferences, "No diagram usage references were published for this item.");
+        case "inner-elements":
+          return structuredInnerElementRows.length
+            ? renderDataTable(["Name", "Type"], structuredInnerElementRows, "No contained elements were published for this item.", {
+                columnTemplate: {
+                  xs: "minmax(0, 1fr)",
+                  sm: "minmax(0, 1.2fr) minmax(160px, 0.8fr)",
+                },
+              })
+            : renderReferenceTable(item.contained_elements, "No contained elements were published for this item.");
+        case "relations":
+          return renderDataTable(["Name", "Element", "Direction", "Related Element"], structuredRelationRows.length ? structuredRelationRows : relationRows, "No relationships were published for this item.", {
+            columnTemplate: {
+              xs: "minmax(0, 1fr)",
+              sm: "minmax(150px, 0.9fr) minmax(180px, 1fr) minmax(120px, 0.6fr) minmax(180px, 1fr)",
+            },
+          });
+        case "tags":
+          return renderDataTable(["Tag", "Value"], structuredTagRows.length ? structuredTagRows : tagTableRows, "No tags or stereotypes were published for this item.", {
+            columnTemplate: {
+              xs: "minmax(0, 1fr)",
+              sm: "minmax(180px, 0.8fr) minmax(0, 1.2fr)",
+            },
+          });
+        case "constraints":
+          return (
+            <Stack spacing={2}>
+              {renderDataTable(["Name", "Specification"], structuredConstraintRows.length ? structuredConstraintRows : constraintTableRows, "No constraints were published for this item.", {
+                columnTemplate: {
+                  xs: "minmax(0, 1fr)",
+                  sm: "minmax(180px, 0.8fr) minmax(0, 1.2fr)",
+                },
+              })}
+              {constraintLinkedItems.length ? renderReferenceTable(constraintLinkedItems, "No constraint-linked elements were published for this item.") : null}
+            </Stack>
+          );
+        case "traceability":
+          return renderDataTable(["Name", "Value"], structuredTraceabilityRows.length ? structuredTraceabilityRows : traceabilityTableRows, "No traceability properties were published for this item.", {
+            columnTemplate: {
+              xs: "minmax(0, 1fr)",
+              sm: "minmax(180px, 0.8fr) minmax(0, 1.2fr)",
+            },
+          });
+        case "allocations":
+          return renderDataTable(["Name", "Value"], structuredAllocationRows.length ? structuredAllocationRows : allocationTableRows, "No allocation properties were published for this item.", {
+            columnTemplate: {
+              xs: "minmax(0, 1fr)",
+              sm: "minmax(180px, 0.8fr) minmax(0, 1.2fr)",
+            },
+          });
+        default:
+          return null;
+      }
+    };
+
+    return (
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", lg: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", lg: "center" }}>
+          <Stack spacing={0.75}>
+            <Typography variant="h6">{displayEntityName(item.name, item.id, item.item_type, referenceNameById, item.path)}</Typography>
+            <Typography variant="body2" color="text.secondary">
+              {friendlyPath(item.path, referenceNameById) || `${selectedProject?.name ?? "Project"} / ${branchLabel(selectedProjectBranches, selectedBranchId)}`}
+            </Typography>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip label={humanizeFieldLabel(item.item_type)} />
+              <Chip label={`Version ${item.version}`} variant="outlined" />
+              {selectedProject ? <Chip label={`Project ${selectedProject.name}`} variant="outlined" /> : null}
+              <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
+              {sourcePayload.metaclass ? <Chip label={humanizeFieldLabel(String(sourcePayload.metaclass))} variant="outlined" size="small" /> : null}
+            </Stack>
+          </Stack>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }}>
+            <ToggleButtonGroup size="small" exclusive value={itemDetailViewMode} onChange={handleItemDetailViewModeChange} aria-label="Item detail view mode">
+              {ITEM_DETAIL_VIEW_MODES.map((mode) => (
+                <ToggleButton key={mode} value={mode}>
+                  {ITEM_DETAIL_VIEW_LABELS[mode]}
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+            {options.extraHeader}
+          </Stack>
+        </Stack>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "1fr",
+              lg: compactUi ? "260px minmax(0, 1fr)" : "300px minmax(0, 1fr)",
+            },
+            gap: 2,
+            alignItems: "start",
+          }}
+        >
+          <Paper sx={{ p: compactUi ? 1 : 1.5, borderRadius: 2 }}>
+            <Typography variant="overline" color="text.secondary">
+              Specification Sections
+            </Typography>
+            <List dense disablePadding>
+              <ListItemButton selected={selectedSpecificationSection === "properties"} onClick={() => setSelectedSpecificationSection("properties")}>
+                <ListItemText
+                  primary={displayEntityName(item.name, item.id, item.item_type, referenceNameById, item.path)}
+                  secondary={humanizeFieldLabel(item.item_type)}
+                />
+              </ListItemButton>
+              {SPECIFICATION_CHILD_SECTIONS.map((sectionId) => (
+                <ListItemButton
+                  key={sectionId}
+                  selected={selectedSpecificationSection === sectionId}
+                  onClick={() => setSelectedSpecificationSection(sectionId)}
+                  sx={{ pl: 4 }}
+                >
+                  <ListItemText primary={SPECIFICATION_SECTION_LABELS[sectionId]} />
+                </ListItemButton>
+              ))}
+            </List>
+          </Paper>
+          <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
+            <Stack spacing={sectionSpacing}>
+              <Box>
+                <Typography variant="h6">{selectedSectionTitle}</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {specificationSectionIntro(selectedSpecificationSection, item)}
+                </Typography>
+              </Box>
+              {renderSelectedSectionContent()}
+            </Stack>
+          </Paper>
+        </Box>
+      </Stack>
+    );
+  };
 
   const pickCompareSide = (side: "left" | "right", itemId: string) => {
     const readableLabel = humanReadableReference(itemId, referenceNameById);
@@ -2728,195 +3593,23 @@ export default function WorkspacePage() {
                     <Chip label={`${branchAccessManifestStatus.admin_user_count} admins`} variant="outlined" />
                   </Stack>
                 ) : null}
-                {(() => {
-                    const quickIdentity = identityRows(selectedWorkspaceItem, referenceNameById);
-                    const quickOverview = overviewRows(selectedWorkspaceItem, referenceNameById);
-                    const quickAttributes = mapToInspectorRows(payloadAttributes(selectedWorkspaceItem), referenceNameById);
-                    const quickMetadata = mapToInspectorRows(selectedWorkspaceItem.metadata, referenceNameById);
-                    const quickReferences = mapToInspectorRows(payloadReferences(selectedWorkspaceItem), referenceNameById);
-                    const quickSpecifications = specificationRows(selectedWorkspaceItem, referenceNameById);
-                    const quickConstraints = constraintRows(selectedWorkspaceItem, referenceNameById);
-                    const quickConstraintReferences = constraintReferenceItems(selectedWorkspaceItem);
-                    const quickSpecificationSheet = specificationWindowRows(selectedWorkspaceItem, referenceNameById, itemDetailViewMode);
-                    const quickDiagramPreview = diagramPreviewDataUrl(selectedWorkspaceItem);
-                    const showExpertQuickSections = viewModeIncludes(itemDetailViewMode, "expert");
-                    const showAllQuickSections = itemDetailViewMode === "all";
-                    return (
-                      <>
-                        <Stack spacing={compactUi ? 1 : 1.5}>
-                          <Stack
-                            direction={{ xs: "column", md: "row" }}
-                            spacing={1.5}
-                            justifyContent="space-between"
-                            alignItems={{ xs: "flex-start", md: "center" }}
-                          >
-                            <Stack spacing={compactUi ? 0.5 : 0.75}>
-                              <Typography variant="h6">{selectedWorkspaceItemName}</Typography>
-                              <Typography variant="body2" color="text.secondary">
-                                {selectedWorkspaceItemPath || `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}`}
-                              </Typography>
-                              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                <Chip label={humanizeFieldLabel(selectedWorkspaceItem.item_type)} />
-                                <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
-                                {selectedWorkspaceItem.editable && canEdit ? <Chip label="Editable" color="success" variant="outlined" /> : null}
-                              </Stack>
-                            </Stack>
-                            <ToggleButtonGroup
-                              size="small"
-                              exclusive
-                              value={itemDetailViewMode}
-                              onChange={handleItemDetailViewModeChange}
-                              aria-label="Item detail view mode"
-                            >
-                              {ITEM_DETAIL_VIEW_MODES.map((mode) => (
-                                <ToggleButton key={mode} value={mode}>
-                                  {ITEM_DETAIL_VIEW_LABELS[mode]}
-                                </ToggleButton>
-                              ))}
-                            </ToggleButtonGroup>
-                          </Stack>
-                            <Grid container spacing={2}>
-                              <Grid item xs={12}>
-                                {renderSpecificationPanel(
-                                  quickSpecificationSheet,
-                                  "No specification fields were published for this item.",
-                                )}
-                              </Grid>
-                            {quickDiagramPreview ? (
-                              <Grid item xs={12}>
-                                <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                                  <Stack spacing={1.5}>
-                                    <Typography variant="subtitle2">Diagram Preview</Typography>
-                                    <Box
-                                      component="img"
-                                      src={quickDiagramPreview}
-                                      alt={selectedWorkspaceItemName}
-                                      sx={{
-                                        width: "100%",
-                                        maxHeight: previewMaxHeight,
-                                        objectFit: "contain",
-                                        borderRadius: 1,
-                                        border: "1px solid",
-                                        borderColor: "divider",
-                                        bgcolor: "background.default",
-                                      }}
-                                    />
-                                  </Stack>
-                                </Paper>
-                              </Grid>
-                            ) : null}
-                            {showExpertQuickSections ? (
-                              <>
-                                <Grid item xs={12} md={6}>
-                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
-                                    <Stack spacing={1}>
-                                      <Typography variant="subtitle2">Identity</Typography>
-                                      {renderInspectorRows(quickIdentity, "No identifying fields were published for this item.")}
-                                    </Stack>
-                                  </Paper>
-                                </Grid>
-                                <Grid item xs={12} md={6}>
-                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
-                                    <Stack spacing={1}>
-                                      <Typography variant="subtitle2">Overview</Typography>
-                                      {renderInspectorRows(quickOverview, "No overview fields were published for this item.")}
-                                    </Stack>
-                                  </Paper>
-                                </Grid>
-                                <Grid item xs={12}>
-                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                                    <Stack spacing={1}>
-                                      <Typography variant="subtitle2">Properties</Typography>
-                                      {renderInspectorRows(
-                                        quickAttributes.length ? quickAttributes : quickMetadata,
-                                        "No presentable properties were published for this item.",
-                                      )}
-                                    </Stack>
-                                  </Paper>
-                                </Grid>
-                                <Grid item xs={12} md={6}>
-                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
-                                    <Stack spacing={1}>
-                                      <Typography variant="subtitle2">Containment</Typography>
-                                      {renderReferenceList(
-                                        selectedWorkspaceItem.contained_elements,
-                                        "No contained elements were published for this item.",
-                                      )}
-                                    </Stack>
-                                  </Paper>
-                                </Grid>
-                                <Grid item xs={12} md={6}>
-                                  <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2, height: "100%" }}>
-                                    <Stack spacing={1}>
-                                      <Typography variant="subtitle2">Relationships</Typography>
-                                      {renderReferenceList(
-                                        [...selectedWorkspaceItem.type_references, ...selectedWorkspaceItem.related_items],
-                                        "No related model references were published for this item.",
-                                      )}
-                                    </Stack>
-                                  </Paper>
-                                </Grid>
-                                {quickReferences.length ? (
-                                  <Grid item xs={12}>
-                                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                                      <Stack spacing={1}>
-                                        <Typography variant="subtitle2">Reference Buckets</Typography>
-                                        {renderInspectorRows(quickReferences, "No reference buckets were published for this item.")}
-                                      </Stack>
-                                    </Paper>
-                                  </Grid>
-                                ) : null}
-                                {quickSpecifications.length ? (
-                                  <Grid item xs={12}>
-                                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                                      <Stack spacing={1}>
-                                        <Typography variant="subtitle2">Specification Fields</Typography>
-                                        {renderInspectorRows(quickSpecifications, "No specifications were published for this item.")}
-                                      </Stack>
-                                    </Paper>
-                                  </Grid>
-                                ) : null}
-                                {quickConstraints.length || quickConstraintReferences.length ? (
-                                  <Grid item xs={12}>
-                                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                                      <Stack spacing={1}>
-                                        <Typography variant="subtitle2">Constraints</Typography>
-                                        {quickConstraints.length ? renderInspectorRows(quickConstraints, "No constraints were published for this item.") : null}
-                                        {quickConstraintReferences.length ? renderReferenceList(quickConstraintReferences, "No constraint-linked items were published for this item.") : null}
-                                      </Stack>
-                                    </Paper>
-                                  </Grid>
-                                ) : null}
-                                {showAllQuickSections && selectedWorkspaceItem.documentation_markdown ? (
-                                  <Grid item xs={12}>
-                                    <Paper variant="outlined" sx={{ p: compactUi ? 1.5 : 2, borderRadius: 2 }}>
-                                      <Stack spacing={1}>
-                                        <Typography variant="subtitle2">Documentation</Typography>
-                                        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                                          {selectedWorkspaceItem.documentation_markdown}
-                                        </Typography>
-                                      </Stack>
-                                    </Paper>
-                                  </Grid>
-                                ) : null}
-                              </>
-                            ) : null}
-                          </Grid>
-                          <Stack direction="row" spacing={1}>
-                            <Button size="small" variant="contained" onClick={() => setTab("details")}>
-                              Open Full Details
-                            </Button>
-                            <Button size="small" onClick={() => pickCompareSide("left", selectedWorkspaceItem.id)}>
-                              Compare Left
-                            </Button>
-                            <Button size="small" onClick={() => pickCompareSide("right", selectedWorkspaceItem.id)}>
-                              Compare Right
-                            </Button>
-                          </Stack>
-                        </Stack>
-                      </>
-                    );
-                  })()}
+                {renderSpecificationWorkspace(selectedWorkspaceItem, {
+                  mode: "browser",
+                  editable: false,
+                  extraHeader: (
+                    <Stack direction="row" spacing={1}>
+                      <Button size="small" variant="contained" onClick={() => setTab("details")}>
+                        Open Full Details
+                      </Button>
+                      <Button size="small" onClick={() => pickCompareSide("left", selectedWorkspaceItem.id)}>
+                        Compare Left
+                      </Button>
+                      <Button size="small" onClick={() => pickCompareSide("right", selectedWorkspaceItem.id)}>
+                        Compare Right
+                      </Button>
+                    </Stack>
+                  ),
+                })}
               </Stack>
             </Paper>
           ) : (
@@ -2951,337 +3644,47 @@ export default function WorkspacePage() {
       return <CircularProgress size={28} />;
     }
 
-    const sourcePayload = itemDraft.source_payload ?? {};
-    const attributeRows = mapToInspectorRows(payloadAttributes(itemDraft), referenceNameById);
-    const metadataRows = mapToInspectorRows(itemDraft.metadata, referenceNameById);
-    const referenceRows = mapToInspectorRows(payloadReferences(itemDraft), referenceNameById);
-    const specificationSectionRows = specificationRows(itemDraft, referenceNameById);
-    const constraintSectionRows = constraintRows(itemDraft, referenceNameById);
-    const constraintLinkedItems = constraintReferenceItems(itemDraft);
-    const specificationWindowSectionRows = specificationWindowRows(itemDraft, referenceNameById, itemDetailViewMode);
-    const extraSections = payloadExtraSections(itemDraft);
-    const identitySectionRows = identityRows(itemDraft, referenceNameById);
-    const overviewSectionRows = overviewRows(itemDraft, referenceNameById);
-    const detailDiagramPreview = diagramPreviewDataUrl(itemDraft);
-    const showExpertDetailSections = viewModeIncludes(itemDetailViewMode, "expert");
-    const showAllDetailSections = itemDetailViewMode === "all";
-
     return (
       <Stack spacing={2}>
-        <Stack direction={{ xs: "column", lg: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", lg: "center" }}>
-          <Stack spacing={1}>
-            <Box>
-              <Typography variant="h5">Item Details</Typography>
-              <Typography variant="body2" color="text.secondary">
-                {displayEntityName(itemDraft.name, selectedItemId, itemDraft.item_type, referenceNameById, itemDraft.path)}
-              </Typography>
-              {itemDraft.path ? (
-                <Typography variant="caption" color="text.secondary">
-                  {friendlyPath(itemDraft.path, referenceNameById)}
-                </Typography>
-              ) : null}
-            </Box>
-            <ToggleButtonGroup
-              size="small"
-              exclusive
-              value={itemDetailViewMode}
-              onChange={handleItemDetailViewModeChange}
-              aria-label="Item details view mode"
-            >
-              {ITEM_DETAIL_VIEW_MODES.map((mode) => (
-                <ToggleButton key={mode} value={mode}>
-                  {ITEM_DETAIL_VIEW_LABELS[mode]}
-                </ToggleButton>
-              ))}
-            </ToggleButtonGroup>
-          </Stack>
-          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-            <Button startIcon={<RefreshRoundedIcon />} onClick={() => refreshItemMutation.mutate()} disabled={refreshItemMutation.isPending}>
-              Refresh
-            </Button>
-            <Button startIcon={<CompareArrowsRoundedIcon />} onClick={() => pickCompareSide("left", selectedItemId)}>
-              Compare Left
-            </Button>
-            <Button startIcon={<CompareArrowsRoundedIcon />} onClick={() => pickCompareSide("right", selectedItemId)}>
-              Compare Right
-            </Button>
-            <Button
-              variant="contained"
-              startIcon={<SaveRoundedIcon />}
-              disabled={!editable || saveItemMutation.isPending}
-              onClick={() => saveItemMutation.mutate()}
-            >
-              Save
-            </Button>
-          </Stack>
-        </Stack>
+        <Box>
+          <Typography variant="h5">Item Details</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Use the same category-driven specification workspace you would expect in Cameo, backed by the stored Workbench model data.
+          </Typography>
+        </Box>
         {!editable ? (
           <Alert severity="info">
             Editing is disabled for this item unless TWC marks it editable and the RealSwagger element update capability is available to the current session.
           </Alert>
         ) : null}
-        <Box
-          sx={{
-            display: "grid",
-            gridTemplateColumns: {
-              xs: "1fr",
-              lg: `minmax(0, 1fr) 12px ${detailSidebarWidth}px`,
-            },
-            gap: 0,
-            alignItems: "stretch",
-          }}
-        >
-          <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
-            <Stack spacing={sectionSpacing}>
-              {showExpertDetailSections ? (
-                <Accordion disableGutters>
-                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                    <Typography variant="subtitle2">Editable Fields</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>
-                    <Stack spacing={1.5}>
-                      <TextField label="Path" value={friendlyPath(itemDraft.path, referenceNameById)} disabled fullWidth />
-                      <TextField
-                        label="Name"
-                        value={itemDraft.name}
-                        disabled={!editable}
-                        onChange={(event) => setItemDraft((current) => (current ? { ...current, name: event.target.value } : current))}
-                        fullWidth
-                      />
-                      <TextField
-                        label="Description"
-                        value={itemDraft.description}
-                        disabled={!editable}
-                        onChange={(event) => setItemDraft((current) => (current ? { ...current, description: event.target.value } : current))}
-                        fullWidth
-                        multiline
-                        minRows={3}
-                      />
-                    </Stack>
-                  </AccordionDetails>
-                </Accordion>
-              ) : null}
-              <Accordion defaultExpanded disableGutters>
-                <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                  <Typography variant="subtitle2">Specifications</Typography>
-                </AccordionSummary>
-                <AccordionDetails>
-                  {renderSpecificationPanel(
-                    specificationWindowSectionRows,
-                    "No specification fields were published for this item.",
-                  )}
-                </AccordionDetails>
-              </Accordion>
-              {detailDiagramPreview ? (
-                <Accordion disableGutters>
-                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                    <Typography variant="subtitle2">Diagram Preview</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>
-                    <Box
-                      component="img"
-                      src={detailDiagramPreview}
-                      alt={displayEntityName(itemDraft.name, itemDraft.id, itemDraft.item_type, referenceNameById, itemDraft.path)}
-                      sx={{
-                        width: "100%",
-                        maxHeight: detailPreviewMaxHeight,
-                        objectFit: "contain",
-                        borderRadius: 1,
-                        border: "1px solid",
-                        borderColor: "divider",
-                        bgcolor: "background.default",
-                      }}
-                    />
-                  </AccordionDetails>
-                </Accordion>
-              ) : null}
-              {showExpertDetailSections && hasMeaningfulValue(itemDraft.documentation_markdown) ? (
-                <Accordion disableGutters>
-                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                    <Typography variant="subtitle2">Documentation</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>
-                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                      {itemDraft.documentation_markdown}
-                    </Typography>
-                  </AccordionDetails>
-                </Accordion>
-              ) : null}
-              {showAllDetailSections && extraSections.length ? (
-                <Stack spacing={1}>
-                  <Typography variant="subtitle2">Additional Published Sections</Typography>
-                  {extraSections.map(([key, value]) => (
-                    <Accordion key={key} disableGutters>
-                      <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                        <Typography variant="subtitle2">{humanizeFieldLabel(key)}</Typography>
-                      </AccordionSummary>
-                      <AccordionDetails>
-                        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-                          {humanReadableValue(value, referenceNameById)}
-                        </Typography>
-                      </AccordionDetails>
-                    </Accordion>
-                  ))}
-                </Stack>
-              ) : null}
-              {showAllDetailSections ? (
-                <Accordion disableGutters>
-                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                    <Typography variant="subtitle2">Full Source Payload</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>
-                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
-                      {humanReadableValue(sourcePayload, referenceNameById)}
-                    </Typography>
-                  </AccordionDetails>
-                </Accordion>
-              ) : null}
+        {renderSpecificationWorkspace(itemDraft, {
+          mode: "details",
+          editable,
+          extraHeader: (
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Button startIcon={<RefreshRoundedIcon />} onClick={() => refreshItemMutation.mutate()} disabled={refreshItemMutation.isPending}>
+                Refresh
+              </Button>
+              <Button startIcon={<CompareArrowsRoundedIcon />} onClick={() => pickCompareSide("left", selectedItemId)}>
+                Compare Left
+              </Button>
+              <Button startIcon={<CompareArrowsRoundedIcon />} onClick={() => pickCompareSide("right", selectedItemId)}>
+                Compare Right
+              </Button>
+              <Button variant="outlined" onClick={revealSelectedInTree} disabled={!selectedItemId}>
+                Reveal In Tree
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<SaveRoundedIcon />}
+                disabled={!editable || saveItemMutation.isPending}
+                onClick={() => saveItemMutation.mutate()}
+              >
+                Save
+              </Button>
             </Stack>
-          </Paper>
-          <Box
-            role="separator"
-            aria-orientation="vertical"
-            sx={resizeHandleStyles()}
-            onMouseDown={(event) => beginHorizontalResize(event, detailSidebarWidth, setDetailSidebarWidth, 280, 620, "grow-left")}
-          />
-          <Paper sx={{ p: panelPadding, borderRadius: 2, minWidth: 0 }}>
-            <Stack spacing={sectionSpacing}>
-              <Typography variant="h6">Element Overview</Typography>
-              {selectedNodeTrail.length ? (
-                <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-                  {selectedNodeTrail.map((node, index) => (
-                    <Chip
-                      key={node.id}
-                      label={node.label}
-                      size="small"
-                      variant={index === selectedNodeTrail.length - 1 ? "filled" : "outlined"}
-                      onClick={() => openElementId(node.id)}
-                      clickable
-                    />
-                  ))}
-                </Stack>
-              ) : null}
-              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                <Chip label={humanizeFieldLabel(itemDraft.item_type)} />
-                <Chip label={`Version ${itemDraft.version}`} variant="outlined" />
-                {selectedProject ? <Chip label={`Project ${selectedProject.name}`} variant="outlined" /> : null}
-                <Chip label={`Branch ${branchLabel(selectedProjectBranches, selectedBranchId)}`} variant="outlined" />
-                {itemDraft.raw_types.map((rawType) => (
-                  <Chip key={rawType} label={humanizeFieldLabel(rawType)} size="small" variant="outlined" />
-                ))}
-              </Stack>
-              {itemDraft.stereotypes.length ? (
-                <Stack spacing={1}>
-                  <Typography variant="subtitle2">Applied Stereotypes</Typography>
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    {itemDraft.stereotypes.map((stereotype) => (
-                      <Chip key={stereotype} label={stereotype} size="small" />
-                    ))}
-                  </Stack>
-                </Stack>
-              ) : null}
-              {itemDraft.owner ? (
-                <Stack spacing={1}>
-                  <Typography variant="subtitle2">Owner</Typography>
-                  <List dense disablePadding>
-                    <ListItemButton dense onClick={() => openElementId(itemDraft.owner!.id)}>
-                      <ListItemText
-                        primary={itemReferenceDisplayName(itemDraft.owner, referenceNameById)}
-                        secondary={itemReferenceSecondaryText(itemDraft.owner, referenceNameById)}
-                      />
-                    </ListItemButton>
-                  </List>
-                </Stack>
-              ) : null}
-              {itemDraft.type_references.length ? (
-                <Stack spacing={1}>
-                  <Typography variant="subtitle2">Type and Classifier</Typography>
-                  <List dense disablePadding>
-                    {itemDraft.type_references.map((reference) => (
-                      <ListItemButton key={`${reference.relationship_type}-${reference.id}`} dense onClick={() => openElementId(reference.id)}>
-                        <ListItemText
-                          primary={itemReferenceDisplayName(reference, referenceNameById)}
-                          secondary={`${humanizeFieldLabel(reference.relationship_type)}${itemReferenceSecondaryText(reference, referenceNameById) ? ` · ${itemReferenceSecondaryText(reference, referenceNameById)}` : ""}`}
-                        />
-                      </ListItemButton>
-                    ))}
-                  </List>
-                </Stack>
-              ) : null}
-              {showExpertDetailSections ? (
-                <>
-                  <Divider />
-                  <Typography variant="h6">Expert View</Typography>
-                  {renderSpecificationTable(identitySectionRows, "No identifying fields were published for this item.")}
-                  {renderSpecificationTable(overviewSectionRows, "No overview fields were published for this item.")}
-                  {renderSpecificationTable(
-                    attributeRows.length ? attributeRows : metadataRows,
-                    "No presentable properties were published for this item.",
-                  )}
-                  {specificationSectionRows.length ? (
-                    <Stack spacing={1}>
-                      <Typography variant="subtitle2">Specification Fields</Typography>
-                      {renderSpecificationTable(specificationSectionRows, "No specifications were published for this item.")}
-                    </Stack>
-                  ) : null}
-                  {constraintSectionRows.length || constraintLinkedItems.length ? (
-                    <Stack spacing={1}>
-                      <Typography variant="subtitle2">Constraints</Typography>
-                      {constraintSectionRows.length ? renderSpecificationTable(constraintSectionRows, "No constraints were published for this item.") : null}
-                      {constraintLinkedItems.length ? renderReferenceList(constraintLinkedItems, "No constraint-linked items were published for this item.") : null}
-                    </Stack>
-                  ) : null}
-                  <Stack spacing={1}>
-                    <Typography variant="subtitle2">Contained Elements</Typography>
-                    {renderReferenceList(itemDraft.contained_elements, "No contained elements were returned for this item.")}
-                  </Stack>
-                </>
-              ) : null}
-              <Divider />
-              <Typography variant="h6">Related Elements</Typography>
-              {itemDraft.related_items.length ? (
-                renderReferenceList(itemDraft.related_items, "No related elements were returned for this item.", { inlineTypeOnly: true })
-              ) : itemDraft.relationships.length ? (
-                <List dense disablePadding>
-                  {itemDraft.relationships.map((relationship, index) => (
-                    <ListItemButton key={`${relationship.type ?? "relationship"}-${index}`} dense>
-                      <ListItemText
-                        primary={humanizeFieldLabel(String(relationship.type ?? `Relationship ${index + 1}`))}
-                        secondary={
-                          typeof relationship.target_name === "string" && relationship.target_name
-                            ? relationship.target_name
-                            : typeof relationship.target === "string"
-                              ? (humanReadableReference(relationship.target, referenceNameById) !== relationship.target
-                                  ? humanReadableReference(relationship.target, referenceNameById)
-                                  : "Related item")
-                              : humanReadableValue(relationship.target ?? relationship, referenceNameById)
-                        }
-                      />
-                    </ListItemButton>
-                  ))}
-                </List>
-              ) : (
-                <Typography color="text.secondary">No related elements were returned for this item.</Typography>
-              )}
-              {showAllDetailSections && referenceRows.length ? (
-                <>
-                  <Divider />
-                  <Typography variant="h6">Reference Map</Typography>
-                  {renderSpecificationTable(referenceRows, "No reference map was published for this item.")}
-                </>
-              ) : null}
-              <Divider />
-              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                <Button size="small" variant="outlined" onClick={revealSelectedInTree} disabled={!selectedItemId}>
-                  Reveal In Tree
-                </Button>
-                <Button size="small" variant="outlined" onClick={openSelectedParent} disabled={!selectedOwnerId}>
-                  Open Parent
-                </Button>
-              </Stack>
-            </Stack>
-          </Paper>
-        </Box>
+          ),
+        })}
       </Stack>
     );
   };
