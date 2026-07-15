@@ -8,6 +8,9 @@
   "query": "system",
   "stereotype": "Block",
   "element_id": "",
+  "model_id": "",
+  "parent_id": "",
   "root_id": "",
+  "tree_depth": null,
   "snapshot_payload_path": "../plugin/payloads/branch-snapshot.json"
 }

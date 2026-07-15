@@ -7,7 +7,7 @@ The numbered scripts are now thin examples around the reusable Python functions 
 `examples/Modules/`. That `Modules` package is the application-facing layer you can
 import from other Python code instead of copying request logic into each script.
 
-Everything here reads from [config.json](/C:/sand/fresh/New%20Project/examples/config.json)
+Everything here reads from [config.json](config.json)
 and uses the same AuthServer SSO pattern as the app:
 
 1. open the TWC Authentication Server authorize URL,
@@ -47,7 +47,7 @@ python .\21_all_elements_payloads.py
 ## Reusable Modules
 
 For a browser-friendly reference page that lists the commands, what they do, and how to call them, open
-[commands_reference.html](/C:/sand/fresh/New%20Project/examples/commands_reference.html).
+[commands_reference.html](commands_reference.html).
 
 Import from `Modules` when you want to call the same commands from another app:
 
@@ -106,7 +106,7 @@ Those helpers bridge the local MagicDraw or Cameo Java OpenAPI from
 `https://jdocs.nomagic.com/2024x/` into Python by using `jpype1`.
 They are separate from the TWC REST examples in this folder.
 
-See [NOMAGIC_2024X_PYTHON.md](/C:/sand/fresh/New%20Project/examples/NOMAGIC_2024X_PYTHON.md)
+See [NOMAGIC_2024X_PYTHON.md](NOMAGIC_2024X_PYTHON.md)
 and run:
 
 ```powershell
@@ -158,14 +158,16 @@ Files:
 - `27_workbench_cache_api_tree.py`
 - `28_workbench_cache_api_search_elements.py`
 - `29_workbench_cache_api_element_graph.py`
+- `30_workbench_cache_api_tree_children.py`
+- `31_workbench_cache_api_native_specifications.py`
 
 They read from:
 
-- [workbench_cache_api_config.json](/C:/sand/fresh/New%20Project/examples/workbench_cache_api_config.json)
+- [workbench_cache_api_config.json](workbench_cache_api_config.json)
 
 The helper module is:
 
-- [workbench_cache_api_common.py](/C:/sand/fresh/New%20Project/examples/workbench_cache_api_common.py)
+- [workbench_cache_api_common.py](workbench_cache_api_common.py)
 
 Quick run examples:
 
@@ -177,11 +179,18 @@ python .\25_workbench_cache_api_ingest_snapshot.py
 python .\27_workbench_cache_api_tree.py
 python .\28_workbench_cache_api_search_elements.py
 python .\29_workbench_cache_api_element_graph.py
+python .\30_workbench_cache_api_tree_children.py
+python .\31_workbench_cache_api_native_specifications.py
 ```
 
 More background is in:
 
-- [CACHE_API.md](/C:/sand/fresh/New%20Project/CACHE_API.md)
+- [CACHE_API.md](../CACHE_API.md)
+
+`27_workbench_cache_api_tree.py` omits `depth` by default and therefore returns
+the complete accessible model tree. Set `tree_depth` in the cache API config
+only when a bounded response is intentional. Script 30 demonstrates the direct
+children endpoint used by incremental tree clients.
 
 ## Not included on purpose
 
@@ -192,6 +201,5 @@ More background is in:
    mixed into the REST client layer.
 - API Explorer is dynamic and can execute any Swagger operation in
   `RealSwagger.json`; the closest example here is
-  [17_contract_operation.py](/C:/sand/fresh/New%20Project/examples/17_contract_operation.py),
+  [17_contract_operation.py](17_contract_operation.py),
   which lets you run one arbitrary REST operation from `config.json`.
-

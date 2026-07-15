@@ -5,24 +5,29 @@ This folder now contains a real Cameo plugin project scaffold, not just planning
 The plugin is designed to:
 - load inside Cameo/MagicDraw as a standard `plugin.xml` plugin
 - traverse the currently opened project model through Cameo OpenAPI
-- capture a full recursive branch snapshot of semantic model data from the active primary model
+- capture a full recursive branch snapshot from the primary model and every loaded attached-module model root
 - compute a branch delta on project close
 - post snapshots and deltas into TWC Workbench through authenticated ingest endpoints
 - fail clearly when Workbench ingest is not configured, instead of drifting into local file exports
 
 ## Folder layout
 
-- [plugin.xml](C:/sand/fresh/New%20Project/plugin/plugin.xml): Cameo plugin descriptor
-- [build.gradle](C:/sand/fresh/New%20Project/plugin/build.gradle): Gradle build for the plugin jar and staged plugin folder
-- [settings.gradle](C:/sand/fresh/New%20Project/plugin/settings.gradle): Gradle project name
-- [gradle.properties](C:/sand/fresh/New%20Project/plugin/gradle.properties): plugin coordinates and defaults
-- [workbench-plugin.properties](C:/sand/fresh/New%20Project/plugin/config/workbench-plugin.properties): backing-store config file managed by the plugin
-- [src/main/java](C:/sand/fresh/New%20Project/plugin/src/main/java): plugin source
+- [plugin.xml](plugin.xml): Cameo plugin descriptor
+- [build.gradle](build.gradle): Gradle build for the plugin jar and staged plugin folder
+- [settings.gradle](settings.gradle): Gradle project name
+- [gradle.properties](gradle.properties): plugin coordinates and defaults
+- [workbench-plugin.properties](config/workbench-plugin.properties): backing-store config file managed by the plugin
+- [src/main/java](src/main/java): plugin source
 
 Supporting design docs are still here if we want them while building:
-- [PLUGIN_SPEC.md](C:/sand/fresh/New%20Project/plugin/PLUGIN_SPEC.md)
-- [WORKBENCH_INGEST_API.md](C:/sand/fresh/New%20Project/plugin/WORKBENCH_INGEST_API.md)
-- [DATA_MODEL.md](C:/sand/fresh/New%20Project/plugin/DATA_MODEL.md)
+- [PLUGIN_SPEC.md](PLUGIN_SPEC.md)
+- [WORKBENCH_INGEST_API.md](WORKBENCH_INGEST_API.md)
+- [DATA_MODEL.md](DATA_MODEL.md)
+
+The 2024x exporter uses `Project.getModels()` so attached-project roots are not
+silently omitted by a primary-model-only walk. Published `ownedElementIds`
+retain Cameo containment order; Workbench preserves that order and only appends
+owner-derived repair children when the explicit containment list is incomplete.
 
 ## Build
 
@@ -32,7 +37,7 @@ builds both plugin targets, and stages installable outputs for each Cameo line.
 Example:
 
 ```powershell
-cd "C:\sand\fresh\New Project\plugin"
+cd "C:\sand\fresh\2024x_WorkbenchV2-main\plugin"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build-plugin.ps1
 ```
 
@@ -49,7 +54,7 @@ If you need a one-off manual build against a specific Cameo runtime, you can sti
 invoke Gradle directly with:
 
 ```powershell
-<gradle> -p "C:\sand\fresh\New Project\plugin" clean stagePlugin `
+<gradle> -p "C:\sand\fresh\2024x_WorkbenchV2-main\plugin" clean stagePlugin `
   -PcameoHome="C:\path\to\Cameo_no_install" `
   -PpluginTarget=2022x `
   -PpluginJavaVersion=11
@@ -74,7 +79,7 @@ Copy the staged folder into the Cameo installation `plugins` directory so the fi
 - Captures a baseline snapshot when a project opens
 - Publishes a delta on project save, falling back to a full snapshot only when no baseline is available yet
 - Publishes a delta on project close when a baseline exists
-- Exports owned elements recursively and includes names, qualified names, stereotypes, documentation, attributes, and cross-element references in the payload sent to Workbench
+- Exports owned elements recursively and includes names, qualified names, documentation, cross-element references, every Cameo metamodel feature (including unset/default/derived metadata), and ordered inherited/calculated stereotype property values in the payload sent to Workbench
 - Uses `Authorization: Bearer <token>` for Workbench ingest API access
 - Uses the TWC resource id as the Workbench `projectId` key so cached data lands under the same project Workbench already exposes
 - Resolves workspace and resource ids from the active remote TWC project instead of allowing manual override
@@ -92,7 +97,7 @@ TWC Workbench -> Configure Workbench Connection...
 
 That dialog now owns the plugin connection settings and writes them back to:
 
-[workbench-plugin.properties](C:/sand/fresh/New%20Project/plugin/config/workbench-plugin.properties)
+[workbench-plugin.properties](config/workbench-plugin.properties)
 
 ## Workbench config required for real ingest
 

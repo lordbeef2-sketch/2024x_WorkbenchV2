@@ -529,8 +529,14 @@ export interface WorkbenchAgentStatus {
   knowledge_file_name?: string | null;
   knowledge_project_id?: string | null;
   knowledge_branch_id?: string | null;
+  reference_file_id?: string | null;
+  reference_file_name?: string | null;
+  reference_synced_at?: string | null;
   updated_at?: string | null;
   knowledge_synced_at?: string | null;
+  three_ds_kb_available: boolean;
+  three_ds_kb_page_count: number;
+  three_ds_kb_chunk_count: number;
   message: string;
 }
 
@@ -544,7 +550,14 @@ export interface WorkbenchAgentKnowledgeStatus {
   branch_id: string;
   knowledge_file_id: string;
   knowledge_file_name: string;
+  reference_file_id: string;
+  reference_file_name: string;
   synced_at: string;
+  model_count: number;
+  element_count: number;
+  tree_node_count: number;
+  three_ds_kb_page_count: number;
+  three_ds_kb_chunk_count: number;
   message: string;
 }
 

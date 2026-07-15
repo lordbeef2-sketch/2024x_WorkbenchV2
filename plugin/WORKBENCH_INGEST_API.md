@@ -54,6 +54,17 @@ Request body:
 - revision metadata
 - source user metadata
 - full model payload
+- every loaded 2024x model root returned by `Project.getModels()`, including
+  attached-module roots
+- `specSections.schemaVersion = "2.0"` for each element, containing:
+  - `metamodel.entries`: every Cameo `EStructuralFeature`, including current or
+    default value, set state, declaring/value type, multiplicity, ordering,
+    uniqueness, editability, and derived/transient/volatile flags
+  - `stereotypes`: applied stereotypes in Cameo order with profile identity and
+    ordered inherited properties, explicit/default/calculated values, type,
+    multiplicity, derived state, and read-only state
+- structured element-valued specification fields preserve ID, name, qualified
+  name, and metaclass instead of collapsing references to display text
 
 Response:
 

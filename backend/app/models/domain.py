@@ -1134,6 +1134,10 @@ class WorkbenchAgentSecret(BaseModel):
     knowledge_file_name: str | None = None
     knowledge_project_id: str | None = None
     knowledge_branch_id: str | None = None
+    reference_file_id: str | None = None
+    reference_file_name: str | None = None
+    reference_fingerprint: str | None = None
+    reference_synced_at: datetime | None = None
     updated_at: datetime = Field(default_factory=utcnow)
     knowledge_synced_at: datetime | None = None
 
@@ -1164,8 +1168,14 @@ class WorkbenchAgentStatus(BaseModel):
     knowledge_file_name: str | None = None
     knowledge_project_id: str | None = None
     knowledge_branch_id: str | None = None
+    reference_file_id: str | None = None
+    reference_file_name: str | None = None
+    reference_synced_at: datetime | None = None
     updated_at: datetime | None = None
     knowledge_synced_at: datetime | None = None
+    three_ds_kb_available: bool = False
+    three_ds_kb_page_count: int = 0
+    three_ds_kb_chunk_count: int = 0
     message: str = ""
 
 
@@ -1188,7 +1198,14 @@ class WorkbenchAgentKnowledgeStatus(BaseModel):
     branch_id: str
     knowledge_file_id: str
     knowledge_file_name: str
+    reference_file_id: str
+    reference_file_name: str
     synced_at: datetime
+    model_count: int = 0
+    element_count: int = 0
+    tree_node_count: int = 0
+    three_ds_kb_page_count: int = 0
+    three_ds_kb_chunk_count: int = 0
     message: str = ""
 
 

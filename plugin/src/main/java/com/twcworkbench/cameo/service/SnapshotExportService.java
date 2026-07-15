@@ -7,15 +7,19 @@ import com.nomagic.magicdraw.esi.EsiUtils;
 import com.nomagic.magicdraw.uml.symbols.DiagramPresentationElement;
 import com.nomagic.uml2.ext.jmi.helpers.ModelHelper;
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper;
+import com.nomagic.uml2.ext.jmi.helpers.TagsHelper;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Diagram;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Property;
 import com.nomagic.uml2.ext.magicdraw.mdprofiles.Stereotype;
 import com.twcworkbench.cameo.config.PluginConfig;
 import com.twcworkbench.cameo.model.BranchSnapshotPayload;
 import com.twcworkbench.cameo.model.ElementRecord;
 import com.twcworkbench.cameo.model.ModelRecord;
 import org.eclipse.emf.common.util.URI;
+import org.eclipse.emf.ecore.EAttribute;
+import org.eclipse.emf.ecore.EReference;
 import org.eclipse.emf.ecore.EStructuralFeature;
 
 import java.net.URISyntaxException;
@@ -27,6 +31,7 @@ import java.util.Base64;
 import java.util.Collection;
 import java.util.Deque;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -71,12 +76,14 @@ public class SnapshotExportService {
         CaptureContext captureContext = new CaptureContext(progress);
         BranchSnapshotPayload payload = createPayloadMetadata(project, config, progress);
 
-        Element primaryModel = project.getPrimaryModel();
-        if (primaryModel != null) {
-            report(progress, "Preparing primary model snapshot...");
-            ModelRecord modelRecord = mapModel(primaryModel, captureContext);
+        List<Element> modelRoots = modelRoots(project);
+        if (!modelRoots.isEmpty()) {
+            report(progress, "Preparing " + modelRoots.size() + " project model root(s), including loaded modules...");
+        }
+        for (Element modelRoot : modelRoots) {
+            ModelRecord modelRecord = mapModel(modelRoot, captureContext);
             payload.models.add(modelRecord);
-            payload.elements.addAll(traverseElements(project, primaryModel, modelRecord.modelId, captureContext));
+            payload.elements.addAll(traverseElements(project, modelRoot, modelRecord.modelId, captureContext));
         }
         payload.snapshotHash = snapshotHashService.ensureSnapshotHash(payload);
         report(progress, "Computed snapshot fingerprint " + payload.snapshotHash + ".");
@@ -92,15 +99,19 @@ public class SnapshotExportService {
     ) {
         CaptureContext captureContext = new CaptureContext(progress);
         BranchSnapshotPayload payload = createPayloadMetadata(project, config, progress);
-        Element primaryModel = project.getPrimaryModel();
-        if (primaryModel == null) {
-            report(progress, "No primary model is available for scoped snapshot capture.");
+        List<Element> modelRoots = modelRoots(project);
+        if (modelRoots.isEmpty()) {
+            report(progress, "No project model roots are available for scoped snapshot capture.");
             return payload;
         }
 
         report(progress, "Preparing scoped model snapshot from tracked changes...");
-        ModelRecord modelRecord = mapModel(primaryModel, captureContext);
-        payload.models.add(modelRecord);
+        Map<String, ModelRecord> modelRecordsById = new LinkedHashMap<>();
+        for (Element modelRoot : modelRoots) {
+            ModelRecord modelRecord = mapModel(modelRoot, captureContext);
+            payload.models.add(modelRecord);
+            modelRecordsById.put(modelRecord.modelId, modelRecord);
+        }
 
         LinkedHashSet<String> requestedIds = new LinkedHashSet<>();
         if (elementIds != null) {
@@ -118,7 +129,7 @@ public class SnapshotExportService {
                 continue;
             }
             Element element = (Element) resolved;
-            payload.elements.add(mapElement(project, element, modelRecord.modelId, captureContext));
+            payload.elements.add(mapElement(project, element, modelIdForElement(element, modelRecordsById), captureContext));
             captured += 1;
             if (captured == 1 || captured % 250 == 0) {
                 report(progress, "Captured " + captured + " scoped element(s) so far...");
@@ -126,6 +137,40 @@ public class SnapshotExportService {
         }
         report(progress, "Scoped snapshot capture complete.");
         return payload;
+    }
+
+    private List<Element> modelRoots(Project project) {
+        List<Element> roots = new ArrayList<>();
+        for (Element model : project.getModels()) {
+            String modelId = safeId(model);
+            if (modelId != null && roots.stream().noneMatch(existing -> modelId.equals(safeId(existing)))) {
+                roots.add(model);
+            }
+        }
+        Element primaryModel = project.getPrimaryModel();
+        if (primaryModel != null) {
+            String primaryId = safeId(primaryModel);
+            if (primaryId != null && roots.stream().noneMatch(existing -> primaryId.equals(safeId(existing)))) {
+                roots.add(0, primaryModel);
+            }
+        }
+        return roots;
+    }
+
+    private String modelIdForElement(Element element, Map<String, ModelRecord> modelRecordsById) {
+        Element current = element;
+        Set<String> visited = new HashSet<>();
+        while (current != null) {
+            String currentId = safeId(current);
+            if (currentId == null || !visited.add(currentId)) {
+                break;
+            }
+            if (modelRecordsById.containsKey(currentId)) {
+                return currentId;
+            }
+            current = current.getOwner();
+        }
+        return modelRecordsById.keySet().iterator().next();
     }
 
     private List<ElementRecord> traverseElements(Project project, Element primaryModel, String modelId, CaptureContext captureContext) {
@@ -257,10 +302,11 @@ public class SnapshotExportService {
         }
 
         extractFeatureData(element, record, captureContext);
+        record.specSections = buildNativeSpecification(element, record, captureContext);
         if (element instanceof Diagram) {
             populateDiagramPreview(project, (Diagram) element, record);
         }
-        record.specSections = buildSpecSections(record);
+        mergeCompatibilitySpecificationSections(record);
         return record;
     }
 
@@ -409,6 +455,203 @@ public class SnapshotExportService {
             return String.valueOf(value);
         }
         return value.getClass().getSimpleName();
+    }
+
+    /**
+     * Builds the headless equivalent of Cameo's Specification window data. The
+     * SpecificationDialogManager is a UI manager and does not expose its page
+     * contents as an export model, so Workbench publishes the authoritative
+     * sources used by those pages: every metamodel feature plus ordered applied
+     * stereotype properties, including inherited and calculated values.
+     */
+    private Map<String, Object> buildNativeSpecification(
+            Element element,
+            ElementRecord record,
+            CaptureContext captureContext
+    ) {
+        Map<String, Object> sections = new LinkedHashMap<>();
+        sections.put("schemaVersion", "2.0");
+        sections.put("source", "cameo-native-model");
+        sections.put("metaclass", record.metaclass);
+        sections.put("metamodel", buildMetamodelSpecification(element, captureContext));
+        sections.put("stereotypes", buildStereotypeSpecification(element, captureContext));
+        return sections;
+    }
+
+    private Map<String, Object> buildMetamodelSpecification(Element element, CaptureContext captureContext) {
+        Map<String, Object> section = new LinkedHashMap<>();
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (EStructuralFeature feature : element.eClass().getEAllStructuralFeatures()) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            String featureName = safeString(feature.getName());
+            boolean isSet = false;
+            Object value = null;
+            String error = null;
+            long startedAt = System.nanoTime();
+            try {
+                isSet = element.eIsSet(feature);
+                value = element.eGet(feature, true);
+                markSlowFeatureIfNeeded(captureContext, element.eClass().getName() + "." + featureName, startedAt);
+            }
+            catch (Throwable throwable) {
+                error = throwable.getClass().getSimpleName() + ": " + safeString(throwable.getMessage());
+            }
+
+            entry.put("id", featureName);
+            entry.put("name", humanizeFeatureName(featureName));
+            entry.put("category", "Properties");
+            entry.put("source", "metamodel");
+            entry.put("declaringType", feature.getEContainingClass() == null ? "" : feature.getEContainingClass().getName());
+            entry.put("valueType", feature.getEType() == null ? "" : feature.getEType().getName());
+            entry.put("kind", feature instanceof EReference ? "reference" : feature instanceof EAttribute ? "attribute" : "feature");
+            entry.put("many", feature.isMany());
+            entry.put("ordered", feature.isOrdered());
+            entry.put("unique", feature.isUnique());
+            entry.put("lowerBound", feature.getLowerBound());
+            entry.put("upperBound", feature.getUpperBound());
+            entry.put("changeable", feature.isChangeable());
+            entry.put("derived", feature.isDerived());
+            entry.put("transient", feature.isTransient());
+            entry.put("volatile", feature.isVolatile());
+            entry.put("unsettable", feature.isUnsettable());
+            entry.put("set", isSet);
+            entry.put("defaultValue", normalizeSpecificationValue(feature.getDefaultValue(), 0, newIdentitySet()));
+            entry.put("value", normalizeSpecificationValue(value, 0, newIdentitySet()));
+            if (error != null && !error.isBlank()) {
+                entry.put("error", error);
+            }
+            entries.add(entry);
+        }
+        section.put("name", "Properties");
+        section.put("entries", entries);
+        return section;
+    }
+
+    private List<Map<String, Object>> buildStereotypeSpecification(Element element, CaptureContext captureContext) {
+        List<Map<String, Object>> stereotypeSections = new ArrayList<>();
+        for (Stereotype stereotype : StereotypesHelper.getStereotypes(element)) {
+            Map<String, Object> section = new LinkedHashMap<>();
+            section.put("id", safeId(stereotype));
+            section.put("name", safeAccessorString(captureContext, "stereotype.getName", stereotype::getName));
+            section.put("qualifiedName", safeAccessorString(captureContext, "stereotype.getQualifiedName", stereotype::getQualifiedName));
+            section.put("profile", stereotype.getOwner() instanceof NamedElement
+                    ? safeAccessorString(captureContext, "stereotype.owner.getQualifiedName", ((NamedElement) stereotype.getOwner())::getQualifiedName)
+                    : "");
+
+            List<Map<String, Object>> entries = new ArrayList<>();
+            List<Property> properties;
+            try {
+                properties = TagsHelper.getPropertiesWithDerivedOrdered(stereotype);
+            }
+            catch (Throwable throwable) {
+                properties = new ArrayList<>();
+                section.put("error", throwable.getClass().getSimpleName() + ": " + safeString(throwable.getMessage()));
+            }
+            for (Property property : properties) {
+                Map<String, Object> entry = new LinkedHashMap<>();
+                String propertyName = safeAccessorString(captureContext, "stereotype.property.getName", property::getName);
+                Object values = null;
+                String error = null;
+                boolean explicitlySet = false;
+                try {
+                    explicitlySet = TagsHelper.getTaggedValue(element, property) != null;
+                    values = TagsHelper.getStereotypePropertyValue(element, property, true);
+                }
+                catch (Throwable throwable) {
+                    error = throwable.getClass().getSimpleName() + ": " + safeString(throwable.getMessage());
+                }
+                entry.put("id", safeId(property));
+                entry.put("name", propertyName);
+                entry.put("qualifiedName", safeAccessorString(captureContext, "stereotype.property.getQualifiedName", property::getQualifiedName));
+                entry.put("category", firstNonBlank(
+                        safeAccessorString(captureContext, "stereotype.getName", stereotype::getName),
+                        "Stereotype"
+                ));
+                entry.put("source", "stereotype");
+                entry.put("stereotypeId", safeId(stereotype));
+                entry.put("stereotypeName", safeAccessorString(captureContext, "stereotype.getName", stereotype::getName));
+                entry.put("valueType", property.getType() == null ? "" : firstNonBlank(property.getType().getQualifiedName(), property.getType().getName()));
+                entry.put("lowerBound", property.getLower());
+                entry.put("upperBound", property.getUpper());
+                entry.put("ordered", property.isOrdered());
+                entry.put("unique", property.isUnique());
+                entry.put("readOnly", property.isReadOnly());
+                entry.put("derived", property.isDerived());
+                entry.put("set", explicitlySet);
+                entry.put("defaultValue", normalizeSpecificationValue(property.getDefaultValue(), 0, newIdentitySet()));
+                entry.put("value", normalizeSpecificationValue(values, 0, newIdentitySet()));
+                if (error != null && !error.isBlank()) {
+                    entry.put("error", error);
+                }
+                entries.add(entry);
+            }
+            section.put("entries", entries);
+            stereotypeSections.add(section);
+        }
+        return stereotypeSections;
+    }
+
+    private Set<Object> newIdentitySet() {
+        return java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    }
+
+    private Object normalizeSpecificationValue(Object value, int depth, Set<Object> visited) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof CharSequence || value instanceof Number || value instanceof Boolean || value instanceof Character) {
+            return value;
+        }
+        if (value instanceof Enum<?>) {
+            return ((Enum<?>) value).name();
+        }
+        if (value instanceof Element) {
+            Element referenced = (Element) value;
+            Map<String, Object> reference = new LinkedHashMap<>();
+            reference.put("id", safeId(referenced));
+            reference.put("name", referenced instanceof NamedElement
+                    ? safeString(safeInvokeString(referenced, "getName"))
+                    : safeString(safeInvokeString(referenced, "getHumanName")));
+            reference.put("qualifiedName", referenced instanceof NamedElement ? safeString(safeInvokeString(referenced, "getQualifiedName")) : "");
+            reference.put("metaclass", referenced.eClass() == null ? "Element" : referenced.eClass().getName());
+            return reference;
+        }
+        if (depth >= 4 || !visited.add(value)) {
+            return String.valueOf(value);
+        }
+        if (value instanceof Collection<?>) {
+            List<Object> normalized = new ArrayList<>();
+            for (Object item : (Collection<?>) value) {
+                normalized.add(normalizeSpecificationValue(item, depth + 1, visited));
+            }
+            return normalized;
+        }
+        if (value instanceof Map<?, ?>) {
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                normalized.put(String.valueOf(entry.getKey()), normalizeSpecificationValue(entry.getValue(), depth + 1, visited));
+            }
+            return normalized;
+        }
+        String display = firstNonBlank(
+                safeInvokeString(value, "getName"),
+                safeInvokeString(value, "getHumanName"),
+                safeInvokeString(value, "getQualifiedName"),
+                safeInvokeString(value, "stringValue"),
+                safeInvokeString(value, "getValue"),
+                String.valueOf(value)
+        );
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        normalized.put("display", display);
+        normalized.put("javaType", value.getClass().getName());
+        return normalized;
+    }
+
+    private void mergeCompatibilitySpecificationSections(ElementRecord record) {
+        Map<String, Object> compatibilitySections = buildSpecSections(record);
+        for (Map.Entry<String, Object> entry : compatibilitySections.entrySet()) {
+            record.specSections.putIfAbsent(entry.getKey(), entry.getValue());
+        }
     }
 
     private Map<String, Object> buildSpecSections(ElementRecord record) {

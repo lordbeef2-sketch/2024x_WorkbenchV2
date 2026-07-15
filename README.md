@@ -120,8 +120,22 @@ external integrations.
 
 See:
 
-- [CACHE_API.md](/C:/sand/fresh/New%20Project/CACHE_API.md)
-- [examples/README.md](/C:/sand/fresh/New%20Project/examples/README.md)
+- [CACHE_API.md](CACHE_API.md)
+- [examples/README.md](examples/README.md)
+
+The Model Browser now requests the complete accessible containment tree from
+the plugin-backed branch snapshot. The lazy child endpoint remains available
+for integrations and recovery, but filtering and navigation operate against
+the full tree instead of model headers alone.
+
+Workbench Agent maintains the official 3DS / No Magic 2024x reference as a
+persistent, fingerprinted Open WebUI file separate from permission-scoped branch
+model files. Every Agent chat attaches both sources and instructs any mapped OWUI
+model to use the reference for Workbench/3DS guidance and the branch file for
+project facts. Set `THREE_DS_KB_PATH` to the generated KB folder or
+`datasheet_chunks.jsonl`; `THREE_DS_KB_MAX_CHUNKS` bounds the included
+source-attributed chunks. The local development fallback recognizes the shared
+`C:/sand/TWC_Data_Sheets/TWC2024x/output/nomagic_owui_kb` build.
 
 ## Frontend Configuration
 

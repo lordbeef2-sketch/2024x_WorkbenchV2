@@ -354,9 +354,11 @@ class PlatformService:
 
     def get_workbench_agent_status(self, session: SessionData) -> WorkbenchAgentStatus:
         secret = self._workbench_agent_secret(session)
+        kb_status = self._three_ds_kb_status()
         if secret is None:
             return WorkbenchAgentStatus(
                 configured=False,
+                **kb_status,
                 message="Map an Open WebUI model here to use your stored project data as agent knowledge inside Workbench.",
             )
         return WorkbenchAgentStatus(
@@ -369,8 +371,12 @@ class PlatformService:
             knowledge_file_name=secret.knowledge_file_name,
             knowledge_project_id=secret.knowledge_project_id,
             knowledge_branch_id=secret.knowledge_branch_id,
+            reference_file_id=secret.reference_file_id,
+            reference_file_name=secret.reference_file_name,
+            reference_synced_at=secret.reference_synced_at,
             updated_at=secret.updated_at,
             knowledge_synced_at=secret.knowledge_synced_at,
+            **kb_status,
             message="Open WebUI agent mapping is ready. Sync a branch knowledge bundle or start chatting.",
         )
 
@@ -394,6 +400,10 @@ class PlatformService:
             knowledge_file_name=existing.knowledge_file_name if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
             knowledge_project_id=existing.knowledge_project_id if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
             knowledge_branch_id=existing.knowledge_branch_id if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
+            reference_file_id=existing.reference_file_id if existing and existing.base_url == base_url else None,
+            reference_file_name=existing.reference_file_name if existing and existing.base_url == base_url else None,
+            reference_fingerprint=existing.reference_fingerprint if existing and existing.base_url == base_url else None,
+            reference_synced_at=existing.reference_synced_at if existing and existing.base_url == base_url else None,
             knowledge_synced_at=existing.knowledge_synced_at if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
             updated_at=utcnow(),
         )
@@ -406,6 +416,7 @@ class PlatformService:
         self.repo.delete_app_secret(self._workbench_agent_scope(session.server.id, self._user_key(session.user.preferred_username)))
         return WorkbenchAgentStatus(
             configured=False,
+            **self._three_ds_kb_status(),
             message="Open WebUI agent mapping cleared for this Workbench user.",
         )
 
@@ -443,32 +454,9 @@ class PlatformService:
         if summary is None:
             raise ValueError("The selected stored project branch is not available to this Workbench user.")
 
-        file_name, file_content = self._build_workbench_agent_knowledge_document(session, project_id, branch_id)
-        upload_url = f"{secret.base_url}/api/v1/files/?process=true&process_in_background=true"
-        upload_timeout = httpx.Timeout(connect=30.0, read=120.0, write=900.0, pool=60.0)
-        try:
-            async with httpx.AsyncClient(timeout=upload_timeout, verify=False, follow_redirects=True) as client:
-                response = await client.post(
-                    upload_url,
-                    headers={
-                        "Authorization": f"Bearer {secret.api_key}",
-                        "Accept": "application/json",
-                    },
-                    files={"file": (file_name, file_content, "application/json")},
-                )
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"Open WebUI knowledge upload failed: {self._openwebui_http_error_message(exc)}") from exc
-        if response.status_code >= 400:
-            raise RuntimeError(f"Open WebUI knowledge upload failed: {response.text or response.reason_phrase}")
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RuntimeError("Open WebUI did not return JSON for the uploaded knowledge file.") from exc
-
-        file_id = self._openwebui_file_id(payload)
-        if not file_id:
-            raise RuntimeError("Open WebUI did not return a knowledge file id after upload.")
-        await self._wait_for_openwebui_file_processing(secret, file_id)
+        reference_file_id, reference_file_name, reference_stats, reference_fingerprint = await self._ensure_workbench_reference_knowledge(secret)
+        file_name, file_content, bundle_stats = self._build_workbench_agent_knowledge_document(session, project_id, branch_id)
+        file_id = await self._upload_openwebui_markdown_file(secret, file_name, file_content)
 
         updated_secret = secret.model_copy(
             update={
@@ -477,6 +465,10 @@ class PlatformService:
                 "knowledge_project_id": project_id,
                 "knowledge_branch_id": branch_id,
                 "knowledge_synced_at": utcnow(),
+                "reference_file_id": reference_file_id,
+                "reference_file_name": reference_file_name,
+                "reference_fingerprint": reference_fingerprint,
+                "reference_synced_at": secret.reference_synced_at if secret.reference_fingerprint == reference_fingerprint else utcnow(),
                 "updated_at": utcnow(),
             }
         )
@@ -486,8 +478,12 @@ class PlatformService:
             branch_id=branch_id,
             knowledge_file_id=file_id,
             knowledge_file_name=file_name,
+            reference_file_id=reference_file_id,
+            reference_file_name=reference_file_name,
             synced_at=updated_secret.knowledge_synced_at or utcnow(),
-            message="Stored project knowledge and Workbench API examples were uploaded to Open WebUI for this mapped agent/model.",
+            **bundle_stats,
+            **reference_stats,
+            message="Open WebUI processed the branch model file and the persistent Workbench + 3DS 2024x reference file. Every Workbench Agent chat attaches both sources.",
         )
 
     async def run_workbench_agent_chat(
@@ -515,6 +511,19 @@ class PlatformService:
         if not working_secret.knowledge_file_id:
             raise ValueError("Sync the current project branch knowledge before chatting with Workbench Agent.")
 
+        reference_file_id, reference_file_name, _, reference_fingerprint = await self._ensure_workbench_reference_knowledge(working_secret)
+        if working_secret.reference_file_id != reference_file_id or working_secret.reference_fingerprint != reference_fingerprint:
+            working_secret = working_secret.model_copy(
+                update={
+                    "reference_file_id": reference_file_id,
+                    "reference_file_name": reference_file_name,
+                    "reference_fingerprint": reference_fingerprint,
+                    "reference_synced_at": utcnow(),
+                    "updated_at": utcnow(),
+                }
+            )
+            self._store_workbench_agent_secret(session, working_secret)
+
         request_messages = [
             {"role": "system", "content": self._workbench_agent_system_prompt(session, payload.project_id, payload.branch_id)},
             *[message.model_dump() for message in payload.messages],
@@ -522,7 +531,10 @@ class PlatformService:
         request_body = {
             "model": working_secret.model_id,
             "messages": request_messages,
-            "files": [{"type": "file", "id": working_secret.knowledge_file_id}],
+            "files": [
+                {"type": "file", "id": reference_file_id, "status": "processed"},
+                {"type": "file", "id": working_secret.knowledge_file_id, "status": "processed"},
+            ],
         }
         chat_timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=60.0)
         try:
@@ -551,7 +563,7 @@ class PlatformService:
             knowledge_file_id=working_secret.knowledge_file_id,
             knowledge_file_name=working_secret.knowledge_file_name,
             raw_response=raw_payload if isinstance(raw_payload, dict) else {"payload": raw_payload},
-            message="Workbench Agent used the mapped Open WebUI model with your accessible stored project knowledge attached.",
+            message="Workbench Agent used the mapped Open WebUI model with both the persistent Workbench + 3DS reference and the accessible branch model attached.",
         )
 
     def add_bookmark(self, session: SessionData, bookmark: Bookmark) -> list[Bookmark]:
@@ -3373,12 +3385,21 @@ class PlatformService:
             if child_id not in bucket:
                 bucket.append(child_id)
 
+        # Cameo publishes getOwnedElement() order. Preserve that explicit order
+        # first so Workbench resembles the desktop containment browser.
         for record in model_records.values():
+            for child_id in [str(value).strip() for value in record.payload.get("owned_element_ids") or [] if str(value).strip()]:
+                append_child(record.element_id, child_id)
+
+        # Repair incomplete payloads from owner_id, but keep repaired children
+        # after the explicitly ordered children.
+        for record in sorted(
+            model_records.values(),
+            key=lambda item: self._cached_element_sort_key(item, item.element_id),
+        ):
             owner_id = str(record.payload.get("owner_id") or "").strip()
             if owner_id:
                 append_child(owner_id, record.element_id)
-            for child_id in [str(value).strip() for value in record.payload.get("owned_element_ids") or [] if str(value).strip()]:
-                append_child(record.element_id, child_id)
 
         root_ids = self._sanitize_model_root_ids(model, model_records)
 
@@ -3447,10 +3468,7 @@ class PlatformService:
             )
 
         covered.add(record.element_id)
-        child_ids = sorted(
-            parent_to_children.get(record.element_id, []),
-            key=lambda child_id: self._cached_element_sort_key(model_records.get(child_id), child_id),
-        )
+        child_ids = list(parent_to_children.get(record.element_id, []))
         if depth is not None and current_depth >= depth:
             child_nodes: list[TreeNode] = []
         else:
@@ -3558,7 +3576,7 @@ class PlatformService:
         if root_id:
             seed_ids = [root_id] if root_id in model_records else []
         else:
-            seed_ids = sorted(root_ids, key=lambda element_id: self._cached_element_sort_key(model_records.get(element_id), element_id))
+            seed_ids = list(root_ids)
 
         children = [
             self._build_tree_node_from_record(
@@ -5327,6 +5345,35 @@ class PlatformService:
                 return self._openwebui_file_id(nested)
         return None
 
+    async def _upload_openwebui_markdown_file(
+        self,
+        secret: WorkbenchAgentSecret,
+        file_name: str,
+        file_content: bytes,
+    ) -> str:
+        upload_url = f"{secret.base_url}/api/v1/files/?process=true&process_in_background=true"
+        upload_timeout = httpx.Timeout(connect=30.0, read=120.0, write=900.0, pool=60.0)
+        try:
+            async with httpx.AsyncClient(timeout=upload_timeout, verify=False, follow_redirects=True) as client:
+                response = await client.post(
+                    upload_url,
+                    headers={"Authorization": f"Bearer {secret.api_key}", "Accept": "application/json"},
+                    files={"file": (file_name, file_content, "text/markdown; charset=utf-8")},
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Open WebUI knowledge upload failed: {self._openwebui_http_error_message(exc)}") from exc
+        if response.status_code >= 400:
+            raise RuntimeError(f"Open WebUI knowledge upload failed: {response.text or response.reason_phrase}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Open WebUI did not return JSON for the uploaded knowledge file.") from exc
+        file_id = self._openwebui_file_id(payload)
+        if not file_id:
+            raise RuntimeError("Open WebUI did not return a knowledge file id after upload.")
+        await self._wait_for_openwebui_file_processing(secret, file_id)
+        return file_id
+
     async def _wait_for_openwebui_file_processing(self, secret: WorkbenchAgentSecret, file_id: str) -> None:
         status_url = f"{secret.base_url}/api/v1/files/{file_id}/process/status"
         status_timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=60.0)
@@ -5398,8 +5445,10 @@ class PlatformService:
         )
         return (
             "You are the Workbench Agent inside TWC Workbench. "
-            "Use the attached Workbench knowledge file as the primary source of truth for the selected stored project branch. "
-            "That file contains the accessible stored model data for this Workbench user plus the Workbench cache API routes and full Python examples. "
+            "Two processed files are attached to every request. Always retrieve from the persistent 'TWC Workbench Agent reference' file for Workbench usage, API automation, Cameo, MagicDraw, Teamwork Cloud, SysML, UML, plugin, or 3DS 2024x guidance. "
+            "Use the branch model file as the primary source of truth for project-specific names, IDs, containment, native specifications, stereotypes, relationships, and diagrams. "
+            "If Open WebUI native knowledge tools are available, call list_knowledge and query_knowledge_files before answering; prefer exact-file search for identifiers and semantic search for conceptual guidance. "
+            "Never invent an endpoint, Java API, property, stereotype value, or model fact that the attached sources do not establish. "
             "When helping with automation, default to Python requests scripts against the Workbench API. "
             f"Current user: {session.user.preferred_username}. "
             f"Current project: {project_id}. Current branch: {branch_id}. "
@@ -5417,6 +5466,8 @@ class PlatformService:
             "27_workbench_cache_api_tree.py",
             "28_workbench_cache_api_search_elements.py",
             "29_workbench_cache_api_element_graph.py",
+            "30_workbench_cache_api_tree_children.py",
+            "31_workbench_cache_api_native_specifications.py",
         ]
         payload: dict[str, str] = {}
         for name in selected_files:
@@ -5431,12 +5482,169 @@ class PlatformService:
                 payload[name] = content
         return payload
 
+    def _resolved_three_ds_kb_chunks_path(self) -> Path | None:
+        candidates: list[Path] = []
+        if self.settings.three_ds_kb_path is not None:
+            candidates.append(self.settings.three_ds_kb_path.expanduser())
+        repository_root = Path(__file__).resolve().parents[3]
+        candidates.extend(
+            [
+                repository_root / "knowledge" / "3ds" / "2024x",
+                Path("C:/sand/TWC_Data_Sheets/TWC2024x/output/nomagic_owui_kb"),
+            ]
+        )
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            chunks_path = resolved / "datasheet_chunks.jsonl" if resolved.is_dir() else resolved
+            if chunks_path.is_file():
+                return chunks_path
+        return None
+
+    def _three_ds_kb_status(self) -> dict[str, Any]:
+        chunks_path = self._resolved_three_ds_kb_chunks_path()
+        if chunks_path is None or self.settings.three_ds_kb_max_chunks <= 0:
+            return {
+                "three_ds_kb_available": False,
+                "three_ds_kb_page_count": 0,
+                "three_ds_kb_chunk_count": 0,
+            }
+        page_count = 0
+        chunk_count = 0
+        manifest_path = chunks_path.with_name("manifest.json")
+        try:
+            if manifest_path.is_file():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                page_count = int(manifest.get("page_count") or 0)
+                chunk_count = int(manifest.get("chunk_count") or 0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            page_count = 0
+            chunk_count = 0
+        if chunk_count <= 0:
+            try:
+                with chunks_path.open("r", encoding="utf-8") as handle:
+                    chunk_count = sum(1 for line in handle if line.strip())
+            except OSError:
+                return {
+                    "three_ds_kb_available": False,
+                    "three_ds_kb_page_count": 0,
+                    "three_ds_kb_chunk_count": 0,
+                }
+        return {
+            "three_ds_kb_available": True,
+            "three_ds_kb_page_count": page_count,
+            "three_ds_kb_chunk_count": min(chunk_count, self.settings.three_ds_kb_max_chunks),
+        }
+
+    def _three_ds_kb_chunks(self) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        status = self._three_ds_kb_status()
+        chunks_path = self._resolved_three_ds_kb_chunks_path()
+        if not status["three_ds_kb_available"] or chunks_path is None:
+            return [], {
+                "three_ds_kb_page_count": 0,
+                "three_ds_kb_chunk_count": 0,
+            }
+        chunks: list[dict[str, Any]] = []
+        try:
+            with chunks_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if len(chunks) >= self.settings.three_ds_kb_max_chunks:
+                        break
+                    if not line.strip():
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(payload, dict) and str(payload.get("content") or "").strip():
+                        chunks.append(payload)
+        except OSError as exc:
+            raise RuntimeError(f"Configured 3DS knowledge file could not be read: {exc}") from exc
+        return chunks, {
+            "three_ds_kb_page_count": int(status["three_ds_kb_page_count"]),
+            "three_ds_kb_chunk_count": len(chunks),
+        }
+
+    def _build_workbench_reference_document(self) -> tuple[str, bytes, dict[str, int], str]:
+        chunks, stats = self._three_ds_kb_chunks()
+        if not chunks:
+            raise RuntimeError(
+                "The 3DS 2024x knowledge base is not available. Configure THREE_DS_KB_PATH before using Workbench Agent."
+            )
+        lines = [
+            "# TWC Workbench Agent reference",
+            "",
+            "This is the persistent operating reference for every model used through Workbench Agent.",
+            "",
+            "## Required response behavior",
+            "",
+            "1. For questions about Workbench operation, use the Workbench API routes and complete Python examples in this file.",
+            "2. For Cameo, MagicDraw, Teamwork Cloud, SysML, UML, plugin, or 3DS 2024x questions, retrieve the relevant source-attributed 3DS section before answering.",
+            "3. Treat the separately attached branch model file as authoritative for project-specific names, IDs, structure, properties, stereotypes, and relationships.",
+            "4. Never invent an endpoint, Java API, metaclass property, stereotype value, or model fact. Say when the attached sources do not prove it.",
+            "5. When returning automation, prefer a complete runnable Python script against the scoped Workbench API unless the user explicitly asks for Cameo Java plugin code.",
+            "6. Keep 3DS product guidance separate from branch-specific model facts and include the source URL when it materially supports the answer.",
+            "",
+            "## Workbench knowledge surfaces",
+            "",
+            "- Model Browser: complete accessible Cameo containment tree in published order.",
+            "- Specification workspace: native metamodel properties plus ordered applied-stereotype properties, defaults, derived values, multiplicity, type, and state metadata.",
+            "- Developer API: scoped cache reads, search, graph, tree, child, and edit workflows.",
+            "- Agent: this persistent reference file plus the current user's selected branch model file.",
+            "",
+            "## Complete Workbench Python examples",
+            "",
+        ]
+        for name, content in self._workbench_agent_example_payload().items():
+            lines.extend([f"### {name}", "", "```python", content, "```", ""])
+        lines.extend(
+            [
+                "## Official 3DS / No Magic 2024x knowledge",
+                "",
+                f"This section contains {len(chunks)} source-attributed chunks from the configured 3DS KB.",
+                "",
+            ]
+        )
+        for chunk in chunks:
+            title = str(chunk.get("title") or chunk.get("section_path") or chunk.get("chunk_id") or "3DS reference").strip()
+            url = str(chunk.get("url") or "").strip()
+            content = str(chunk.get("content") or "").strip()
+            lines.extend([f"### {title}", ""])
+            if url:
+                lines.extend([f"Source: {url}", ""])
+            lines.extend([content, ""])
+        content = "\n".join(lines).encode("utf-8")
+        fingerprint = hashlib.sha256(content).hexdigest()
+        return "twc-workbench-3ds-2024x-reference.md", content, stats, fingerprint
+
+    async def _ensure_workbench_reference_knowledge(
+        self,
+        secret: WorkbenchAgentSecret,
+    ) -> tuple[str, str, dict[str, int], str]:
+        file_name, content, stats, fingerprint = self._build_workbench_reference_document()
+        if secret.reference_file_id and secret.reference_fingerprint == fingerprint:
+            return secret.reference_file_id, secret.reference_file_name or file_name, stats, fingerprint
+        file_id = await self._upload_openwebui_markdown_file(secret, file_name, content)
+        return file_id, file_name, stats, fingerprint
+
+    def _tree_markdown_lines(self, nodes: list[TreeNode]) -> list[str]:
+        lines: list[str] = []
+
+        def visit(node: TreeNode, depth: int) -> None:
+            metaclass = str(node.metadata.get("metaclass") or node.node_type or "element").strip()
+            lines.append(f"{'  ' * depth}- {node.label} [{metaclass}] (`{node.id}`)")
+            for child in node.children:
+                visit(child, depth + 1)
+
+        for node in nodes:
+            visit(node, 0)
+        return lines
+
     def _build_workbench_agent_knowledge_document(
         self,
         session: SessionData,
         project_id: str,
         branch_id: str,
-    ) -> tuple[str, bytes]:
+    ) -> tuple[str, bytes, dict[str, int]]:
         summary = self.get_branch_cache_summary_for_user(session.server.id, session.user.preferred_username, project_id, branch_id)
         if summary is None:
             raise ValueError("The selected stored project branch is not available to this Workbench user.")
@@ -5456,63 +5664,94 @@ class PlatformService:
 
         project_name = summary.project_name or project_id
         branch_name = summary.branch_name or branch_id
-        knowledge_payload: dict[str, Any] = {
-            "kind": "twc-workbench-agent-knowledge",
-            "version": "1.1",
-            "context": {
-                "preferred_username": session.user.preferred_username,
-                "server_id": session.server.id,
-                "server_name": session.server.name,
-                "project_id": project_id,
-                "project_name": project_name,
-                "branch_id": branch_id,
-                "branch_name": branch_name,
-                "revision": summary.latest_revision or "",
-                "model_count": summary.model_count,
-                "element_count": summary.element_count,
-            },
-            "workbench_cache_api": {
-                "message": manifest.message,
-                "available_routes": manifest.available_routes,
-            },
-            "python_examples": self._workbench_agent_example_payload(),
-            "models": [],
-            "elements": [],
-        }
-        if snapshot is not None:
-            knowledge_payload["models"] = [
-                {
-                    "model_id": model_view.model.model_id,
-                    "name": model_view.model.name or model_view.model.model_id,
-                    "root_ids": model_view.model.root_ids,
-                    "element_count": model_view.model.element_count,
-                    "qualified_name": str(model_view.model.payload.get("qualified_name") or "").strip(),
-                }
-                for model_view in snapshot.models
-            ]
-        knowledge_payload["elements"] = [
-            {
-                "element_id": record.element_id,
-                "model_id": record.model_id,
-                "item_type": record.item_type,
-                "name": record.name,
-                "path": record.path,
-                "child_count": record.child_count,
-                "metaclass": str((record.payload or {}).get("metaclass") or record.item_type or "").strip(),
-                "qualified_name": str((record.payload or {}).get("qualified_name") or record.path or "").strip(),
-                "owner_id": str((record.payload or {}).get("owner_id") or "").strip(),
-                "documentation": str((record.payload or {}).get("documentation") or "").strip(),
-                "stereotypes": list((record.payload or {}).get("applied_stereotype_ids") or []),
-                "attributes": (record.payload or {}).get("attributes") or {},
-                "references": (record.payload or {}).get("references") or {},
-            }
-            for record in elements
+        tree_response = self.get_cached_branch_tree_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+            include_orphans=True,
+        )
+        model_count = len(snapshot.models) if snapshot is not None else 0
+        lines = [
+            f"# TWC Workbench knowledge: {project_name} / {branch_name}",
+            "",
+            "This bundle is generated from the current user's accessible stored branch snapshot. It is authoritative for project-specific facts. Product, API, and Workbench operating guidance lives in the separately attached persistent Workbench + 3DS reference file.",
+            "",
+            "## Context",
+            "",
+            f"- Workbench user: `{session.user.preferred_username}`",
+            f"- Server: {session.server.name} (`{session.server.id}`)",
+            f"- Project: {project_name} (`{project_id}`)",
+            f"- Branch: {branch_name} (`{branch_id}`)",
+            f"- Revision: `{summary.latest_revision or 'unknown'}`",
+            f"- Models: {model_count}",
+            f"- Elements: {len(elements)}",
+            f"- Containment tree nodes: {tree_response.total_nodes}",
+            "",
+            "## Complete accessible model tree",
+            "",
+            *self._tree_markdown_lines(tree_response.nodes),
+            "",
+            "## Model records",
+            "",
         ]
+        if snapshot is not None:
+            for model_view in snapshot.models:
+                model = model_view.model
+                lines.extend(
+                    [
+                        f"### {model.name or model.model_id}",
+                        "",
+                        f"- ID: `{model.model_id}`",
+                        f"- Qualified name: {str(model.payload.get('qualified_name') or model.name or '').strip()}",
+                        f"- Root IDs: {', '.join(f'`{root_id}`' for root_id in model.root_ids) or 'none'}",
+                        f"- Element count: {model.element_count or 0}",
+                        "",
+                    ]
+                )
+        lines.extend(["## Element specifications", ""])
+        for record in elements:
+            payload = record.payload or {}
+            lines.extend(
+                [
+                    f"### {record.name or record.element_id}",
+                    "",
+                    f"- ID: `{record.element_id}`",
+                    f"- Model ID: `{record.model_id}`",
+                    f"- Type: {str(payload.get('metaclass') or record.item_type or 'Element')}",
+                    f"- Qualified path: {str(payload.get('qualified_name') or record.path or '').strip()}",
+                    f"- Owner ID: `{str(payload.get('owner_id') or '').strip()}`",
+                    f"- Child count: {record.child_count}",
+                    f"- Applied stereotypes: {', '.join(str(value) for value in payload.get('applied_stereotype_ids') or []) or 'none'}",
+                    "",
+                    str(payload.get("documentation") or "").strip(),
+                    "",
+                    "```json",
+                    json.dumps(
+                        {
+                            "attributes": payload.get("attributes") or {},
+                            "references": payload.get("references") or {},
+                            "spec_sections": payload.get("spec_sections") or {},
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    "```",
+                    "",
+                ]
+            )
+        lines.extend(["## Workbench cache API", "", manifest.message, ""])
+        lines.extend(f"- `{route}`" for route in manifest.available_routes)
 
         safe_project = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in project_name).strip("-") or project_id
         safe_branch = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in branch_name).strip("-") or branch_id
-        file_name = f"workbench-{safe_project}-{safe_branch}-knowledge.json"
-        return file_name, json.dumps(knowledge_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        file_name = f"workbench-{safe_project}-{safe_branch}-knowledge.md"
+        stats = {
+            "model_count": model_count,
+            "element_count": len(elements),
+            "tree_node_count": tree_response.total_nodes,
+        }
+        return file_name, "\n".join(lines).encode("utf-8"), stats
 
     def _shared_oslc_secret_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"

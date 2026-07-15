@@ -222,6 +222,8 @@ class Settings(BaseSettings):
     cache_ingest_tokens: list[str] = Field(default_factory=list)
     cache_api_tokens: dict[str, str] = Field(default_factory=dict)
     twc_plugin_only_cache_targets: dict[str, PluginOnlyCacheTargetRule] = Field(default_factory=dict)
+    three_ds_kb_path: Path | None = None
+    three_ds_kb_max_chunks: int = Field(default=1200, ge=0, le=10000)
     root_path: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

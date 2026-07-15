@@ -82,6 +82,8 @@ const ITEM_DETAIL_VIEW_LABELS: Record<ItemDetailViewMode, string> = {
 };
 type SpecificationSectionId =
   | "properties"
+  | "native-properties"
+  | "stereotype-properties"
   | "documentation"
   | "navigation"
   | "usage-diagrams"
@@ -94,6 +96,8 @@ type SpecificationSectionId =
 
 const SPECIFICATION_SECTION_LABELS: Record<SpecificationSectionId, string> = {
   properties: "Properties",
+  "native-properties": "All Cameo Properties",
+  "stereotype-properties": "Stereotypes / Tags",
   documentation: "Documentation/Comments",
   navigation: "Navigation/Hyperlinks",
   "usage-diagrams": "Usage in Diagrams",
@@ -106,6 +110,8 @@ const SPECIFICATION_SECTION_LABELS: Record<SpecificationSectionId, string> = {
 };
 
 const SPECIFICATION_CHILD_SECTIONS: SpecificationSectionId[] = [
+  "native-properties",
+  "stereotype-properties",
   "documentation",
   "navigation",
   "usage-diagrams",
@@ -662,6 +668,8 @@ function payloadReferences(item: ItemDetails): Record<string, unknown> {
 
 const SPECIFICATION_SECTION_SOURCE_KEYS: Record<SpecificationSectionId, string[]> = {
   properties: ["properties"],
+  "native-properties": ["metamodel"],
+  "stereotype-properties": ["stereotypes"],
   documentation: ["documentation"],
   navigation: ["navigation"],
   "usage-diagrams": ["usageDiagrams", "usage_diagrams"],
@@ -677,6 +685,35 @@ function payloadSpecSections(item: ItemDetails): Record<string, unknown> {
   const sourcePayload = item.source_payload ?? {};
   const candidate = sourcePayload.spec_sections ?? sourcePayload.specSections;
   return candidate && typeof candidate === "object" && !Array.isArray(candidate) ? (candidate as Record<string, unknown>) : {};
+}
+
+function payloadNativeMetamodelEntries(item: ItemDetails): Array<Record<string, unknown>> {
+  const metamodel = payloadSpecSections(item).metamodel;
+  if (!metamodel || typeof metamodel !== "object" || Array.isArray(metamodel)) {
+    return [];
+  }
+  const entries = (metamodel as Record<string, unknown>).entries;
+  return Array.isArray(entries)
+    ? entries.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
+    : [];
+}
+
+function payloadNativeStereotypeSections(item: ItemDetails): Array<Record<string, unknown>> {
+  const sections = payloadSpecSections(item).stereotypes;
+  return Array.isArray(sections)
+    ? sections.filter((section): section is Record<string, unknown> => Boolean(section) && typeof section === "object" && !Array.isArray(section))
+    : [];
+}
+
+function nativeSpecificationState(entry: Record<string, unknown>): string {
+  const flags = [
+    entry.set === true ? "set" : "default/unset",
+    entry.derived === true ? "derived" : "",
+    entry.readOnly === true || entry.changeable === false ? "read-only" : "",
+    entry.transient === true ? "transient" : "",
+    entry.volatile === true ? "volatile" : "",
+  ].filter(Boolean);
+  return flags.join(", ");
 }
 
 function payloadSpecSection(item: ItemDetails, section: SpecificationSectionId): Record<string, unknown> {
@@ -859,6 +896,47 @@ if __name__ == "__main__":
 `;
 }
 
+function workbenchFullTreePythonScript(
+  workbenchBaseUrl: string,
+  serverId: string,
+  projectId: string,
+  branchId: string,
+): string {
+  return `from __future__ import annotations
+
+import json
+from urllib.parse import urlencode
+
+import requests
+
+WORKBENCH_BASE_URL = ${pythonLiteral(workbenchBaseUrl)}
+API_KEY = "replace-with-your-api-key"
+SERVER_ID = ${pythonLiteral(serverId)}
+PROJECT_ID = ${pythonLiteral(projectId)}
+BRANCH_ID = ${pythonLiteral(branchId)}
+VERIFY_TLS = True
+
+
+def main() -> None:
+    # Omit depth to return the complete accessible containment tree.
+    query = urlencode({"includeOrphans": "true"})
+    response = requests.get(
+        f"{WORKBENCH_BASE_URL}/api/cache/servers/{SERVER_ID}/projects/{PROJECT_ID}/branches/{BRANCH_ID}/tree?{query}",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        timeout=300,
+        verify=VERIFY_TLS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    print(json.dumps(payload, indent=2))
+    print(f"Returned {payload.get('total_nodes', 0)} accessible model-tree nodes.")
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
+
 function workbenchStereotypeSearchPythonScript(
   workbenchBaseUrl: string,
   serverId: string,
@@ -901,6 +979,47 @@ def main() -> None:
     payload = response.json()
     print(json.dumps(payload, indent=2))
     print(f"Matched {payload.get('total', 0)} elements for stereotype {STEREOTYPE_NAME!r}.")
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
+
+function workbenchNativeSpecificationPythonScript(
+  workbenchBaseUrl: string,
+  serverId: string,
+  projectId: string,
+  branchId: string,
+  elementId: string,
+): string {
+  return `from __future__ import annotations
+
+import json
+from urllib.parse import quote
+
+import requests
+
+WORKBENCH_BASE_URL = ${pythonLiteral(workbenchBaseUrl)}
+API_KEY = "replace-with-your-api-key"
+SERVER_ID = ${pythonLiteral(serverId)}
+PROJECT_ID = ${pythonLiteral(projectId)}
+BRANCH_ID = ${pythonLiteral(branchId)}
+ELEMENT_ID = ${pythonLiteral(elementId)}
+VERIFY_TLS = True
+
+
+def main() -> None:
+    response = requests.get(
+        f"{WORKBENCH_BASE_URL}/api/cache/servers/{SERVER_ID}/projects/{PROJECT_ID}/branches/{BRANCH_ID}/elements/{quote(ELEMENT_ID, safe='')}/details",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        timeout=120,
+        verify=VERIFY_TLS,
+    )
+    response.raise_for_status()
+    source = response.json().get("source_payload") or {}
+    specification = source.get("spec_sections") or source.get("specSections") or {}
+    print(json.dumps(specification, indent=2))
 
 
 if __name__ == "__main__":
@@ -1307,6 +1426,10 @@ function specificationSectionIntro(section: SpecificationSectionId, item: ItemDe
   switch (section) {
     case "properties":
       return `Review the published ${typeLabel} properties. Switch between Standard, Expert, and All to surface more fields.`;
+    case "native-properties":
+      return `Review every Cameo metamodel feature for this ${typeLabel}, including unset defaults, derived values, multiplicity, type, and editability metadata.`;
+    case "stereotype-properties":
+      return `Review applied stereotype properties in Cameo order, including inherited, default, explicit, and calculated tag values.`;
     case "documentation":
       return `Review documentation and comments published for the selected ${typeLabel}.`;
     case "navigation":
@@ -1941,7 +2064,7 @@ export default function WorkspacePage() {
 
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
-    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined, false, 0),
+    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined, false),
     enabled:
       projectContextActive &&
       Boolean(selectedProjectId) &&
@@ -2017,6 +2140,16 @@ export default function WorkspacePage() {
       ),
     [developerApiBranchId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
   );
+  const fullTreePythonExample = useMemo(
+    () =>
+      workbenchFullTreePythonScript(
+        workbenchBaseUrlExample,
+        developerApiServerId,
+        developerApiProjectId,
+        developerApiBranchId,
+      ),
+    [developerApiBranchId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
+  );
   const stereotypeSearchPythonExample = useMemo(
     () =>
       workbenchStereotypeSearchPythonScript(
@@ -2026,6 +2159,17 @@ export default function WorkspacePage() {
         developerApiBranchId,
       ),
     [developerApiBranchId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
+  );
+  const nativeSpecificationPythonExample = useMemo(
+    () =>
+      workbenchNativeSpecificationPythonScript(
+        workbenchBaseUrlExample,
+        developerApiServerId,
+        developerApiProjectId,
+        developerApiBranchId,
+        developerApiElementId,
+      ),
+    [developerApiBranchId, developerApiElementId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
   );
   const editElementPythonExample = useMemo(
     () =>
@@ -2458,7 +2602,7 @@ export default function WorkspacePage() {
       let tree: TreeNode[] | null = null;
       const currentBranchId = selectedBranchId || branches[0]?.id;
       if (currentBranchId) {
-        tree = await api.getTree(selectedProjectId, currentBranchId, selectedProject?.workspace_id || undefined, true, 0);
+        tree = await api.getTree(selectedProjectId, currentBranchId, selectedProject?.workspace_id || undefined, true);
       }
       return { branches, tree, branchId: currentBranchId ?? "" };
     },
@@ -3235,6 +3379,30 @@ export default function WorkspacePage() {
   ) => {
     const sourcePayload = item.source_payload ?? {};
     const propertiesRows = specificationWindowRows(item, referenceNameById, itemDetailViewMode);
+    const nativePropertyRows: DataTableRow[] = payloadNativeMetamodelEntries(item).map((entry, index) => ({
+      key: `native-property-${String(entry.id ?? index)}`,
+      cells: [
+        String(entry.name ?? entry.id ?? "Property"),
+        humanReadableValue(hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue, referenceNameById),
+        String(entry.valueType ?? entry.kind ?? ""),
+        nativeSpecificationState(entry),
+      ],
+    }));
+    const nativeStereotypeRows: DataTableRow[] = payloadNativeStereotypeSections(item).flatMap((section, sectionIndex) => {
+      const entries = Array.isArray(section.entries)
+        ? section.entries.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
+        : [];
+      return entries.map((entry, entryIndex) => ({
+        key: `native-stereotype-${String(section.id ?? sectionIndex)}-${String(entry.id ?? entryIndex)}`,
+        cells: [
+          String(section.name ?? entry.stereotypeName ?? "Stereotype"),
+          String(entry.name ?? entry.id ?? "Property"),
+          humanReadableValue(hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue, referenceNameById),
+          String(entry.valueType ?? ""),
+          nativeSpecificationState(entry),
+        ],
+      }));
+    });
     const documentationSections = extractDocumentationSections(item);
     const structuredNavigationRows = payloadSpecSectionEntries(item, "navigation").map((entry, index) => ({
       key: `navigation-${index}`,
@@ -3364,6 +3532,30 @@ export default function WorkspacePage() {
               ) : null}
               {renderSpecificationTable(propertiesRows, "No published properties were returned for this item.")}
             </Stack>
+          );
+        case "native-properties":
+          return renderDataTable(
+            ["Property", "Value", "Type", "State"],
+            nativePropertyRows,
+            "This snapshot predates the native Cameo specification schema. Publish a new plugin snapshot to populate every metamodel property.",
+            {
+              columnTemplate: {
+                xs: "minmax(0, 1fr)",
+                sm: "minmax(180px, 0.8fr) minmax(0, 1.4fr) minmax(130px, 0.55fr) minmax(150px, 0.65fr)",
+              },
+            },
+          );
+        case "stereotype-properties":
+          return renderDataTable(
+            ["Stereotype", "Property", "Value", "Type", "State"],
+            nativeStereotypeRows,
+            "No applied stereotype properties were published. Republish with the updated Cameo plugin to include inherited, default, and calculated tag values.",
+            {
+              columnTemplate: {
+                xs: "minmax(0, 1fr)",
+                sm: "minmax(140px, 0.65fr) minmax(160px, 0.75fr) minmax(0, 1.3fr) minmax(120px, 0.55fr) minmax(140px, 0.65fr)",
+              },
+            },
           );
         case "documentation": {
           const hasDocumentation = documentationSections.documentation.length > 0;
@@ -4934,6 +5126,14 @@ export default function WorkspacePage() {
             InputProps={{ readOnly: true }}
           />
           <TextField
+            label="Python script: retrieve the complete accessible model tree"
+            value={fullTreePythonExample}
+            fullWidth
+            multiline
+            minRows={24}
+            InputProps={{ readOnly: true }}
+          />
+          <TextField
             label="Python script: get all stored elements for the selected project and branch"
             value={listElementsPythonExample}
             fullWidth
@@ -4944,6 +5144,14 @@ export default function WorkspacePage() {
           <TextField
             label="Python script: search all elements by applied stereotype name"
             value={stereotypeSearchPythonExample}
+            fullWidth
+            multiline
+            minRows={24}
+            InputProps={{ readOnly: true }}
+          />
+          <TextField
+            label="Python script: read every native Cameo and stereotype specification property"
+            value={nativeSpecificationPythonExample}
             fullWidth
             multiline
             minRows={24}
@@ -4975,13 +5183,13 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Workbench Agent</Typography>
             <Typography variant="body2" color="text.secondary">
-              Map an Open WebUI model to this Workbench user, then sync the selected stored project branch as agent knowledge. The uploaded knowledge bundle includes all stored model data you can access for that branch plus the full Python API scripts from Developer API.
+              Map any Open WebUI model to Workbench. Every chat uses two processed sources: a persistent Workbench + official 3DS / No Magic 2024x operating reference, and the current user's selected branch model snapshot.
             </Typography>
           </Box>
           {workbenchAgentStatusQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentStatusQuery.error)}</Alert> : null}
           {workbenchAgentModelsQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentModelsQuery.error)}</Alert> : null}
           <Alert severity="info">
-            Workbench Agent uses your current Workbench permissions. It only syncs and chats against stored project data that this Workbench user can already read, and it uploads Workbench API knowledge so the model can produce runnable scripts instead of vague pseudocode.
+            Workbench Agent uses your current Workbench permissions. It waits for both files to finish processing, explicitly instructs the selected model to retrieve 3DS guidance before answering Workbench/Cameo questions, and keeps branch facts scoped to data this user can read.
           </Alert>
           <Grid container spacing={2}>
             <Grid item xs={12} md={6}>
@@ -5064,6 +5272,16 @@ export default function WorkspacePage() {
             <Chip label={workbenchAgentStatus?.configured ? "Connection saved" : "Connection not saved"} color={workbenchAgentStatus?.configured ? "success" : "default"} />
             <Chip label={workbenchAgentStatus?.model_name || "No mapped model yet"} variant="outlined" />
             <Chip label={workbenchAgentStatus?.knowledge_file_name || "Knowledge not synced"} variant="outlined" />
+            <Chip label={workbenchAgentStatus?.reference_file_name || "Workbench + 3DS reference not synced"} variant="outlined" />
+            <Chip
+              label={
+                workbenchAgentStatus?.three_ds_kb_available
+                  ? `3DS KB: ${workbenchAgentStatus.three_ds_kb_page_count} pages / ${workbenchAgentStatus.three_ds_kb_chunk_count} chunks`
+                  : "3DS KB not configured"
+              }
+              color={workbenchAgentStatus?.three_ds_kb_available ? "success" : "warning"}
+              variant="outlined"
+            />
           </Stack>
           {workbenchAgentStatus?.updated_at ? (
             <Typography variant="caption" color="text.secondary">
@@ -5076,9 +5294,9 @@ export default function WorkspacePage() {
       <Paper sx={{ p: 3, borderRadius: 2 }}>
         <Stack spacing={2}>
           <Box>
-            <Typography variant="h6">Knowledge Sync</Typography>
+            <Typography variant="h6">Knowledge Push</Typography>
             <Typography variant="body2" color="text.secondary">
-              Sync the selected stored project branch into Open WebUI before chatting. Workbench uploads the full stored branch data you can access, plus API manifest guidance and full Python script examples.
+              Process the persistent Workbench + 3DS reference when its fingerprint changes, then push the selected branch separately with its complete tree and native Cameo specification records.
             </Typography>
           </Box>
           {!selectedProjectId || !selectedBranchId ? (
@@ -5100,13 +5318,19 @@ export default function WorkspacePage() {
               {workbenchAgentStatus.knowledge_synced_at ? ` at ${new Date(workbenchAgentStatus.knowledge_synced_at).toLocaleString()}` : ""}.
             </Alert>
           ) : null}
+          {workbenchAgentStatus?.reference_file_id ? (
+            <Alert severity="success">
+              Persistent Agent reference: {workbenchAgentStatus.reference_file_name || workbenchAgentStatus.reference_file_id}
+              {workbenchAgentStatus.reference_synced_at ? ` at ${new Date(workbenchAgentStatus.reference_synced_at).toLocaleString()}` : ""}. This file is attached before the branch file for every mapped model used in Workbench Agent.
+            </Alert>
+          ) : null}
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
             <Button
               variant="contained"
               disabled={!selectedProjectId || !selectedBranchId || !workbenchAgentStatus?.configured || !csrfToken || syncWorkbenchAgentKnowledgeMutation.isPending}
               onClick={() => syncWorkbenchAgentKnowledgeMutation.mutate()}
             >
-              Sync Current Branch Knowledge
+              Push Current Branch Knowledge
             </Button>
             {syncWorkbenchAgentKnowledgeMutation.isPending ? <CircularProgress size={22} /> : null}
           </Stack>
@@ -5118,7 +5342,7 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h6">Agent Chat</Typography>
             <Typography variant="body2" color="text.secondary">
-              Use the mapped Open WebUI model against the selected stored project branch. Chat turns can auto-sync knowledge first, so the model sees the latest branch data and the full Python API examples Workbench exposes.
+              Use any mapped Open WebUI model against the selected stored branch. Every turn attaches the persistent Workbench + 3DS reference first and the permission-scoped branch model second.
             </Typography>
           </Box>
           {!workbenchAgentStatus?.configured ? (
@@ -5131,7 +5355,7 @@ export default function WorkspacePage() {
                 onChange={(event) => setAgentSyncKnowledgeBeforeChat(event.target.checked)}
               />
             }
-            label="Auto-sync the selected stored project branch before each chat request"
+            label="Auto-push when the selected project or branch differs from the processed knowledge file"
           />
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, minHeight: 220 }}>
             <Stack spacing={1.5}>
@@ -5156,7 +5380,7 @@ export default function WorkspacePage() {
                 ))
               ) : (
                 <Typography color="text.secondary">
-                  Start a conversation once a model is mapped. The agent will answer using your selected stored project branch plus the Workbench API script examples already bundled into its knowledge file.
+                  Start a conversation once a model is mapped. The agent is instructed to retrieve Workbench and 3DS usage guidance from the persistent reference and project facts from the selected branch file.
                 </Typography>
               )}
             </Stack>
@@ -5622,6 +5846,13 @@ export default function WorkspacePage() {
                 onClick={openWorkspaceMenu("api")}
               >
                 API
+              </Button>
+              <Button
+                size="small"
+                variant={tab === "agent" ? "contained" : "text"}
+                onClick={() => setTab("agent")}
+              >
+                Agent
               </Button>
             </Stack>
             <Menu

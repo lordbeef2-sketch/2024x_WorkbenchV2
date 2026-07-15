@@ -148,7 +148,7 @@ just the lightweight cached element records.
 
 ```bash
 curl -H "Authorization: Bearer <key>" \
-  "https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/tree?depth=2&includeOrphans=true"
+  "https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/tree?includeOrphans=true"
 ```
 
 Useful query params:
@@ -160,6 +160,11 @@ Useful query params:
 
 This returns a normalized tree built from the published snapshot's model roots,
 ownership, and contained-element links.
+
+Omit `depth` for the complete accessible branch tree. Use `depth=0` for model
+headers only, or a positive depth when an integration intentionally needs a
+bounded response. Workbench's Model Browser uses the complete response so tree
+filtering and selection cover every published node.
 
 ### Search the reconstructed branch model
 
@@ -185,7 +190,16 @@ curl -H "Authorization: Bearer <key>" \
 ```
 
 This returns the Workbench-presentable item structure instead of the raw cached
-element record.
+element record. Plugin snapshots using specification schema `2.0` expose the
+native payload under `source_payload.spec_sections`:
+
+- `metamodel.entries` contains every Cameo metamodel feature, including unset
+  defaults and derived/read-only metadata.
+- `stereotypes[]` contains each applied stereotype and its ordered inherited,
+  explicit, default, and calculated property values.
+
+Workbench renders these as **All Cameo Properties** and **Stereotypes / Tags**
+beside the compatibility sections used by older snapshots.
 
 ### Read the local graph around one element
 
@@ -227,12 +241,14 @@ curl -X PATCH \
 
 See:
 
-- [examples/22_workbench_cache_api_manifest.py](/C:/sand/fresh/New%20Project/examples/22_workbench_cache_api_manifest.py)
-- [examples/23_workbench_cache_api_list_elements.py](/C:/sand/fresh/New%20Project/examples/23_workbench_cache_api_list_elements.py)
-- [examples/24_workbench_cache_api_edit_element.py](/C:/sand/fresh/New%20Project/examples/24_workbench_cache_api_edit_element.py)
-- [examples/25_workbench_cache_api_ingest_snapshot.py](/C:/sand/fresh/New%20Project/examples/25_workbench_cache_api_ingest_snapshot.py)
-- [examples/26_workbench_cache_api_search_by_stereotype.py](/C:/sand/fresh/New%20Project/examples/26_workbench_cache_api_search_by_stereotype.py)
-- [examples/27_workbench_cache_api_tree.py](/C:/sand/fresh/New%20Project/examples/27_workbench_cache_api_tree.py)
-- [examples/28_workbench_cache_api_search_elements.py](/C:/sand/fresh/New%20Project/examples/28_workbench_cache_api_search_elements.py)
-- [examples/29_workbench_cache_api_element_graph.py](/C:/sand/fresh/New%20Project/examples/29_workbench_cache_api_element_graph.py)
-- [examples/workbench_cache_api_config.json](/C:/sand/fresh/New%20Project/examples/workbench_cache_api_config.json)
+- [examples/22_workbench_cache_api_manifest.py](examples/22_workbench_cache_api_manifest.py)
+- [examples/23_workbench_cache_api_list_elements.py](examples/23_workbench_cache_api_list_elements.py)
+- [examples/24_workbench_cache_api_edit_element.py](examples/24_workbench_cache_api_edit_element.py)
+- [examples/25_workbench_cache_api_ingest_snapshot.py](examples/25_workbench_cache_api_ingest_snapshot.py)
+- [examples/26_workbench_cache_api_search_by_stereotype.py](examples/26_workbench_cache_api_search_by_stereotype.py)
+- [examples/27_workbench_cache_api_tree.py](examples/27_workbench_cache_api_tree.py)
+- [examples/28_workbench_cache_api_search_elements.py](examples/28_workbench_cache_api_search_elements.py)
+- [examples/29_workbench_cache_api_element_graph.py](examples/29_workbench_cache_api_element_graph.py)
+- [examples/30_workbench_cache_api_tree_children.py](examples/30_workbench_cache_api_tree_children.py)
+- [examples/31_workbench_cache_api_native_specifications.py](examples/31_workbench_cache_api_native_specifications.py)
+- [examples/workbench_cache_api_config.json](examples/workbench_cache_api_config.json)

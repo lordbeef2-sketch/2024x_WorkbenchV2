@@ -43,7 +43,15 @@ permission overlays separately. That avoids duplicating the same branch model
 for every user while still keeping visibility scoped to the TWC-backed
 Workbench user identity.
 
-See the developer-facing cache API guide in [CACHE_API.md](/C:/sand/fresh/New%20Project/CACHE_API.md) and the runnable examples in [examples/README.md](/C:/sand/fresh/New%20Project/examples/README.md).
+See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
+
+Workbench Agent uses two retrieval-friendly Markdown files. A persistent,
+content-fingerprinted reference contains Workbench operating instructions,
+runnable API examples, and the official 3DS / No Magic 2024x chunks. A separate
+permission-scoped file contains the selected branch's complete tree and native
+Cameo specifications. Workbench waits for both Open WebUI files to report
+`completed`, attaches both to every chat, and supplies a system instruction that
+separates product/API guidance from project-specific facts.
 
 Preset-management authorization is derived from Teamwork Cloud user context and trusted upstream role or group headers when they are available. The backend does not keep a separate hardcoded admin-user list.
 
