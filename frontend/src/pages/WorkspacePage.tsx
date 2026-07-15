@@ -72,6 +72,7 @@ import { useSession } from "../state/SessionProvider";
 type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-viewer" | "compare" | "agent" | "developer" | "api";
 type WorkspaceMenuGroup = "views" | "diagrams" | "api";
 type ElementSearchMode = "query" | "stereotype";
+type CompareMode = "branch" | "item";
 
 const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
@@ -1698,7 +1699,9 @@ function oslcResponseContent(response: OSLCExecuteResponse): string {
 export default function WorkspacePage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const searchParamsKey = searchParams.toString();
   const pendingSearchSyncRef = useRef<string | null>(null);
+  const applyingSearchParamsRef = useRef(false);
   const queryClient = useQueryClient();
   const { session, refreshSession, setSessionSnapshot } = useSession();
   const currentPreferences: SessionPreferences = session?.preferences ?? {
@@ -1756,6 +1759,11 @@ export default function WorkspacePage() {
   const [compareRight, setCompareRight] = useState("");
   const [compareLeftDisplay, setCompareLeftDisplay] = useState("");
   const [compareRightDisplay, setCompareRightDisplay] = useState("");
+  const [compareMode, setCompareMode] = useState<CompareMode>("branch");
+  const [compareLeftProjectId, setCompareLeftProjectId] = useState(() => searchParams.get("project") ?? "");
+  const [compareLeftBranchId, setCompareLeftBranchId] = useState(() => searchParams.get("branch") ?? "");
+  const [compareRightProjectId, setCompareRightProjectId] = useState(() => searchParams.get("project") ?? "");
+  const [compareRightBranchId, setCompareRightBranchId] = useState(() => searchParams.get("branch") ?? "");
   const [selectedApiTag, setSelectedApiTag] = useState("");
   const [selectedOperationKey, setSelectedOperationKey] = useState("");
   const [apiSearch, setApiSearch] = useState("");
@@ -1890,6 +1898,44 @@ export default function WorkspacePage() {
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
+  const compareLeftProject = useMemo(
+    () => projects.find((project) => project.id === compareLeftProjectId) ?? null,
+    [compareLeftProjectId, projects],
+  );
+  const compareRightProject = useMemo(
+    () => projects.find((project) => project.id === compareRightProjectId) ?? null,
+    [compareRightProjectId, projects],
+  );
+  const compareLeftBranchesQuery = useQuery({
+    queryKey: ["workspace-branches", ...sessionCacheKey, compareLeftProjectId, compareLeftProject?.workspace_id],
+    queryFn: () => api.getProjectBranches(compareLeftProjectId, compareLeftProject?.workspace_id || undefined),
+    enabled: tab === "compare" && Boolean(compareLeftProjectId),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const compareRightBranchesQuery = useQuery({
+    queryKey: ["workspace-branches", ...sessionCacheKey, compareRightProjectId, compareRightProject?.workspace_id],
+    queryFn: () => api.getProjectBranches(compareRightProjectId, compareRightProject?.workspace_id || undefined),
+    enabled: tab === "compare" && Boolean(compareRightProjectId),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const compareLeftBranches = useMemo(
+    () =>
+      [...(compareLeftBranchesQuery.data ?? [])].sort((left, right) =>
+        compareDisplayValues(left.name || left.id, right.name || right.id),
+      ),
+    [compareLeftBranchesQuery.data],
+  );
+  const compareRightBranches = useMemo(
+    () =>
+      [...(compareRightBranchesQuery.data ?? [])].sort((left, right) =>
+        compareDisplayValues(left.name || left.id, right.name || right.id),
+      ),
+    [compareRightBranchesQuery.data],
+  );
   const branchesQuery = useQuery({
     queryKey: ["workspace-branches", ...sessionCacheKey, selectedProjectId, selectedProject?.workspace_id],
     queryFn: () => api.getProjectBranches(selectedProjectId, selectedProject?.workspace_id || undefined),
@@ -1909,6 +1955,33 @@ export default function WorkspacePage() {
       }),
     [branchesQuery.data],
   );
+
+  useEffect(() => {
+    if (!compareLeftProjectId && selectedProjectId) {
+      setCompareLeftProjectId(selectedProjectId);
+    }
+    if (!compareRightProjectId && selectedProjectId) {
+      setCompareRightProjectId(selectedProjectId);
+    }
+  }, [compareLeftProjectId, compareRightProjectId, selectedProjectId]);
+
+  useEffect(() => {
+    if (!compareLeftProjectId || compareLeftBranchesQuery.isLoading) {
+      return;
+    }
+    if (!compareLeftBranches.some((branch) => branch.id === compareLeftBranchId)) {
+      setCompareLeftBranchId(compareLeftBranches[0]?.id ?? "");
+    }
+  }, [compareLeftBranchId, compareLeftBranches, compareLeftBranchesQuery.isLoading, compareLeftProjectId]);
+
+  useEffect(() => {
+    if (!compareRightProjectId || compareRightBranchesQuery.isLoading) {
+      return;
+    }
+    if (!compareRightBranches.some((branch) => branch.id === compareRightBranchId)) {
+      setCompareRightBranchId(compareRightBranches[0]?.id ?? "");
+    }
+  }, [compareRightBranchId, compareRightBranches, compareRightBranchesQuery.isLoading, compareRightProjectId]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -1972,47 +2045,29 @@ export default function WorkspacePage() {
   }, [expandedTreeNodeIds, treeExpandedStorageKey]);
 
   useEffect(() => {
-    const currentSearch = searchParams.toString();
+    const currentSearch = searchParamsKey;
     if (pendingSearchSyncRef.current !== null && pendingSearchSyncRef.current === currentSearch) {
       pendingSearchSyncRef.current = null;
       return;
     }
-    const urlTab = parseWorkspaceTab(searchParams.get("tab"), isAdmin);
-    const urlProjectId = searchParams.get("project") ?? "";
-    const urlBranchId = searchParams.get("branch") ?? "";
-    const urlItemId = searchParams.get("item") ?? "";
-    const urlSearchMode = parseElementSearchMode(searchParams.get("searchMode"));
-    const urlSearchQuery = searchParams.get("searchQuery") ?? "";
-    const urlSearchStereotype = searchParams.get("searchStereotype") ?? "";
-    const urlSearchItemType = searchParams.get("searchItemType") ?? "";
-    if (urlTab !== tab) {
-      setTab(urlTab);
-    }
-    if (urlProjectId !== selectedProjectId) {
-      setSelectedProjectId(urlProjectId);
-    }
-    if (urlBranchId !== selectedBranchId) {
-      setSelectedBranchId(urlBranchId);
-    }
-    if (urlItemId !== selectedItemId) {
-      setSelectedItemId(urlItemId);
-    }
-    if (urlSearchMode !== elementSearchMode) {
-      setElementSearchMode(urlSearchMode);
-    }
-    if (urlSearchQuery !== elementSearchQuery) {
-      setElementSearchQuery(urlSearchQuery);
-    }
-    if (urlSearchStereotype !== elementSearchStereotype) {
-      setElementSearchStereotype(urlSearchStereotype);
-    }
-    if (urlSearchItemType !== elementSearchItemType) {
-      setElementSearchItemType(urlSearchItemType);
-    }
-  }, [elementSearchItemType, elementSearchMode, elementSearchQuery, elementSearchStereotype, isAdmin, searchParams, selectedBranchId, selectedItemId, selectedProjectId, tab]);
+    const urlParams = new URLSearchParams(currentSearch);
+    applyingSearchParamsRef.current = true;
+    setTab(parseWorkspaceTab(urlParams.get("tab"), isAdmin));
+    setSelectedProjectId(urlParams.get("project") ?? "");
+    setSelectedBranchId(urlParams.get("branch") ?? "");
+    setSelectedItemId(urlParams.get("item") ?? "");
+    setElementSearchMode(parseElementSearchMode(urlParams.get("searchMode")));
+    setElementSearchQuery(urlParams.get("searchQuery") ?? "");
+    setElementSearchStereotype(urlParams.get("searchStereotype") ?? "");
+    setElementSearchItemType(urlParams.get("searchItemType") ?? "");
+  }, [isAdmin, searchParamsKey]);
 
   useEffect(() => {
-    const nextParams = new URLSearchParams(searchParams);
+    if (applyingSearchParamsRef.current) {
+      applyingSearchParamsRef.current = false;
+      return;
+    }
+    const nextParams = new URLSearchParams(searchParamsKey);
     const nextTab = parseWorkspaceTab(tab, isAdmin);
     if (nextTab === "dashboard") {
       nextParams.delete("tab");
@@ -2054,13 +2109,13 @@ export default function WorkspacePage() {
     } else {
       nextParams.delete("searchItemType");
     }
-    const current = searchParams.toString();
+    const current = searchParamsKey;
     const next = nextParams.toString();
     if (current !== next) {
       pendingSearchSyncRef.current = next;
       setSearchParams(nextParams, { replace: true });
     }
-  }, [elementSearchItemType, elementSearchMode, elementSearchQuery, elementSearchStereotype, isAdmin, searchParams, selectedBranchId, selectedItemId, selectedProjectId, setSearchParams, tab]);
+  }, [elementSearchItemType, elementSearchMode, elementSearchQuery, elementSearchStereotype, isAdmin, searchParamsKey, selectedBranchId, selectedItemId, selectedProjectId, setSearchParams, tab]);
 
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
@@ -2462,6 +2517,12 @@ export default function WorkspacePage() {
       ? compareRightName
       : "Selected item reference"
     : "";
+  const compareLeftContextLabel = compareLeftProject
+    ? `${compareLeftProject.name} / ${branchLabel(compareLeftBranches, compareLeftBranchId)}`
+    : "Select a left project and branch";
+  const compareRightContextLabel = compareRightProject
+    ? `${compareRightProject.name} / ${branchLabel(compareRightBranches, compareRightBranchId)}`
+    : "Select a right project and branch";
   const selectedSearchDetail = useMemo(
     () => elementSearchResponse?.details.find((detail) => detail.id === selectedItemId) ?? null,
     [elementSearchResponse, selectedItemId],
@@ -2688,15 +2749,27 @@ export default function WorkspacePage() {
   });
 
   const compareMutation = useMutation({
-    mutationFn: () =>
-      api.compare(
+    mutationFn: () => {
+      if (!compareLeftProjectId || !compareLeftBranchId || !compareRightProjectId || !compareRightBranchId) {
+        throw new Error("Select a project and branch on both sides before comparing.");
+      }
+      if (compareMode === "branch") {
+        return api.compareBranches(
+          compareLeftProjectId,
+          compareLeftBranchId,
+          compareRightProjectId,
+          compareRightBranchId,
+        );
+      }
+      return api.compare(
         compareLeft.trim(),
         compareRight.trim(),
-        selectedProjectId || undefined,
-        selectedBranchId || undefined,
-        selectedProjectId || undefined,
-        selectedBranchId || undefined,
-      ),
+        compareLeftProjectId,
+        compareLeftBranchId,
+        compareRightProjectId,
+        compareRightBranchId,
+      );
+    },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
@@ -3738,12 +3811,18 @@ export default function WorkspacePage() {
 
   const pickCompareSide = (side: "left" | "right", itemId: string) => {
     const readableLabel = humanReadableReference(itemId, referenceNameById);
+    setCompareMode("item");
+    compareMutation.reset();
     if (side === "left") {
       setCompareLeft(itemId);
       setCompareLeftDisplay(readableLabel);
+      setCompareLeftProjectId(selectedProjectId);
+      setCompareLeftBranchId(selectedBranchId);
     } else {
       setCompareRight(itemId);
       setCompareRightDisplay(readableLabel);
+      setCompareRightProjectId(selectedProjectId);
+      setCompareRightBranchId(selectedBranchId);
     }
     setTab("compare");
   };
@@ -4478,115 +4557,204 @@ export default function WorkspacePage() {
     );
   };
 
-  const renderCompare = () => (
-    <Stack spacing={2}>
-      <Typography variant="h5">Compare</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Compare model items or revisions in the current project context. Numeric left and right revisions on the same project use the RealSwagger revision diff endpoint.
-              </Typography>
-      <Paper sx={{ p: 3, borderRadius: 2 }}>
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={5}>
-            <TextField
-              label="Left item or revision"
-              value={compareLeftFieldValue}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setCompareLeft(nextValue);
-                setCompareLeftDisplay(nextValue);
-              }}
-              helperText={compareLeft.trim() ? compareLeftLabel : "Use a discovered item or a revision number."}
-              fullWidth
-            />
+  const renderCompare = () => {
+    const result = compareMutation.data;
+    const resultLeftLabel = result?.left_context
+      ? `${result.left_context.project_name} / ${result.left_context.branch_name}`
+      : compareLeftLabel;
+    const resultRightLabel = result?.right_context
+      ? `${result.right_context.project_name} / ${result.right_context.branch_name}`
+      : compareRightLabel;
+    const totalDifferences = result?.total_differences ?? result?.differences.length ?? 0;
+    const contextReady = Boolean(
+      compareLeftProjectId && compareLeftBranchId && compareRightProjectId && compareRightBranchId,
+    );
+    const valuesReady = compareMode === "branch" || Boolean(compareLeft.trim() && compareRight.trim());
+
+    return (
+      <Stack spacing={2}>
+        <Box>
+          <Typography variant="h5">Compare</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+            Compare complete stored branches across the same project or two different projects. Item and numeric revision comparison remains available with an independent context on each side.
+          </Typography>
+        </Box>
+        <ToggleButtonGroup
+          exclusive
+          value={compareMode}
+          onChange={(_event, value: CompareMode | null) => {
+            if (value) {
+              setCompareMode(value);
+              compareMutation.reset();
+            }
+          }}
+          size="small"
+        >
+          <ToggleButton value="branch">Projects / branches</ToggleButton>
+          <ToggleButton value="item">Items / revisions</ToggleButton>
+        </ToggleButtonGroup>
+        <Paper sx={{ p: 3, borderRadius: 2 }}>
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={3}>
+              <TextField
+                select
+                label="Left project"
+                value={compareLeftProjectId}
+                onChange={(event) => {
+                  setCompareLeftProjectId(event.target.value);
+                  setCompareLeftBranchId("");
+                  compareMutation.reset();
+                }}
+                fullWidth
+              >
+                <MenuItem value=""><em>Select project</em></MenuItem>
+                {projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.name}</MenuItem>)}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={3}>
+              <TextField
+                select
+                label="Left branch"
+                value={compareLeftBranchId}
+                onChange={(event) => {
+                  setCompareLeftBranchId(event.target.value);
+                  compareMutation.reset();
+                }}
+                disabled={!compareLeftProjectId || compareLeftBranchesQuery.isLoading || !compareLeftBranches.length}
+                fullWidth
+              >
+                {compareLeftBranches.map((branch) => <MenuItem key={branch.id} value={branch.id}>{branch.name}</MenuItem>)}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={3}>
+              <TextField
+                select
+                label="Right project"
+                value={compareRightProjectId}
+                onChange={(event) => {
+                  setCompareRightProjectId(event.target.value);
+                  setCompareRightBranchId("");
+                  compareMutation.reset();
+                }}
+                fullWidth
+              >
+                <MenuItem value=""><em>Select project</em></MenuItem>
+                {projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.name}</MenuItem>)}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={3}>
+              <TextField
+                select
+                label="Right branch"
+                value={compareRightBranchId}
+                onChange={(event) => {
+                  setCompareRightBranchId(event.target.value);
+                  compareMutation.reset();
+                }}
+                disabled={!compareRightProjectId || compareRightBranchesQuery.isLoading || !compareRightBranches.length}
+                fullWidth
+              >
+                {compareRightBranches.map((branch) => <MenuItem key={branch.id} value={branch.id}>{branch.name}</MenuItem>)}
+              </TextField>
+            </Grid>
           </Grid>
-          <Grid item xs={12} md={5}>
-            <TextField
-              label="Right item or revision"
-              value={compareRightFieldValue}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setCompareRight(nextValue);
-                setCompareRightDisplay(nextValue);
-              }}
-              helperText={compareRight.trim() ? compareRightLabel : "Use a discovered item or a revision number."}
-              fullWidth
-            />
-          </Grid>
-          <Grid item xs={12} md={2}>
+          {compareLeftBranchesQuery.error ? <Alert severity="error" sx={{ mt: 2 }}>{errorMessage(compareLeftBranchesQuery.error)}</Alert> : null}
+          {compareRightBranchesQuery.error ? <Alert severity="error" sx={{ mt: 2 }}>{errorMessage(compareRightBranchesQuery.error)}</Alert> : null}
+        </Paper>
+        {compareMode === "item" ? (
+          <Paper sx={{ p: 3, borderRadius: 2 }}>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  label="Left item or revision"
+                  value={compareLeftFieldValue}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    setCompareLeft(nextValue);
+                    setCompareLeftDisplay(nextValue);
+                    compareMutation.reset();
+                  }}
+                  helperText={compareLeft.trim() ? compareLeftLabel : "Use a discovered item or a revision number."}
+                  fullWidth
+                />
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  label="Right item or revision"
+                  value={compareRightFieldValue}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    setCompareRight(nextValue);
+                    setCompareRightDisplay(nextValue);
+                    compareMutation.reset();
+                  }}
+                  helperText={compareRight.trim() ? compareRightLabel : "Numeric revision diff requires the same project on both sides."}
+                  fullWidth
+                />
+              </Grid>
+            </Grid>
+          </Paper>
+        ) : null}
+        <Paper sx={{ p: 3, borderRadius: 2 }}>
+          <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}>
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="overline" color="text.secondary">Left context</Typography>
+              <Typography variant="subtitle2">{compareLeftContextLabel}</Typography>
+            </Box>
+            <CompareArrowsRoundedIcon color="action" />
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="overline" color="text.secondary">Right context</Typography>
+              <Typography variant="subtitle2">{compareRightContextLabel}</Typography>
+            </Box>
             <Button
-              fullWidth
-              sx={{ height: "100%" }}
               variant="contained"
               startIcon={<CompareArrowsRoundedIcon />}
-              disabled={!compareLeft.trim() || !compareRight.trim() || compareMutation.isPending}
+              disabled={!contextReady || !valuesReady || compareMutation.isPending}
               onClick={() => compareMutation.mutate()}
             >
-              Compare
+              Run diff
             </Button>
-          </Grid>
-        </Grid>
-      </Paper>
-      {(compareLeft.trim() || compareRight.trim()) && (
-        <Paper sx={{ p: 3, borderRadius: 2 }}>
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-            {compareLeft.trim() ? (
-              <Box sx={{ flex: 1 }}>
-                <Typography variant="overline" color="text.secondary">
-                  Left Selection
-                </Typography>
-                <Typography variant="subtitle2">{compareLeftLabel}</Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {isRevisionValue(compareLeft) ? "Current project revision context" : selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : "Selected workbench context"}
-                </Typography>
-              </Box>
-            ) : null}
-            {compareRight.trim() ? (
-              <Box sx={{ flex: 1 }}>
-                <Typography variant="overline" color="text.secondary">
-                  Right Selection
-                </Typography>
-                <Typography variant="subtitle2">{compareRightLabel}</Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {isRevisionValue(compareRight) ? "Current project revision context" : selectedProject ? `${selectedProject.name} / ${branchLabel(selectedProjectBranches, selectedBranchId)}` : "Selected workbench context"}
-                </Typography>
-              </Box>
-            ) : null}
           </Stack>
         </Paper>
-      )}
-      {compareMutation.isPending ? <CircularProgress size={28} /> : null}
-      {compareMutation.data ? (
-        <Paper sx={{ p: 3, borderRadius: 2 }}>
+        {compareMutation.isPending ? <CircularProgress size={28} /> : null}
+        {result ? (
+          <Paper sx={{ p: 3, borderRadius: 2 }}>
             <Stack spacing={2}>
               <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-              <Typography variant="h6">{compareLeftLabel && compareRightLabel ? `${compareLeftLabel} vs ${compareRightLabel}` : compareMutation.data.summary}</Typography>
-                <Chip label={compareMutation.data.compare_type} />
-                <Chip label={`${compareMutation.data.differences.length} differences`} variant="outlined" />
+                <Typography variant="h6">{resultLeftLabel && resultRightLabel ? `${resultLeftLabel} vs ${resultRightLabel}` : result.summary}</Typography>
+                <Chip label={result.compare_type} />
+                <Chip label={`${totalDifferences} differences`} variant="outlined" />
+                {result.left_context ? <Chip label={`${result.left_context.element_count} left elements`} variant="outlined" /> : null}
+                {result.right_context ? <Chip label={`${result.right_context.element_count} right elements`} variant="outlined" /> : null}
               </Stack>
-            <List disablePadding>
-              {compareMutation.data.differences.map((difference) => (
-                <ListItemButton key={difference.field_path} alignItems="flex-start">
-                  <ListItemText
-                    primary={humanizeFieldPath(difference.field_path)}
-                    secondary={
-                      <Box component="span" sx={{ display: "block", mt: 1 }}>
-                        <Typography component="span" variant="body2" sx={{ display: "block" }}>
-                          {difference.summary}
-                        </Typography>
-                        <Typography component="pre" variant="caption" sx={{ display: "block", whiteSpace: "pre-wrap", mt: 1, mb: 0 }}>
-                          {`Left: ${humanReadableValue(difference.left_value, referenceNameById)}\nRight: ${humanReadableValue(difference.right_value, referenceNameById)}`}
-                        </Typography>
-                      </Box>
-                    }
-                  />
-                </ListItemButton>
-              ))}
-            </List>
-          </Stack>
-        </Paper>
-      ) : null}
-    </Stack>
-  );
+              <Typography variant="body2" color="text.secondary">{result.summary}</Typography>
+              {result.truncated ? (
+                <Alert severity="warning">Showing the first {result.differences.length} of {totalDifferences} differences.</Alert>
+              ) : null}
+              {!result.differences.length ? <Alert severity="success">No differences were found in the accessible stored content.</Alert> : null}
+              <List disablePadding>
+                {result.differences.map((difference) => (
+                  <ListItemButton key={difference.field_path} alignItems="flex-start">
+                    <ListItemText
+                      primary={humanizeFieldPath(difference.field_path)}
+                      secondary={
+                        <Box component="span" sx={{ display: "block", mt: 1 }}>
+                          <Typography component="span" variant="body2" sx={{ display: "block" }}>{difference.summary}</Typography>
+                          <Typography component="pre" variant="caption" sx={{ display: "block", whiteSpace: "pre-wrap", mt: 1, mb: 0 }}>
+                            {`Left: ${humanReadableValue(difference.left_value, referenceNameById)}\nRight: ${humanReadableValue(difference.right_value, referenceNameById)}`}
+                          </Typography>
+                        </Box>
+                      }
+                    />
+                  </ListItemButton>
+                ))}
+              </List>
+            </Stack>
+          </Paper>
+        ) : null}
+      </Stack>
+    );
+  };
 
   const renderCacheApiKeys = () => (
     <Paper sx={{ p: 3, borderRadius: 2 }}>

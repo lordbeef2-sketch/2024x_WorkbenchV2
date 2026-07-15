@@ -332,12 +332,25 @@ export interface CompareDifference {
   summary: string;
 }
 
+export interface CompareContext {
+  project_id: string;
+  branch_id: string;
+  project_name: string;
+  branch_name: string;
+  revision?: string | null;
+  element_count: number;
+}
+
 export interface CompareResult {
   compare_type: string;
   left_id: string;
   right_id: string;
   summary: string;
   differences: CompareDifference[];
+  left_context?: CompareContext | null;
+  right_context?: CompareContext | null;
+  total_differences?: number;
+  truncated?: boolean;
 }
 
 export interface JobRecord {

@@ -627,6 +627,27 @@ async def compare(
     )
 
 
+@router.get("/compare/branches")
+async def compare_branches(
+    leftProjectId: str = Query(...),
+    leftBranchId: str = Query(...),
+    rightProjectId: str = Query(...),
+    rightBranchId: str = Query(...),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.compare_branches(
+            session,
+            leftProjectId,
+            leftBranchId,
+            rightProjectId,
+            rightBranchId,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.post("/capabilities/refresh")
 async def refresh_capabilities(session=Depends(require_csrf), container: ApplicationContainer = Depends(get_container)):
     return await container.platform.refresh_capabilities(session)

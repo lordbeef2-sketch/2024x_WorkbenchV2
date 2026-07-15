@@ -493,6 +493,15 @@ export const api = {
     }
     return request<CompareResult>(`/workspace/compare?${params.toString()}`);
   },
+  compareBranches(leftProjectId: string, leftBranchId: string, rightProjectId: string, rightBranchId: string) {
+    const params = new URLSearchParams({
+      leftProjectId,
+      leftBranchId,
+      rightProjectId,
+      rightBranchId,
+    });
+    return request<CompareResult>(`/workspace/compare/branches?${params.toString()}`);
+  },
   refreshCapabilities(csrfToken: string) {
     return request<CapabilitySummary>("/workspace/capabilities/refresh", {
       method: "POST",

@@ -57,6 +57,7 @@ from app.models.domain import (
     CachedModelRecord,
     CachedModelView,
     CommentEntry,
+    CompareContext,
     CompareDifference,
     CompareResult,
     DashboardPayload,
@@ -3947,7 +3948,195 @@ class PlatformService:
             right_id=right_id,
             summary=f"{len(differences)} field differences detected.",
             differences=differences,
+            total_differences=len(differences),
         )
+
+    async def compare_branches(
+        self,
+        session: SessionData,
+        left_project_id: str,
+        left_branch_id: str,
+        right_project_id: str,
+        right_branch_id: str,
+    ) -> CompareResult:
+        left_summary = self.get_branch_cache_summary_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            left_project_id,
+            left_branch_id,
+        )
+        right_summary = self.get_branch_cache_summary_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            right_project_id,
+            right_branch_id,
+        )
+        if left_summary is None:
+            raise KeyError(f"Left project branch is not available in this user's Workbench cache: {left_project_id}/{left_branch_id}")
+        if right_summary is None:
+            raise KeyError(f"Right project branch is not available in this user's Workbench cache: {right_project_id}/{right_branch_id}")
+
+        user_id = self._user_key(session.user.preferred_username)
+        left_elements = self._visible_cached_elements_for_user(
+            user_id,
+            session.server.id,
+            left_project_id,
+            left_branch_id,
+        )
+        right_elements = self._visible_cached_elements_for_user(
+            user_id,
+            session.server.id,
+            right_project_id,
+            right_branch_id,
+        )
+        same_project = left_project_id == right_project_id
+        left_by_key, left_id_aliases = self._branch_compare_records(left_elements, same_project=same_project)
+        right_by_key, right_id_aliases = self._branch_compare_records(right_elements, same_project=same_project)
+
+        max_returned_differences = 5000
+        differences: list[CompareDifference] = []
+        total_differences = 0
+        added_elements = 0
+        removed_elements = 0
+        changed_elements = 0
+
+        for match_key in sorted(set(left_by_key) | set(right_by_key), key=str.casefold):
+            left_record = left_by_key.get(match_key)
+            right_record = right_by_key.get(match_key)
+            field_prefix = f"elements[{match_key}]"
+            if left_record is None and right_record is not None:
+                added_elements += 1
+                total_differences += 1
+                if len(differences) < max_returned_differences:
+                    differences.append(
+                        CompareDifference(
+                            field_path=field_prefix,
+                            left_value=None,
+                            right_value=self._branch_compare_element_summary(right_record),
+                            summary="Element added on the right",
+                        )
+                    )
+                continue
+            if right_record is None and left_record is not None:
+                removed_elements += 1
+                total_differences += 1
+                if len(differences) < max_returned_differences:
+                    differences.append(
+                        CompareDifference(
+                            field_path=field_prefix,
+                            left_value=self._branch_compare_element_summary(left_record),
+                            right_value=None,
+                            summary="Element missing from the right",
+                        )
+                    )
+                continue
+            if left_record is None or right_record is None:
+                continue
+
+            left_document = self._branch_compare_element_document(left_record, left_id_aliases)
+            right_document = self._branch_compare_element_document(right_record, right_id_aliases)
+            element_differences = _dict_diff(left_document, right_document, field_prefix)
+            if element_differences:
+                changed_elements += 1
+                total_differences += len(element_differences)
+                remaining = max_returned_differences - len(differences)
+                if remaining > 0:
+                    differences.extend(element_differences[:remaining])
+
+        compare_type = "branch" if same_project else "project"
+        left_context = CompareContext(
+            project_id=left_project_id,
+            branch_id=left_branch_id,
+            project_name=left_summary.project_name or left_project_id,
+            branch_name=left_summary.branch_name or left_branch_id,
+            revision=left_summary.latest_revision,
+            element_count=len(left_elements),
+        )
+        right_context = CompareContext(
+            project_id=right_project_id,
+            branch_id=right_branch_id,
+            project_name=right_summary.project_name or right_project_id,
+            branch_name=right_summary.branch_name or right_branch_id,
+            revision=right_summary.latest_revision,
+            element_count=len(right_elements),
+        )
+        summary = (
+            f"{total_differences} field differences across {added_elements} added, "
+            f"{removed_elements} removed, and {changed_elements} changed elements."
+        )
+        return CompareResult(
+            compare_type=compare_type,
+            left_id=f"{left_project_id}:{left_branch_id}",
+            right_id=f"{right_project_id}:{right_branch_id}",
+            summary=summary,
+            differences=differences,
+            left_context=left_context,
+            right_context=right_context,
+            total_differences=total_differences,
+            truncated=total_differences > len(differences),
+        )
+
+    def _branch_compare_records(
+        self,
+        records: list[CachedElementRecord],
+        *,
+        same_project: bool,
+    ) -> tuple[dict[str, CachedElementRecord], dict[str, str]]:
+        grouped: dict[str, list[CachedElementRecord]] = {}
+        for record in records:
+            if same_project:
+                base_key = f"id:{record.element_id}"
+            else:
+                qualified_name = str(record.payload.get("qualified_name") or record.path or "").strip()
+                metaclass = str(record.payload.get("metaclass") or record.item_type or "element").strip()
+                if qualified_name:
+                    base_key = f"path:{qualified_name.casefold()}|type:{metaclass.casefold()}"
+                else:
+                    base_key = f"id:{record.element_id}"
+            grouped.setdefault(base_key, []).append(record)
+
+        keyed: dict[str, CachedElementRecord] = {}
+        aliases: dict[str, str] = {}
+        for base_key, matches in grouped.items():
+            ordered = sorted(matches, key=lambda item: (item.path.casefold(), item.name.casefold(), item.element_id))
+            for index, record in enumerate(ordered, start=1):
+                match_key = base_key if len(ordered) == 1 else f"{base_key}#{index}"
+                keyed[match_key] = record
+                aliases[record.element_id] = match_key
+        return keyed, aliases
+
+    def _branch_compare_element_document(self, record: CachedElementRecord, id_aliases: dict[str, str]) -> dict[str, Any]:
+        payload = dict(record.payload)
+        for identity_field in ("element_id", "elementId", "model_id", "modelId", "local_id", "localId"):
+            payload.pop(identity_field, None)
+        return {
+            "name": record.name,
+            "item_type": record.item_type,
+            "path": record.path,
+            "payload": self._branch_compare_normalize_value(payload, id_aliases),
+        }
+
+    def _branch_compare_normalize_value(self, value: Any, id_aliases: dict[str, str]) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): self._branch_compare_normalize_value(nested_value, id_aliases)
+                for key, nested_value in value.items()
+            }
+        if isinstance(value, list):
+            return [self._branch_compare_normalize_value(item, id_aliases) for item in value]
+        if isinstance(value, tuple):
+            return [self._branch_compare_normalize_value(item, id_aliases) for item in value]
+        if isinstance(value, str):
+            return id_aliases.get(value, value)
+        return value
+
+    def _branch_compare_element_summary(self, record: CachedElementRecord) -> dict[str, Any]:
+        return {
+            "id": record.element_id,
+            "name": record.name,
+            "item_type": record.item_type,
+            "path": record.path,
+        }
 
     def swagger_contract_manifest(self) -> SwaggerContractManifest:
         return self.contract.manifest()

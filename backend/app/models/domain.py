@@ -468,12 +468,25 @@ class CompareDifference(BaseModel):
     summary: str
 
 
+class CompareContext(BaseModel):
+    project_id: str
+    branch_id: str
+    project_name: str = ""
+    branch_name: str = ""
+    revision: str | None = None
+    element_count: int = 0
+
+
 class CompareResult(BaseModel):
     compare_type: str
     left_id: str
     right_id: str
     summary: str
     differences: list[CompareDifference] = Field(default_factory=list)
+    left_context: CompareContext | None = None
+    right_context: CompareContext | None = None
+    total_differences: int = 0
+    truncated: bool = False
 
 
 class ExportRequest(BaseModel):

@@ -31,6 +31,8 @@ Users can now create their own cache API keys from Workbench Settings for script
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/graph`
 - `PATCH /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
 
+Workspace comparison also supports `GET /api/workspace/compare/branches` with independent `leftProjectId`, `leftBranchId`, `rightProjectId`, and `rightBranchId` parameters. It compares the complete accessible cached element sets, matches same-project branches by element ID, and matches different projects by qualified path plus metaclass.
+
 Use `Authorization: Bearer <api-key>` on those requests. The API key identity maps back to the Workbench user who created it, so cache reads stay scoped to that user's cached visibility instead of becoming a server-wide bypass.
 `write` scope also allows `POST /api/cache-ingest/branch-snapshots` and `POST /api/cache-ingest/branch-deltas`. `edit` scope allows cache edits on plugin-backed branches when the user's TWC model permission overlay marks that model editable.
 Stereotype search accepts either a stereotype id or a stereotype name fragment and can return either lightweight cached element records or full cached item details with `includeDetails=true`.

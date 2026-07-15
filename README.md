@@ -1,6 +1,6 @@
 # TWC Workbench
 
-TWC Workbench is a server-backed enterprise web application for Teamwork Cloud 2024x. It provides secure TWC authentication, workspace navigation, model browsing, item details, item editing where supported by the Teamwork Cloud API, and compare workflows derived from `contracts/RealSwagger.json`.
+TWC Workbench is a server-backed enterprise web application for Teamwork Cloud 2024x. It provides secure TWC authentication, workspace navigation, model browsing, item details, item editing where supported by the Teamwork Cloud API, and permission-scoped item, revision, branch-to-branch, and project-to-project compare workflows.
 
 ## Architecture Summary
 
