@@ -57,6 +57,7 @@ import {
   ItemDetails,
   OSLCExecuteResponse,
   ProjectSummary,
+  ProjectUsageResponse,
   SessionPreferences,
   StereotypeElementSearchResponse,
   SwaggerContractManifest,
@@ -124,15 +125,12 @@ const SPECIFICATION_CHILD_SECTIONS: SpecificationSectionId[] = [
   "allocations",
 ];
 
-function parseWorkspaceTab(value: string | null, isAdmin = false): WorkspaceTab {
+function parseWorkspaceTab(value: string | null): WorkspaceTab {
   const fallback: WorkspaceTab = "dashboard";
   if (value === "details" || value === "diagram-details") {
     return "models";
   }
   if (!value || !WORKSPACE_TABS.includes(value as WorkspaceTab)) {
-    return fallback;
-  }
-  if (value === "api" && !isAdmin) {
     return fallback;
   }
   return value as WorkspaceTab;
@@ -1800,7 +1798,7 @@ export default function WorkspacePage() {
   const treeNodesRef = useRef<TreeNode[]>([]);
   const [agentSyncKnowledgeBeforeChat, setAgentSyncKnowledgeBeforeChat] = useState(true);
   const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
-  const projectContextActive = tab === "models" || tab === "search" || tab === "diagram-viewer" || tab === "compare";
+  const projectContextActive = tab === "projects" || tab === "models" || tab === "search" || tab === "diagram-viewer" || tab === "compare";
   const treeExpandedStorageKey = `${layoutStoragePrefix}:tree-expanded:${selectedProjectId || "no-project"}:${selectedBranchId || "no-branch"}`;
   const workspaceOuterPadding = compactUi ? { xs: 1.5, md: 2 } : { xs: 2, md: 3 };
   const panelPadding = compactUi ? 2 : 3;
@@ -1819,7 +1817,7 @@ export default function WorkspacePage() {
   const contractQuery = useQuery({
     queryKey: ["workspace-contract", ...sessionCacheKey],
     queryFn: api.getContractManifest,
-    enabled: isAdmin,
+    enabled: Boolean(session?.user?.preferred_username),
     staleTime: cacheTimeMs,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -2052,7 +2050,7 @@ export default function WorkspacePage() {
     }
     const urlParams = new URLSearchParams(currentSearch);
     applyingSearchParamsRef.current = true;
-    setTab(parseWorkspaceTab(urlParams.get("tab"), isAdmin));
+    setTab(parseWorkspaceTab(urlParams.get("tab")));
     setSelectedProjectId(urlParams.get("project") ?? "");
     setSelectedBranchId(urlParams.get("branch") ?? "");
     setSelectedItemId(urlParams.get("item") ?? "");
@@ -2060,7 +2058,7 @@ export default function WorkspacePage() {
     setElementSearchQuery(urlParams.get("searchQuery") ?? "");
     setElementSearchStereotype(urlParams.get("searchStereotype") ?? "");
     setElementSearchItemType(urlParams.get("searchItemType") ?? "");
-  }, [isAdmin, searchParamsKey]);
+  }, [searchParamsKey]);
 
   useEffect(() => {
     if (applyingSearchParamsRef.current) {
@@ -2068,7 +2066,7 @@ export default function WorkspacePage() {
       return;
     }
     const nextParams = new URLSearchParams(searchParamsKey);
-    const nextTab = parseWorkspaceTab(tab, isAdmin);
+    const nextTab = parseWorkspaceTab(tab);
     if (nextTab === "dashboard") {
       nextParams.delete("tab");
     } else {
@@ -2115,7 +2113,7 @@ export default function WorkspacePage() {
       pendingSearchSyncRef.current = next;
       setSearchParams(nextParams, { replace: true });
     }
-  }, [elementSearchItemType, elementSearchMode, elementSearchQuery, elementSearchStereotype, isAdmin, searchParamsKey, selectedBranchId, selectedItemId, selectedProjectId, setSearchParams, tab]);
+  }, [elementSearchItemType, elementSearchMode, elementSearchQuery, elementSearchStereotype, searchParamsKey, selectedBranchId, selectedItemId, selectedProjectId, setSearchParams, tab]);
 
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
@@ -2127,9 +2125,19 @@ export default function WorkspacePage() {
       (!selectedProjectBranches.length || Boolean(selectedBranchId)),
     staleTime: cacheTimeMs,
     gcTime: cacheTimeMs,
-    refetchOnWindowFocus: false,
+    refetchInterval: projectContextActive ? 10_000 : false,
+    refetchOnWindowFocus: true,
   });
   const baseTreeNodes = treeQuery.data ?? [];
+  const projectUsagesQuery = useQuery<ProjectUsageResponse>({
+    queryKey: ["workspace-project-usages", ...sessionCacheKey, selectedProjectId, selectedBranchId],
+    queryFn: () => api.getProjectUsages(selectedProjectId, selectedBranchId, selectedProject?.workspace_id || undefined, false),
+    enabled: projectContextActive && Boolean(selectedProjectId) && Boolean(selectedBranchId),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchInterval: projectContextActive ? 10_000 : false,
+    refetchOnWindowFocus: true,
+  });
 
   useEffect(() => {
     if (treeContextRef.current !== treeContextKey) {
@@ -2398,12 +2406,6 @@ export default function WorkspacePage() {
     setSearchParams(nextParams, { replace: true });
   }, [queryClient, searchParams, setSearchParams]);
 
-  useEffect(() => {
-    if (!isAdmin && tab === "api") {
-      setTab("dashboard");
-    }
-  }, [isAdmin, tab]);
-
   const itemQuery = useQuery({
     queryKey: ["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId],
     queryFn: () =>
@@ -2416,7 +2418,8 @@ export default function WorkspacePage() {
     enabled: Boolean(selectedItemId),
     staleTime: cacheTimeMs,
     gcTime: cacheTimeMs,
-    refetchOnWindowFocus: false,
+    refetchInterval: selectedItemId ? 10_000 : false,
+    refetchOnWindowFocus: true,
   });
 
   useEffect(() => {
@@ -3912,10 +3915,10 @@ export default function WorkspacePage() {
         <Stack spacing={2}>
           <Typography variant="h5">Swagger Contract Boundary</Typography>
           <Typography color="text.secondary">
-            This workspace exposes only Teamwork Cloud operations present in RealSwagger.json. The curated tabs cover the common repository and model flows{isAdmin ? "; API Explorer exposes the complete contract surface for advanced workflows." : "."}
+            This workspace exposes only Teamwork Cloud operations present in RealSwagger.json. The curated tabs cover common repository and model flows; API Explorer exposes the complete contract as read-only documentation for every user and enables execution for administrators.
           </Typography>
           <Typography color="text.secondary">
-            Simulation, collaborator workspaces, global model search, publishing, export jobs, job center, saved searches, bookmarks, comments, documents, and collaborator-style attachments are not shown because this Swagger file does not define those APIs.{isAdmin ? " Swagger artifact upload and download operations are available in API Explorer." : ""}
+            Simulation, collaborator workspaces, global model search, publishing, export jobs, job center, saved searches, bookmarks, comments, documents, and collaborator-style attachments are not shown because this Swagger file does not define those APIs. Swagger artifact upload and download operations remain administrator-only in API Explorer.
           </Typography>
           {contractManifest ? (
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
@@ -3990,6 +3993,50 @@ export default function WorkspacePage() {
       {branchesQuery.error ? <Alert severity="error">{errorMessage(branchesQuery.error)}</Alert> : null}
       {treeQuery.isLoading ? <CircularProgress size={28} /> : null}
       {treeQuery.error ? <Alert severity="error">{errorMessage(treeQuery.error)}</Alert> : null}
+      {projectUsagesQuery.isLoading && selectedProjectId && selectedBranchId ? <CircularProgress size={24} /> : null}
+      {projectUsagesQuery.error ? <Alert severity="error">{errorMessage(projectUsagesQuery.error)}</Alert> : null}
+      {projectUsagesQuery.data ? (
+        <Paper sx={{ p: 2.5, borderRadius: 2 }}>
+          <Stack spacing={1.5}>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
+              <Box>
+                <Typography variant="h6">Project Usages</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {projectUsagesQuery.data.total
+                    ? `${projectUsagesQuery.data.total} attached project model${projectUsagesQuery.data.total === 1 ? "" : "s"} used by ${projectUsagesQuery.data.primary_model_name || selectedProject?.name}.`
+                    : "No attached project models were recorded in this branch snapshot."}
+                </Typography>
+              </Box>
+              <Chip label={`${projectUsagesQuery.data.total} attached`} color={projectUsagesQuery.data.total ? "primary" : "default"} variant="outlined" />
+            </Stack>
+            {projectUsagesQuery.data.source === "legacy-snapshot-inferred" && projectUsagesQuery.data.total ? (
+              <Alert severity="info">This older snapshot did not mark its primary model; Workbench treats the first captured model as primary.</Alert>
+            ) : null}
+            {projectUsagesQuery.data.items.map((usage) => (
+              <Box key={usage.id} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 1.5 }}>
+                <Stack spacing={0.75}>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
+                    <Typography variant="subtitle1">{usage.name}</Typography>
+                    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                      <Chip label={humanizeFieldLabel(usage.usage_type || "attached")} size="small" />
+                      {usage.version ? <Chip label={`Version ${usage.version}`} size="small" variant="outlined" /> : null}
+                      {usage.automatic !== null && usage.automatic !== undefined ? (
+                        <Chip label={usage.automatic ? "Automatic" : "Manual"} size="small" variant="outlined" />
+                      ) : null}
+                    </Stack>
+                  </Stack>
+                  {usage.qualified_name && usage.qualified_name !== usage.name ? (
+                    <Typography variant="body2" color="text.secondary">{usage.qualified_name}</Typography>
+                  ) : null}
+                  <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                    {usage.uri || usage.model_id || usage.id}
+                  </Typography>
+                </Stack>
+              </Box>
+            ))}
+          </Stack>
+        </Paper>
+      ) : null}
       <Grid container spacing={2}>
         {baseFlatNodes.map((node) => (
           <Grid item xs={12} md={6} lg={4} key={node.id}>
@@ -5600,22 +5647,24 @@ export default function WorkspacePage() {
 
   const renderApiExplorer = () => {
     const response = apiOperationMutation.data ?? null;
-    if (!isAdmin) {
-      return <Alert severity="warning">Administrator access is required for API Explorer.</Alert>;
-    }
     return (
       <Stack spacing={2}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
           <Box>
             <Typography variant="h5">API Explorer</Typography>
             <Typography variant="body2" color="text.secondary">
-              Every action here is generated from RealSwagger.json and executed only through declared method/path/parameter combinations.
+              Browse every operation, parameter, request body, response, and schema declared by RealSwagger.json. Executing requests remains an administrator-only action.
             </Typography>
           </Box>
           <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={() => queryClient.invalidateQueries({ queryKey: ["workspace-contract", ...sessionCacheKey] })}>
             Refresh Contract
           </Button>
         </Stack>
+        {!isAdmin ? (
+          <Alert severity="info">
+            Read-only API documentation is available to every authenticated Workbench user. Ask an administrator only when a declared operation needs to be executed against Teamwork Cloud.
+          </Alert>
+        ) : null}
         {contractQuery.isLoading ? <CircularProgress size={28} /> : null}
         {contractQuery.error ? <Alert severity="error">{errorMessage(contractQuery.error)}</Alert> : null}
         {contractManifest ? (
@@ -5744,7 +5793,7 @@ export default function WorkspacePage() {
                           <Divider />
                           <Stack spacing={1.5}>
                             <Typography variant="subtitle2">File Upload</Typography>
-                            <Button variant="outlined" component="label">
+                            <Button variant="outlined" component="label" disabled={!isAdmin}>
                               Choose File
                               <input
                                 hidden
@@ -5761,10 +5810,10 @@ export default function WorkspacePage() {
                       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
                         <Button
                           variant="contained"
-                          disabled={!selectedOperation || !csrfToken || apiOperationMutation.isPending}
+                          disabled={!isAdmin || !selectedOperation || !csrfToken || apiOperationMutation.isPending}
                           onClick={() => apiOperationMutation.mutate()}
                         >
-                          Execute Operation
+                          {isAdmin ? "Execute Operation" : "Administrator required to execute"}
                         </Button>
                         {apiOperationMutation.isPending ? <CircularProgress size={24} /> : null}
                       </Stack>
@@ -6067,13 +6116,9 @@ export default function WorkspacePage() {
               {workspaceMenuGroup === "api" ? (
                 [
                   <MenuItem key="developer" selected={tab === "developer"} onClick={() => { setTab("developer"); closeWorkspaceMenu(); }}>Developer API</MenuItem>,
-                  ...(isAdmin
-                    ? [
-                        <MenuItem key="api-explorer" selected={tab === "api"} onClick={() => { setTab("api"); closeWorkspaceMenu(); }}>
-                          API Explorer
-                        </MenuItem>,
-                      ]
-                    : []),
+                  <MenuItem key="api-explorer" selected={tab === "api"} onClick={() => { setTab("api"); closeWorkspaceMenu(); }}>
+                    API Explorer
+                  </MenuItem>,
                 ]
               ) : null}
             </Menu>

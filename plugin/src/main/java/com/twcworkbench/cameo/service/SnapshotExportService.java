@@ -81,7 +81,7 @@ public class SnapshotExportService {
             report(progress, "Preparing " + modelRoots.size() + " project model root(s), including loaded modules...");
         }
         for (Element modelRoot : modelRoots) {
-            ModelRecord modelRecord = mapModel(modelRoot, captureContext);
+            ModelRecord modelRecord = mapModel(project, modelRoot, captureContext);
             payload.models.add(modelRecord);
             payload.elements.addAll(traverseElements(project, modelRoot, modelRecord.modelId, captureContext));
         }
@@ -108,7 +108,7 @@ public class SnapshotExportService {
         report(progress, "Preparing scoped model snapshot from tracked changes...");
         Map<String, ModelRecord> modelRecordsById = new LinkedHashMap<>();
         for (Element modelRoot : modelRoots) {
-            ModelRecord modelRecord = mapModel(modelRoot, captureContext);
+            ModelRecord modelRecord = mapModel(project, modelRoot, captureContext);
             payload.models.add(modelRecord);
             modelRecordsById.put(modelRecord.modelId, modelRecord);
         }
@@ -150,7 +150,8 @@ public class SnapshotExportService {
         Element primaryModel = project.getPrimaryModel();
         if (primaryModel != null) {
             String primaryId = safeId(primaryModel);
-            if (primaryId != null && roots.stream().noneMatch(existing -> primaryId.equals(safeId(existing)))) {
+            if (primaryId != null) {
+                roots.removeIf(existing -> primaryId.equals(safeId(existing)));
                 roots.add(0, primaryModel);
             }
         }
@@ -238,9 +239,20 @@ public class SnapshotExportService {
         return payload;
     }
 
-    private ModelRecord mapModel(Element model, CaptureContext captureContext) {
+    private ModelRecord mapModel(Project project, Element model, CaptureContext captureContext) {
         ModelRecord record = new ModelRecord();
         record.modelId = safeId(model);
+        record.primary = safeId(project.getPrimaryModel()) != null
+                && safeId(project.getPrimaryModel()).equals(record.modelId);
+        record.usageType = record.primary ? "primary" : "attached";
+        try {
+            record.resourceUri = model.eResource() != null && model.eResource().getURI() != null
+                    ? model.eResource().getURI().toString()
+                    : null;
+        }
+        catch (Exception ignored) {
+            record.resourceUri = null;
+        }
         record.humanName = safeAccessorString(captureContext, "model.getHumanName", model::getHumanName);
         record.ownerId = model.getOwner() != null ? safeId(model.getOwner()) : null;
         if (model instanceof NamedElement) {

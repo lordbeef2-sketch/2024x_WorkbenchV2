@@ -28,6 +28,9 @@ Columns:
 - `snapshot_id`
 - `model_id`
 - `name`
+- `primary` (true for the owning project model; false for attached usages)
+- `usage_type` (`primary` or `attached`)
+- `resource_uri` when Cameo exposes the model resource location
 - `root_ids`
 - `raw_payload`
 
@@ -102,4 +105,3 @@ Recommended future cleanup:
 - retain recent history window
 - prune stale branch snapshots by last viewed time
 - provide manual cache clear per project/branch
-

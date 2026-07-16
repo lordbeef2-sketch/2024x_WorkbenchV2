@@ -291,6 +291,27 @@ class ProjectSummary(BaseModel):
     categories: Any | None = None
 
 
+class ProjectUsageSummary(BaseModel):
+    id: str
+    name: str
+    usage_type: str = "attached"
+    model_id: str | None = None
+    qualified_name: str = ""
+    version: str | None = None
+    uri: str | None = None
+    automatic: bool | None = None
+
+
+class ProjectUsageResponse(BaseModel):
+    project_id: str
+    branch_id: str
+    primary_model_id: str | None = None
+    primary_model_name: str = ""
+    total: int = 0
+    source: str = "snapshot"
+    items: list[ProjectUsageSummary] = Field(default_factory=list)
+
+
 class TreeNode(BaseModel):
     id: str
     label: str
@@ -741,6 +762,9 @@ class IngestModelRecord(BaseModel):
     human_name: str = Field(default="", alias="humanName")
     qualified_name: str = Field(default="", alias="qualifiedName")
     owner_id: str | None = Field(default=None, alias="ownerId")
+    primary: bool = False
+    usage_type: str = Field(default="", alias="usageType")
+    resource_uri: str | None = Field(default=None, alias="resourceUri")
     root_element_ids: list[str] = Field(default_factory=list, alias="rootElementIds")
 
     @field_validator("name", "human_name", "qualified_name", mode="before")

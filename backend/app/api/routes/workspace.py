@@ -104,7 +104,7 @@ def delete_cache_api_key(
 
 
 @router.get("/contract")
-def contract_manifest(session=Depends(require_admin), container: ApplicationContainer = Depends(get_container)):
+def contract_manifest(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
     return container.platform.swagger_contract_manifest()
 
 
@@ -306,6 +306,27 @@ async def tree(
 ):
     try:
         return await container.platform.get_model_tree(session, projectId, branchId, workspaceId, refresh=refresh, depth=depth)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/branches/{branch_id}/usages")
+async def project_usages(
+    project_id: str,
+    branch_id: str,
+    workspaceId: str | None = Query(default=None),
+    refresh: bool = Query(default=False),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return await container.platform.get_project_usages(
+            session,
+            project_id,
+            branch_id,
+            workspace_id=workspaceId,
+            refresh=refresh,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

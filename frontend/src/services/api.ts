@@ -25,6 +25,7 @@ import {
   OSLCExecuteRequest,
   OSLCExecuteResponse,
   ProjectSummary,
+  ProjectUsageResponse,
   ServerHealth,
   ServerProfile,
   ServerProfileInput,
@@ -316,6 +317,17 @@ export const api = {
     }
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request<BranchSummary[]>(`/workspace/projects/${projectId}/branches${suffix}`);
+  },
+  getProjectUsages(projectId: string, branchId: string, workspaceId?: string, refresh = false) {
+    const params = new URLSearchParams();
+    if (workspaceId) {
+      params.set("workspaceId", workspaceId);
+    }
+    if (refresh) {
+      params.set("refresh", "true");
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<ProjectUsageResponse>(`/workspace/projects/${projectId}/branches/${branchId}/usages${suffix}`);
   },
   getTree(projectId?: string, branchId?: string, workspaceId?: string, refresh = false, depth?: number) {
     const params = new URLSearchParams();

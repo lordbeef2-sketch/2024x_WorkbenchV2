@@ -62,6 +62,9 @@ public class SnapshotHashService {
         entry.put("human_name", safe(model.humanName));
         entry.put("qualified_name", safe(model.qualifiedName));
         entry.put("owner_id", safe(model.ownerId));
+        entry.put("primary", model.primary);
+        entry.put("usage_type", safe(model.usageType));
+        entry.put("resource_uri", safe(model.resourceUri));
         entry.put("root_element_ids", new ArrayList<>(model.rootElementIds));
         return entry;
     }

@@ -79,6 +79,8 @@ from app.models.domain import (
     OSLCSharedConsumerStatus,
     OpenWebUIModelEntry,
     ProjectSummary,
+    ProjectUsageResponse,
+    ProjectUsageSummary,
     PublishRequest,
     SavedSearch,
     SearchResponse,
@@ -697,6 +699,61 @@ class PlatformService:
             return materialized_tree or []
 
         raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
+
+    async def get_project_usages(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None = None,
+        refresh: bool = False,
+    ) -> ProjectUsageResponse:
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if not self._is_plugin_managed_summary(summary):
+            raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
+        await self._ensure_plugin_branch_permissions(
+            session,
+            project_id,
+            branch_id,
+            workspace_id=workspace_id,
+            summary=summary,
+            force=refresh,
+        )
+        models = self._visible_cached_models_for_user(
+            self._user_key(session.user.preferred_username),
+            session.server.id,
+            project_id,
+            branch_id,
+        )
+        if not models:
+            return ProjectUsageResponse(project_id=project_id, branch_id=branch_id)
+
+        explicitly_primary = [model for model in models if bool(model.payload.get("primary"))]
+        primary = explicitly_primary[0] if explicitly_primary else models[0]
+        source = "snapshot" if explicitly_primary else "legacy-snapshot-inferred"
+        items = [
+            ProjectUsageSummary(
+                id=model.model_id,
+                model_id=model.model_id,
+                name=model.name or str(model.payload.get("human_name") or model.payload.get("name") or model.model_id),
+                qualified_name=str(model.payload.get("qualified_name") or ""),
+                usage_type=str(model.payload.get("usage_type") or "attached"),
+                version=(str(model.payload.get("version")) if model.payload.get("version") else None),
+                uri=(str(model.payload.get("resource_uri")) if model.payload.get("resource_uri") else None),
+                automatic=(bool(model.payload.get("automatic")) if model.payload.get("automatic") is not None else None),
+            )
+            for model in models
+            if model.model_id != primary.model_id
+        ]
+        return ProjectUsageResponse(
+            project_id=project_id,
+            branch_id=branch_id,
+            primary_model_id=primary.model_id,
+            primary_model_name=primary.name,
+            total=len(items),
+            source=source,
+            items=items,
+        )
 
     async def get_model_tree_children(
         self,
@@ -3879,8 +3936,17 @@ class PlatformService:
         branch_id: str | None = None,
     ) -> ItemDetails:
         item = await self._adapter_for_session(session).update_item(item_id, payload, project_id, branch_id)
+        shared_cache_updated = False
+        if project_id and branch_id:
+            shared_cache_updated = self._publish_updated_item_to_shared_branch_cache(
+                session,
+                item,
+                project_id,
+                branch_id,
+            )
+            self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
         cache_key = self._item_cache_key(project_id, branch_id, item_id)
-        if cache_key:
+        if cache_key and not shared_cache_updated:
             self.repo.upsert_user_cache(
                 self._user_key(session.user.preferred_username),
                 session.server.id,
@@ -3912,6 +3978,52 @@ class PlatformService:
             ),
         )
         return item
+
+    def _publish_updated_item_to_shared_branch_cache(
+        self,
+        session: SessionData,
+        item: ItemDetails,
+        project_id: str,
+        branch_id: str,
+    ) -> bool:
+        record = self.repo.get_cached_element(session.server.id, project_id, branch_id, item.id)
+        if record is None:
+            return False
+
+        updated_payload = dict(record.payload)
+        updated_payload["name"] = item.name
+        updated_payload["human_name"] = item.name
+        updated_payload["documentation"] = item.documentation_markdown or item.description
+        if isinstance(item.source_payload, dict):
+            for field in ("attributes", "references", "owned_element_ids", "applied_stereotype_ids", "spec_sections"):
+                if field in item.source_payload:
+                    updated_payload[field] = item.source_payload[field]
+
+        now = utcnow()
+        updated_record = record.model_copy(
+            update={
+                "name": item.name or record.name,
+                "path": item.path or record.path,
+                "item_type": item.item_type or record.item_type,
+                "latest_revision": item.version or record.latest_revision,
+                "payload": updated_payload,
+                "source_user": session.user.preferred_username,
+                "synced_at": now,
+            }
+        )
+        self.repo.upsert_cached_elements([updated_record])
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if summary is not None:
+            self.repo.upsert_branch_cache_summary(
+                summary.model_copy(
+                    update={
+                        "latest_revision": item.version or summary.latest_revision,
+                        "message": f"Element {item.id} was committed through Workbench by {session.user.preferred_username}.",
+                        "updated_at": now,
+                    }
+                )
+            )
+        return True
 
     async def search(self, session: SessionData, query: str) -> SearchResponse:
         return await self._adapter_for_session(session).search(query)
@@ -5204,6 +5316,9 @@ class PlatformService:
                         "human_name": model.human_name,
                         "qualified_name": model.qualified_name,
                         "owner_id": model.owner_id,
+                        "primary": model.primary,
+                        "usage_type": model.usage_type,
+                        "resource_uri": model.resource_uri,
                         "root_element_ids": model.root_element_ids,
                     },
                     element_count=0,
@@ -5287,6 +5402,9 @@ class PlatformService:
                         "human_name": model.human_name,
                         "qualified_name": model.qualified_name,
                         "owner_id": model.owner_id,
+                        "primary": model.primary,
+                        "usage_type": model.usage_type,
+                        "resource_uri": model.resource_uri,
                         "root_element_ids": model.root_element_ids,
                     },
                     element_count=self.repo.count_cached_elements_for_model(server_id, payload.project_id, payload.branch_id, model.model_id),

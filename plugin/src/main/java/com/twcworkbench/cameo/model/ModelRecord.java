@@ -9,6 +9,9 @@ public class ModelRecord {
     public String humanName;
     public String qualifiedName;
     public String ownerId;
+    public boolean primary;
+    public String usageType;
+    public String resourceUri;
     public List<String> rootElementIds = new ArrayList<>();
 
     public String comparisonKey() {
@@ -18,6 +21,9 @@ public class ModelRecord {
                 safe(humanName),
                 safe(qualifiedName),
                 safe(ownerId),
+                String.valueOf(primary),
+                safe(usageType),
+                safe(resourceUri),
                 String.join(",", rootElementIds));
     }
 

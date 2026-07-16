@@ -56,6 +56,9 @@ Request body:
 - full model payload
 - every loaded 2024x model root returned by `Project.getModels()`, including
   attached-module roots
+- each model root identifies whether it is the primary project model or an
+  attached usage and includes its resource URI when available; Workbench uses
+  this lightweight metadata for the Project Browser usage summary
 - `specSections.schemaVersion = "2.0"` for each element, containing:
   - `metamodel.entries`: every Cameo `EStructuralFeature`, including current or
     default value, set state, declaring/value type, multiplicity, ordering,
@@ -116,6 +119,11 @@ Returns cached models for the branch.
 ### GET `/api/cache/servers/{serverId}/projects/{projectId}/branches/{branchId}/models/{modelId}`
 
 Returns one cached model record.
+
+The authenticated Workbench UI exposes the compact project-usage projection at
+`GET /api/workspace/projects/{projectId}/branches/{branchId}/usages`. It returns
+the primary model identity plus attached model names, IDs, usage type, and any
+available URI/version metadata without returning full element details.
 
 ### GET `/api/cache/servers/{serverId}/projects/{projectId}/branches/{branchId}/elements`
 

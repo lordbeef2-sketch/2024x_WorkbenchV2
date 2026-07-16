@@ -134,6 +134,27 @@ export interface ProjectSummary {
   categories?: unknown;
 }
 
+export interface ProjectUsageSummary {
+  id: string;
+  name: string;
+  usage_type: string;
+  model_id?: string | null;
+  qualified_name: string;
+  version?: string | null;
+  uri?: string | null;
+  automatic?: boolean | null;
+}
+
+export interface ProjectUsageResponse {
+  project_id: string;
+  branch_id: string;
+  primary_model_id?: string | null;
+  primary_model_name: string;
+  total: number;
+  source: string;
+  items: ProjectUsageSummary[];
+}
+
 export interface TreeNode {
   id: string;
   label: string;
