@@ -709,14 +709,14 @@ async def workbench_agent_models(session=Depends(get_session), container: Applic
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
-@router.post("/agent/knowledge/sync")
-async def sync_workbench_agent_knowledge(
+@router.post("/agent/knowledge/sync", status_code=status.HTTP_202_ACCEPTED)
+def sync_workbench_agent_knowledge(
     payload: WorkbenchAgentKnowledgeSyncRequest,
     session=Depends(require_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
-        return await container.platform.sync_workbench_agent_knowledge(session, payload.project_id, payload.branch_id)
+        return container.platform.submit_workbench_agent_knowledge_sync(session, payload.project_id, payload.branch_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except RuntimeError as exc:

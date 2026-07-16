@@ -16,6 +16,7 @@ import {
   CompareResult,
   DashboardPayload,
   ItemDetails,
+  JobRecord,
   OSLCAuthorizationStatus,
   OSLCGenerateConsumerRequest,
   OSLCGenerateConsumerResponse,
@@ -40,7 +41,6 @@ import {
   WorkbenchAgentChatRequest,
   WorkbenchAgentChatResponse,
   WorkbenchAgentConfigRequest,
-  WorkbenchAgentKnowledgeStatus,
   WorkbenchAgentStatus,
 } from "../models/api";
 
@@ -549,12 +549,15 @@ export const api = {
   listWorkbenchAgentModels() {
     return request<OpenWebUIModelEntry[]>("/workspace/agent/models");
   },
-  syncWorkbenchAgentKnowledge(payload: { project_id: string; branch_id: string }, csrfToken: string) {
-    return request<WorkbenchAgentKnowledgeStatus>("/workspace/agent/knowledge/sync", {
+  startWorkbenchAgentKnowledgeSync(payload: { project_id: string; branch_id: string }, csrfToken: string) {
+    return request<JobRecord>("/workspace/agent/knowledge/sync", {
       method: "POST",
       headers: jsonHeaders(csrfToken),
       body: JSON.stringify(payload),
     });
+  },
+  getJob(jobId: string) {
+    return request<JobRecord>(`/workspace/jobs/${jobId}`);
   },
   runWorkbenchAgentChat(payload: WorkbenchAgentChatRequest, csrfToken: string) {
     return request<WorkbenchAgentChatResponse>("/workspace/agent/chat", {

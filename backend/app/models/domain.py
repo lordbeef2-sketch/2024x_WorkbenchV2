@@ -30,6 +30,7 @@ class JobType(str, Enum):
     PUBLISH = "publish"
     EXPORT = "export"
     MODEL_CACHE = "model_cache"
+    AGENT_KNOWLEDGE = "agent_knowledge"
 
 
 class JobStatus(str, Enum):

@@ -55,6 +55,7 @@ import {
   ItemReference,
   OpenWebUIModelEntry,
   ItemDetails,
+  JobRecord,
   OSLCExecuteResponse,
   ProjectSummary,
   ProjectUsageResponse,
@@ -66,6 +67,7 @@ import {
   SwaggerParameterSpec,
   TreeNode,
   WorkbenchAgentChatMessage,
+  WorkbenchAgentKnowledgeStatus,
 } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
@@ -1793,6 +1795,7 @@ export default function WorkspacePage() {
   const [agentSelectedModelName, setAgentSelectedModelName] = useState("");
   const [agentChatInput, setAgentChatInput] = useState("");
   const [agentMessages, setAgentMessages] = useState<WorkbenchAgentChatMessage[]>([]);
+  const [agentKnowledgeSyncProgress, setAgentKnowledgeSyncProgress] = useState("");
   const treeContextKey = `${selectedProjectId || "no-project"}:${selectedBranchId || "no-branch"}`;
   const treeContextRef = useRef<string>(treeContextKey);
   const treeNodesRef = useRef<TreeNode[]>([]);
@@ -1809,9 +1812,10 @@ export default function WorkspacePage() {
   const projectsQuery = useQuery({
     queryKey: ["workspace-projects", ...sessionCacheKey],
     queryFn: () => api.getProjects(),
-    staleTime: cacheTimeMs,
+    staleTime: 10_000,
     gcTime: cacheTimeMs,
-    refetchOnWindowFocus: false,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   const contractQuery = useQuery({
@@ -2936,36 +2940,77 @@ export default function WorkspacePage() {
   });
 
   const syncWorkbenchAgentKnowledgeMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!selectedProjectId || !selectedBranchId) {
         throw new Error("Select a project and branch before syncing Workbench Agent knowledge.");
       }
-      return api.syncWorkbenchAgentKnowledge(
+      let job: JobRecord = await api.startWorkbenchAgentKnowledgeSync(
         {
           project_id: selectedProjectId,
           branch_id: selectedBranchId,
         },
         csrfToken,
       );
+      setAgentKnowledgeSyncProgress(`${job.progress}% - ${job.message || "Knowledge push queued"}`);
+      const deadline = Date.now() + 31 * 60 * 1000;
+      while (job.status === "pending" || job.status === "running") {
+        if (Date.now() >= deadline) {
+          throw new Error("Workbench Agent knowledge processing is still running after 31 minutes. Check Job Center for its current status.");
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+        job = await api.getJob(job.id);
+        setAgentKnowledgeSyncProgress(`${job.progress}% - ${job.message || "Processing knowledge"}`);
+      }
+      if (job.status !== "succeeded") {
+        throw new Error(job.message || "Workbench Agent knowledge processing failed.");
+      }
+      if (!job.result) {
+        throw new Error("Workbench Agent knowledge processing completed without a result.");
+      }
+      return job.result as unknown as WorkbenchAgentKnowledgeStatus;
     },
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ["workspace-agent", ...sessionCacheKey] });
+      setAgentKnowledgeSyncProgress("100% - Knowledge push completed");
       setNotice({ severity: "success", message: result.message });
     },
-    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+    onError: (caught) => {
+      setAgentKnowledgeSyncProgress("");
+      setNotice({ severity: "error", message: errorMessage(caught) });
+    },
   });
 
   const workbenchAgentChatMutation = useMutation({
-    mutationFn: (payload: { messages: WorkbenchAgentChatMessage[]; syncKnowledge: boolean }) => {
+    mutationFn: async (payload: { messages: WorkbenchAgentChatMessage[]; syncKnowledge: boolean }) => {
       if (!selectedProjectId || !selectedBranchId) {
         throw new Error("Select a project and branch before starting a Workbench Agent conversation.");
+      }
+      if (payload.syncKnowledge) {
+        let job = await api.startWorkbenchAgentKnowledgeSync(
+          { project_id: selectedProjectId, branch_id: selectedBranchId },
+          csrfToken,
+        );
+        setAgentKnowledgeSyncProgress(`${job.progress}% - ${job.message || "Knowledge push queued"}`);
+        const deadline = Date.now() + 31 * 60 * 1000;
+        while (job.status === "pending" || job.status === "running") {
+          if (Date.now() >= deadline) {
+            throw new Error("Workbench Agent knowledge processing is still running after 31 minutes. Check Job Center for its current status.");
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+          job = await api.getJob(job.id);
+          setAgentKnowledgeSyncProgress(`${job.progress}% - ${job.message || "Processing knowledge"}`);
+        }
+        if (job.status !== "succeeded") {
+          throw new Error(job.message || "Workbench Agent knowledge processing failed.");
+        }
+        setAgentKnowledgeSyncProgress("100% - Knowledge push completed");
       }
       return api.runWorkbenchAgentChat(
         {
           project_id: selectedProjectId,
           branch_id: selectedBranchId,
           messages: payload.messages,
-          sync_knowledge: payload.syncKnowledge,
+          sync_knowledge: false,
         },
         csrfToken,
       );
@@ -5549,6 +5594,7 @@ export default function WorkspacePage() {
             </Button>
             {syncWorkbenchAgentKnowledgeMutation.isPending ? <CircularProgress size={22} /> : null}
           </Stack>
+          {agentKnowledgeSyncProgress ? <Alert severity={syncWorkbenchAgentKnowledgeMutation.isError ? "error" : "info"}>{agentKnowledgeSyncProgress}</Alert> : null}
         </Stack>
       </Paper>
 

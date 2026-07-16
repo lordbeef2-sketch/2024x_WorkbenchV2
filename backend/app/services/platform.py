@@ -489,6 +489,52 @@ class PlatformService:
             message="Open WebUI processed the branch model file and the persistent Workbench + 3DS 2024x reference file. Every Workbench Agent chat attaches both sources.",
         )
 
+    def submit_workbench_agent_knowledge_sync(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+    ) -> JobRecord:
+        secret = self._workbench_agent_secret(session)
+        if secret is None:
+            raise ValueError("Save an Open WebUI mapping before syncing knowledge.")
+        if not secret.model_id:
+            raise ValueError("Choose an Open WebUI agent or model before syncing knowledge.")
+        summary = self.get_branch_cache_summary_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+        )
+        if summary is None:
+            raise ValueError("The selected stored project branch is not available to this Workbench user.")
+
+        for existing in self.jobs.list_jobs(session.user.preferred_username):
+            if (
+                existing.server_id == session.server.id
+                and existing.job_type == JobType.AGENT_KNOWLEDGE
+                and existing.status in {JobStatus.PENDING, JobStatus.RUNNING}
+                and existing.payload.get("project_id") == project_id
+                and existing.payload.get("branch_id") == branch_id
+            ):
+                return existing
+
+        job = self.jobs.create_job(
+            job_type=JobType.AGENT_KNOWLEDGE,
+            title=f"Agent knowledge: {project_id}/{branch_id}",
+            owner=session.user.preferred_username,
+            server_id=session.server.id,
+            payload={"project_id": project_id, "branch_id": branch_id},
+        )
+
+        async def handler(context):
+            await context.report(5, "Preparing the Workbench + 3DS reference and branch model knowledge files.")
+            result = await self.sync_workbench_agent_knowledge(session, project_id, branch_id)
+            await context.report(100, "Open WebUI finished processing both Workbench Agent knowledge files.")
+            return result.model_dump(mode="json")
+
+        return self.jobs.submit(job, handler)
+
     async def run_workbench_agent_chat(
         self,
         session: SessionData,
@@ -597,6 +643,12 @@ class PlatformService:
         )
 
     async def list_projects(self, session: SessionData, refresh: bool = False):
+        # A user cannot select a plugin-backed project until it appears in this
+        # list, so project discovery must establish that user's TWC branch
+        # access before applying the cached visibility filter. Without this
+        # bootstrap, only the snapshot publisher or users already present in a
+        # stored access manifest can ever discover newly shared projects.
+        await self._ensure_plugin_listing_permissions(session)
         projects = self._project_summaries_from_cache_for_user(session)
         self.repo.delete_user_cache(
             self._user_key(session.user.preferred_username),

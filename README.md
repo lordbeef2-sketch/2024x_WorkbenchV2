@@ -117,6 +117,12 @@ external integrations.
   without caching the same model N times.
 - Plugin-backed branches can be forced to use plugin cache only through
   `TWC_PLUGIN_ONLY_CACHE_TARGETS`.
+- Cached project discovery probes missing branch-access records with the
+  signed-in user's own TWC session, allowing authorized users to discover
+  projects published or committed by someone else without exposing them to
+  users who lack TWC access.
+- The Workbench project selector refreshes on focus and every 30 seconds so an
+  already-open session discovers newly published shared projects.
 
 See:
 
@@ -136,6 +142,9 @@ project facts. Set `THREE_DS_KB_PATH` to the generated KB folder or
 `datasheet_chunks.jsonl`; `THREE_DS_KB_MAX_CHUNKS` bounds the included
 source-attributed chunks. The local development fallback recognizes the shared
 `C:/sand/TWC_Data_Sheets/TWC2024x/output/nomagic_owui_kb` build.
+Agent knowledge pushes execute as background Workbench jobs and the UI polls
+their status, so large Open WebUI ingestion runs are not held inside one HTTP
+request that a gateway can terminate.
 
 ## Frontend Configuration
 

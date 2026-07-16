@@ -44,6 +44,11 @@ The cache API stores the shared branch model payload once and keeps per-user
 permission overlays separately. That avoids duplicating the same branch model
 for every user while still keeping visibility scoped to the TWC-backed
 Workbench user identity.
+Project listing bootstraps missing permission overlays by probing cached plugin
+branches with the current user's own TWC session before filtering the list. A
+project published or updated by another Workbench user therefore appears as
+soon as TWC confirms the viewer can access its branch; inaccessible projects
+remain hidden.
 
 See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
 
@@ -54,6 +59,12 @@ permission-scoped file contains the selected branch's complete tree and native
 Cameo specifications. Workbench waits for both Open WebUI files to report
 `completed`, attaches both to every chat, and supplies a system instruction that
 separates product/API guidance from project-specific facts.
+
+Knowledge pushes run as Workbench background jobs. The Agent tab submits the
+job and polls `GET /api/workspace/jobs/{job_id}` with short requests while Open
+WebUI processes each file, avoiding reverse-proxy timeouts during large branch
+or 3DS reference ingestion. Open WebUI failures are retained in the job message
+and returned to the user instead of being reduced to a generic gateway error.
 
 Preset-management authorization is derived from Teamwork Cloud user context and trusted upstream role or group headers when they are available. The backend does not keep a separate hardcoded admin-user list.
 

@@ -3,7 +3,7 @@ export type ThemeMode = "light" | "dark" | "system";
 export type ItemDetailViewMode = "standard" | "expert" | "all";
 export type CapabilityState = "ready" | "restricted" | "not_available" | "unknown";
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
-export type JobType = "simulation" | "publish" | "export" | "model_cache";
+export type JobType = "simulation" | "publish" | "export" | "model_cache" | "agent_knowledge";
 export type ExportFormat = "json" | "csv" | "markdown" | "html" | "pdf";
 export type CacheApiKeyScope = "read" | "write" | "edit";
 
