@@ -49,6 +49,15 @@ branches with the current user's own TWC session before filtering the list. A
 project published or updated by another Workbench user therefore appears as
 soon as TWC confirms the viewer can access its branch; inaccessible projects
 remain hidden.
+This discovery check uses a direct branch request rather than relying on the
+shared role manifest, because TWC server administrators and aliased identities
+may have valid access without appearing in a project's explicit role-user list.
+The uploaded project registry is the local `branch_cache_summaries` table and
+the per-user result map is `branch_access_records`. Login refreshes the current
+user against those registered branches with bounded concurrency. Later project
+list reads reuse matching revision records and contact TWC only for a newly
+uploaded branch, a changed revision, or an explicit refresh; model elements are
+never scanned to determine project visibility.
 
 See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
 

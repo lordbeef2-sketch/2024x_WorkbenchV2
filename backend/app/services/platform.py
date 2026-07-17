@@ -648,7 +648,7 @@ class PlatformService:
         # access before applying the cached visibility filter. Without this
         # bootstrap, only the snapshot publisher or users already present in a
         # stored access manifest can ever discover newly shared projects.
-        await self._ensure_plugin_listing_permissions(session)
+        await self._ensure_plugin_listing_permissions(session, force=refresh)
         projects = self._project_summaries_from_cache_for_user(session)
         self.repo.delete_user_cache(
             self._user_key(session.user.preferred_username),
@@ -4880,6 +4880,7 @@ class PlatformService:
         )
         session = self.sessions.create_session(server, user, authorization_context, credentials, capabilities)
         self._update_user_server_state(user.preferred_username, server.id, session.created_at)
+        await self._ensure_plugin_listing_permissions(session, force=True)
         logger.info(log_event, user=user.preferred_username, server_id=server.id)
         return session
 
@@ -5020,21 +5021,46 @@ class PlatformService:
         session: SessionData,
         *,
         project_id: str | None = None,
+        force: bool = False,
     ) -> None:
         summaries = self.repo.list_branch_cache_summaries(session.server.id)
+        user_id = self._user_key(session.user.preferred_username)
+        pending: list[BranchCacheSummary] = []
         for summary in summaries:
             if not self._is_plugin_managed_summary(summary):
                 continue
             if project_id and summary.project_id != project_id:
                 continue
-            await self._ensure_plugin_branch_permissions(
-                session,
+            existing = self._branch_access_for_user(
+                user_id,
+                session.server.id,
                 summary.project_id,
                 summary.branch_id,
-                workspace_id=summary.workspace_id,
-                summary=summary,
-                force=False,
             )
+            if (
+                not force
+                and existing is not None
+                and (existing.latest_revision or None) == (summary.latest_revision or None)
+            ):
+                continue
+            pending.append(summary)
+
+        semaphore = asyncio.Semaphore(6)
+
+        async def probe(summary: BranchCacheSummary) -> None:
+            async with semaphore:
+                await self._ensure_plugin_branch_permissions(
+                    session,
+                    summary.project_id,
+                    summary.branch_id,
+                    workspace_id=summary.workspace_id,
+                    summary=summary,
+                    force=force,
+                    prefer_manifest=False,
+                )
+
+        if pending:
+            await asyncio.gather(*(probe(summary) for summary in pending))
 
     async def _ensure_plugin_branch_permissions(
         self,
@@ -5045,6 +5071,7 @@ class PlatformService:
         workspace_id: str | None = None,
         summary: BranchCacheSummary | None = None,
         force: bool = False,
+        prefer_manifest: bool = True,
     ) -> None:
         resolved_summary = summary or self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         if not self._is_plugin_managed_summary(resolved_summary):
@@ -5069,81 +5096,86 @@ class PlatformService:
         if not needs_refresh:
             return
 
-        try:
-            manifest_records = await self._adapter_for_session(session).build_plugin_branch_access_manifest(
-                project_id,
-                branch_id,
-                latest_revision=expected_revision,
-                workspace_id=workspace_id or resolved_summary.workspace_id,
-            )
-            refreshed_at = utcnow()
-            normalized_records = [
-                record.model_copy(
-                    update={
-                        "server_id": session.server.id,
-                        "project_id": project_id,
-                        "branch_id": branch_id,
-                        "workspace_id": resolved_summary.workspace_id or workspace_id,
-                        "branch_name": resolved_summary.branch_name or branch_id,
-                        "latest_revision": expected_revision,
-                        "updated_at": refreshed_at,
-                    }
+        if prefer_manifest:
+            try:
+                manifest_records = await self._adapter_for_session(session).build_plugin_branch_access_manifest(
+                    project_id,
+                    branch_id,
+                    latest_revision=expected_revision,
+                    workspace_id=workspace_id or resolved_summary.workspace_id,
                 )
-                for record in manifest_records
-            ]
-            self.repo.replace_branch_access_records_for_branch(
-                session.server.id,
-                project_id,
-                branch_id,
-                normalized_records,
-            )
-            self._write_branch_access_manifest(resolved_summary, normalized_records)
-            current_user_access = self._plugin_branch_access_or_source_fallback(
-                user_id,
-                session.server.id,
-                project_id,
-                branch_id,
-                resolved_summary,
-            )
-            if current_user_access is not None:
-                self.repo.replace_model_permissions_for_user_branch(
+                refreshed_at = utcnow()
+                normalized_records = [
+                    record.model_copy(
+                        update={
+                            "server_id": session.server.id,
+                            "project_id": project_id,
+                            "branch_id": branch_id,
+                            "workspace_id": resolved_summary.workspace_id or workspace_id,
+                            "branch_name": resolved_summary.branch_name or branch_id,
+                            "latest_revision": expected_revision,
+                            "updated_at": refreshed_at,
+                        }
+                    )
+                    for record in manifest_records
+                ]
+                self.repo.replace_branch_access_records_for_branch(
+                    session.server.id,
+                    project_id,
+                    branch_id,
+                    normalized_records,
+                )
+                self._write_branch_access_manifest(resolved_summary, normalized_records)
+                current_user_access = self._plugin_branch_access_or_source_fallback(
                     user_id,
                     session.server.id,
                     project_id,
                     branch_id,
-                    [
-                        self._plugin_permission_snapshot_from_branch_access(current_user_access, model)
-                        for model in models
-                    ],
+                    resolved_summary,
                 )
-            else:
-                self.repo.replace_model_permissions_for_user_branch(
-                    user_id,
-                    session.server.id,
-                    project_id,
-                    branch_id,
-                    [],
+                if current_user_access is not None:
+                    self.repo.replace_model_permissions_for_user_branch(
+                        user_id,
+                        session.server.id,
+                        project_id,
+                        branch_id,
+                        [
+                            self._plugin_permission_snapshot_from_branch_access(current_user_access, model)
+                            for model in models
+                        ],
+                    )
+                    self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
+                    return
+
+                logger.info(
+                    "plugin-cache-current-user-not-in-access-manifest",
+                    server_id=session.server.id,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    user=session.user.preferred_username,
+                    manifest_user_count=len(normalized_records),
                 )
-            self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
-            return
-        except PermissionError as exc:
-            logger.info(
-                "plugin-cache-access-manifest-not-allowed",
-                server_id=session.server.id,
-                project_id=project_id,
-                branch_id=branch_id,
-                user=session.user.preferred_username,
-                detail=str(exc),
-            )
-        except Exception as exc:
-            logger.warning(
-                "plugin-cache-access-manifest-refresh-failed",
-                server_id=session.server.id,
-                project_id=project_id,
-                branch_id=branch_id,
-                user=session.user.preferred_username,
-                detail=str(exc),
-            )
+                # A server administrator or aliased TWC identity may be able to
+                # read the branch without appearing in its explicit role list.
+                # Fall through to the authoritative current-session probe.
+            except PermissionError as exc:
+                logger.info(
+                    "plugin-cache-access-manifest-not-allowed",
+                    server_id=session.server.id,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    user=session.user.preferred_username,
+                    detail=str(exc),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "plugin-cache-access-manifest-refresh-failed",
+                    server_id=session.server.id,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    user=session.user.preferred_username,
+                    detail=str(exc),
+                )
 
         try:
             permissions = await self._adapter_for_session(session).probe_plugin_branch_permissions(

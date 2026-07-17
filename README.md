@@ -123,6 +123,10 @@ external integrations.
   users who lack TWC access.
 - The Workbench project selector refreshes on focus and every 30 seconds so an
   already-open session discovers newly published shared projects.
+- Login evaluates the signed-in user only against Workbench's local registry of
+  uploaded project branches and persists the results per user. Subsequent list
+  refreshes reuse those records and probe only new or revision-changed uploads,
+  never the full model tree.
 
 See:
 
