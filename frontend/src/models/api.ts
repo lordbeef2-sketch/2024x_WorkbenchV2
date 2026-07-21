@@ -528,6 +528,8 @@ export interface BranchAccessManifestStatus {
   current_user_accessible: boolean;
   current_user_editable: boolean;
   current_user_admin_access: boolean;
+  current_user_branch_admin_access: boolean;
+  current_user_access_admin_access: boolean;
   updated_at?: string | null;
   source: string;
   file_path?: string | null;

@@ -121,7 +121,7 @@ from app.settings.config import Settings
 logger = structlog.get_logger(__name__)
 
 
-ADMIN_CLAIM_MARKERS = ("admin", "administrator")
+SERVER_ADMIN_ROLE_NAMES = {"server administrator", "configure server"}
 PROJECT_LIST_CACHE_KEY = "projects"
 BRANCH_REVISION_PROBE_TTL_SECONDS = 20
 FAILED_BRANCH_CACHE_RETRY_SECONDS = 300
@@ -1276,7 +1276,7 @@ class PlatformService:
                 latest_revision=payload.revision_id,
                 accessible=True,
                 editable=True,
-                admin_access=True,
+                admin_access=False,
                 roles=["Snapshot Publisher"],
                 source="cameo-plugin-ingest",
                 payload={"source_user": payload.source_user, "source": payload.source},
@@ -1465,7 +1465,7 @@ class PlatformService:
                         latest_revision=payload.to_revision_id or existing_summary.latest_revision,
                         accessible=True,
                         editable=True,
-                        admin_access=True,
+                        admin_access=False,
                         roles=["Snapshot Publisher"],
                         source="cameo-plugin-ingest",
                         payload={"source_user": payload.source_user, "source": payload.source},
@@ -1668,6 +1668,8 @@ class PlatformService:
                     "current_user_accessible": current_user_access.accessible,
                     "current_user_editable": current_user_access.editable,
                     "current_user_admin_access": current_user_access.admin_access,
+                    "current_user_branch_admin_access": self._branch_admin_access(current_user_access),
+                    "current_user_access_admin_access": self._access_admin_access(current_user_access),
                 }
             )
 
@@ -1690,7 +1692,7 @@ class PlatformService:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         if not self._is_plugin_managed_summary(summary):
             raise ValueError("Shared access maps can only be generated for plugin-backed branches.")
-        self._require_effective_branch_access(session, project_id, branch_id, require_admin=True)
+        self._require_effective_branch_access(session, project_id, branch_id, require_access_admin=True)
         records = await self._adapter_for_session(session).build_plugin_branch_access_manifest(
             project_id,
             branch_id,
@@ -1742,12 +1744,19 @@ class PlatformService:
         )
         self._write_branch_access_manifest(summary, normalized_records)
         self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
-        current_user_access = self._require_effective_branch_access(session, project_id, branch_id, require_admin=True)
+        current_user_access = self._require_effective_branch_access(
+            session,
+            project_id,
+            branch_id,
+            require_access_admin=True,
+        )
         return self._branch_access_manifest_status_from_records(summary, normalized_records).model_copy(
             update={
                 "current_user_accessible": current_user_access.accessible,
                 "current_user_editable": current_user_access.editable,
                 "current_user_admin_access": current_user_access.admin_access,
+                "current_user_branch_admin_access": self._branch_admin_access(current_user_access),
+                "current_user_access_admin_access": self._access_admin_access(current_user_access),
                 "message": f"Generated shared access map for {len(normalized_records)} users.",
             }
         )
@@ -3979,7 +3988,7 @@ class PlatformService:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
             await self._ensure_plugin_branch_permissions(session, project_id, branch_id, summary=summary)
-            self._require_effective_branch_access(session, project_id, branch_id, require_admin=True)
+            self._require_effective_branch_access(session, project_id, branch_id, require_branch_admin=True)
         return await self._adapter_for_session(session).update_branch(project_id, branch_id, payload.model_dump(exclude_none=True))
 
     async def get_item(
@@ -5286,7 +5295,7 @@ class PlatformService:
                 else (
                     manifest_user_access.editable
                     if manifest_user_access is not None
-                    else session.authorization_context.can_manage_server_presets
+                    else False
                 )
             )
         )
@@ -5302,6 +5311,8 @@ class PlatformService:
                         "manifest_roles": manifest_user_access.roles if manifest_user_access else [],
                         "manifest_groups": manifest_user_access.via_groups if manifest_user_access else [],
                         "manifest_admin_access": manifest_user_access.admin_access if manifest_user_access else False,
+                        "manifest_branch_admin_access": self._branch_admin_access(manifest_user_access),
+                        "manifest_access_admin_access": self._access_admin_access(manifest_user_access),
                         "session_roles": session.authorization_context.roles,
                         "session_groups": session.authorization_context.groups,
                     },
@@ -5328,10 +5339,7 @@ class PlatformService:
             editable=editable,
             admin_access=bool(
                 accessible
-                and (
-                    (manifest_user_access.admin_access if manifest_user_access else False)
-                    or session.authorization_context.can_manage_server_presets
-                )
+                and (manifest_user_access.admin_access if manifest_user_access else False)
             ),
             roles=list(dict.fromkeys([
                 *(manifest_user_access.roles if manifest_user_access else []),
@@ -5348,6 +5356,8 @@ class PlatformService:
                 "manifest_match": manifest_user_access is not None,
                 "direct_editability_known": direct_editability_known,
                 "manifest_payload": manifest_user_access.payload if manifest_user_access else {},
+                "branch_admin_access": self._branch_admin_access(manifest_user_access),
+                "access_admin_access": self._access_admin_access(manifest_user_access),
             },
             updated_at=utcnow(),
         )
@@ -5427,7 +5437,7 @@ class PlatformService:
             latest_revision=resolved_summary.latest_revision,
             accessible=True,
             editable=True,
-            admin_access=True,
+            admin_access=False,
             roles=["Snapshot Publisher"],
             source="cameo-plugin-ingest-fallback",
             payload={"source_user": resolved_summary.source_user, "fallback": True},
@@ -5455,16 +5465,33 @@ class PlatformService:
         branch_id: str,
         *,
         require_edit: bool = False,
-        require_admin: bool = False,
+        require_branch_admin: bool = False,
+        require_access_admin: bool = False,
     ) -> BranchAccessRecord:
         access = self._branch_access_for_session(session, project_id, branch_id)
         if access is None or not access.accessible:
             raise PermissionError("The active Workbench user does not have access to this project branch.")
-        if require_admin and not access.admin_access:
-            raise PermissionError("The active Workbench user does not have project-administrator access to this branch.")
+        if require_branch_admin and not self._branch_admin_access(access):
+            raise PermissionError("The active Workbench user does not have branch-administration access to this project.")
+        if require_access_admin and not self._access_admin_access(access):
+            raise PermissionError("The active Workbench user cannot manage access rights for this project.")
         if require_edit and not access.editable:
             raise PermissionError("The active Workbench user does not have edit access to this branch.")
         return access
+
+    def _branch_admin_access(self, access: BranchAccessRecord | None) -> bool:
+        if access is None:
+            return False
+        payload = access.payload or {}
+        manifest_payload = payload.get("manifest_payload") if isinstance(payload.get("manifest_payload"), dict) else {}
+        return bool(payload.get("branch_admin_access") or manifest_payload.get("branch_admin_access"))
+
+    def _access_admin_access(self, access: BranchAccessRecord | None) -> bool:
+        if access is None:
+            return False
+        payload = access.payload or {}
+        manifest_payload = payload.get("manifest_payload") if isinstance(payload.get("manifest_payload"), dict) else {}
+        return bool(payload.get("access_admin_access") or manifest_payload.get("access_admin_access"))
 
     def _plugin_branch_permissions_known_for_user(
         self,
@@ -6598,8 +6625,12 @@ class PlatformService:
     def _claims_grant_admin(self, preferred_username: str, roles: list[str], groups: list[str]) -> bool:
         if self._user_key(preferred_username) in {self._user_key(value) for value in self.settings.admin_users if value.strip()}:
             return True
-        claims = [*(role.lower() for role in roles), *(group.lower() for group in groups)]
-        return any(marker in claim for claim in claims for marker in ADMIN_CLAIM_MARKERS)
+        normalized_roles = {
+            re.sub(r"[^a-z0-9]+", " ", role.lower()).strip()
+            for role in roles
+            if role.strip()
+        }
+        return bool(normalized_roles & SERVER_ADMIN_ROLE_NAMES)
 
     def _merge_claims(self, *values: str) -> list[str]:
         merged: list[str] = []

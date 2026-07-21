@@ -143,10 +143,13 @@ def _effective_editable_from_permission_payload(entity: dict[str, Any], payload:
         ):
             if key in source:
                 terms.extend(_enabled_permission_terms(source.get(key)))
+    if any(keyword in term for term in terms for keyword in ("write", "update", "modify", "commit", "merge", "edit resources", "edit element")):
+        return True
     return any(
-        keyword in term
+        action in term and target in term
         for term in terms
-        for keyword in ("write", "update", "modify", "create", "delete", "lock", "commit", "merge", "edit")
+        for action in ("create", "delete")
+        for target in ("element", "model content")
     )
 
 
@@ -2565,7 +2568,7 @@ class TeamworkAdapter:
                 continue
             role_name = _first_text(role.get("name"), role_id)
             role_description = _first_text(role.get("description"))
-            can_view, can_edit, can_admin = self._role_access_flags(role)
+            can_view, can_edit, can_branch_admin, can_access_admin = self._role_access_flags(role)
             if not can_view:
                 continue
 
@@ -2577,7 +2580,8 @@ class TeamworkAdapter:
                     role_name=role_name,
                     via_group=None,
                     can_edit=can_edit,
-                    can_admin=can_admin,
+                    can_branch_admin=can_branch_admin,
+                    can_access_admin=can_access_admin,
                     role_description=role_description,
                 )
 
@@ -2595,7 +2599,8 @@ class TeamworkAdapter:
                         role_name=role_name,
                         via_group=group_name,
                         can_edit=can_edit,
-                        can_admin=can_admin,
+                        can_branch_admin=can_branch_admin,
+                        can_access_admin=can_access_admin,
                         role_description=role_description,
                     )
 
@@ -2608,6 +2613,8 @@ class TeamworkAdapter:
                 "via_groups": details["via_groups"],
                 "readonly_branch_ids": readonly_branch_ids,
                 "role_descriptions": details["role_descriptions"],
+                "branch_admin_access": details["branch_admin_access"],
+                "access_admin_access": details["access_admin_access"],
             }
             records.append(
                 BranchAccessRecord(
@@ -2619,7 +2626,7 @@ class TeamworkAdapter:
                     latest_revision=latest_revision,
                     accessible=True,
                     editable=bool(details["editable"] and not read_only),
-                    admin_access=bool(details["admin_access"]),
+                    admin_access=bool(details["branch_admin_access"] or details["access_admin_access"]),
                     roles=list(details["roles"]),
                     via_groups=list(details["via_groups"]),
                     source="twc-access-manifest",
@@ -3012,8 +3019,8 @@ class TeamworkAdapter:
         self._readonly_branch_probe_supported = True
         return [str(item).strip() for item in _as_list(payload) if str(item).strip()]
 
-    def _role_access_flags(self, role: dict[str, Any]) -> tuple[bool, bool, bool]:
-        permissions = [item for item in _as_list(role.get("permissions")) if isinstance(item, dict)]
+    def _role_access_flags(self, role: dict[str, Any]) -> tuple[bool, bool, bool, bool]:
+        permissions = _as_list(role.get("permissions"))
         role_text = " ".join(
             value.lower()
             for value in (
@@ -3022,31 +3029,68 @@ class TeamworkAdapter:
             )
             if value
         )
-
-        can_view = bool(permissions) or bool(role_text)
-        can_edit = False
-        can_admin = False
+        permission_terms: list[str] = []
         for permission in permissions:
-            permission_text = " ".join(
-                value.lower()
-                for value in (
-                    _first_text(permission.get("name")),
-                    _first_text(permission.get("operationName")),
-                    _first_text(permission.get("operationDisplayName")),
+            if isinstance(permission, dict):
+                permission_text = " ".join(
+                    value.lower()
+                    for value in (
+                        _first_text(permission.get("name")),
+                        _first_text(permission.get("operationName")),
+                        _first_text(permission.get("operationDisplayName")),
+                    )
+                    if value
                 )
-                if value
-            )
-            if any(keyword in permission_text for keyword in ("write", "update", "modify", "create", "delete", "lock", "commit", "merge")):
+            else:
+                permission_text = str(permission).strip().lower()
+            if permission_text:
+                permission_terms.append(re.sub(r"[^a-z0-9]+", " ", permission_text).strip())
+
+        def has_permission(*names: str) -> bool:
+            return any(name in term for term in permission_terms for name in names)
+
+        has_read = has_permission("read resources", "list all resources")
+        has_edit_contents = has_permission("edit resources")
+        has_edit_properties = has_permission("edit resource properties")
+        has_administer_resources = has_permission("administer resources")
+        has_manage_access = has_permission(
+            "manage owned resource access right",
+            "manage user permissions",
+        )
+
+        # Model-content editing requires Read Resources plus Edit Resources.
+        # Resource/branch administration additionally requires Edit Resource
+        # Properties; Administer Resources alone remains read-only for those
+        # actions. Release Resource Locks is never model edit authority.
+        can_view = has_read
+        can_edit = bool(has_read and has_edit_contents)
+        can_branch_admin = bool(has_read and has_edit_contents and has_edit_properties and has_administer_resources)
+        can_access_admin = bool(has_read and has_manage_access)
+
+        # Some server responses identify predefined roles without expanding
+        # their permission objects. Use exact documented role identities only;
+        # broad "manager" or "administrator" matching overgrants unrelated
+        # roles such as Server Administrator and Resource Locks Administrator.
+        if not permission_terms:
+            normalized_role_name = re.sub(r"[^a-z0-9]+", " ", _first_text(role.get("name")).lower()).strip()
+            if normalized_role_name == "resource reviewer":
+                can_view = True
+            elif normalized_role_name == "resource contributor":
+                can_view = True
                 can_edit = True
-            if any(keyword in permission_text for keyword in ("admin", "administrator", "assign", "permission", "role", "release.resource.locks", "release project locks")):
-                can_admin = True
-        if any(keyword in role_text for keyword in ("editor", "writer", "contributor", "developer")):
-            can_edit = True
-        if any(keyword in role_text for keyword in ("admin", "administrator", "owner", "manager")):
-            can_admin = True
-        if can_admin:
-            can_edit = True
-        return can_view, can_edit, can_admin
+            elif normalized_role_name == "resource manager":
+                can_view = True
+                can_edit = True
+                can_branch_admin = True
+                can_access_admin = True
+            elif normalized_role_name == "resource locks administrator":
+                can_view = True
+            elif normalized_role_name == "index manager":
+                can_view = True
+            elif normalized_role_name == "security manager":
+                can_view = True
+                can_access_admin = True
+        return can_view, can_edit, can_branch_admin, can_access_admin
 
     def _merge_branch_access_user(
         self,
@@ -3056,7 +3100,8 @@ class TeamworkAdapter:
         role_name: str,
         via_group: str | None,
         can_edit: bool,
-        can_admin: bool,
+        can_branch_admin: bool,
+        can_access_admin: bool,
         role_description: str,
     ) -> None:
         user_key = username.strip().lower()
@@ -3068,7 +3113,8 @@ class TeamworkAdapter:
                 "roles": [],
                 "via_groups": [],
                 "editable": False,
-                "admin_access": False,
+                "branch_admin_access": False,
+                "access_admin_access": False,
                 "role_descriptions": [],
             },
         )
@@ -3079,7 +3125,8 @@ class TeamworkAdapter:
         if role_description and role_description not in state["role_descriptions"]:
             state["role_descriptions"].append(role_description)
         state["editable"] = bool(state["editable"] or can_edit)
-        state["admin_access"] = bool(state["admin_access"] or can_admin)
+        state["branch_admin_access"] = bool(state["branch_admin_access"] or can_branch_admin)
+        state["access_admin_access"] = bool(state["access_admin_access"] or can_access_admin)
 
     async def materialize_model_snapshot(
         self,

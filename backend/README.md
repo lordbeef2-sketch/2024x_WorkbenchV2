@@ -61,12 +61,17 @@ never scanned to determine project visibility.
 Each stored user/branch result merges the direct effective-access probe with
 the detailed TWC role manifest: direct role assignments, group and nested-group
 assignments, view/edit/admin role flags, read-only branch overrides, and the
-authenticated session's server roles/groups. Workbench enforces the resulting
+authenticated session's role/group identity. Workbench enforces the resulting
 view/edit/admin flags rather than granting permissions merely because a user is
 known to the application.
-Read, edit, and project-administration operations are checked independently;
-for example, an editor cannot refresh the shared permission map unless TWC also
-grants that identity project-administrator access.
+TWC global Server Administrator authority is kept separate from resource
+authority: it does not grant branch editing or project administration without
+the corresponding resource-scoped permissions.
+Read, edit, access-right administration, and branch/resource administration are
+checked independently. An editor cannot refresh the shared permission map
+without Manage Owned Resource Access Right (or Manage User Permissions), and a
+branch action requires the documented Read Resources, Edit Resources, Edit
+Resource Properties, and Administer Resources combination.
 Workbench recognizes explicit `editable` values as well as TWC permission,
 allowed-action, and allowed-operation payloads when resolving effective edit
 rights.

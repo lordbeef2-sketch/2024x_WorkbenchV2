@@ -610,6 +610,8 @@ class BranchAccessManifestStatus(BaseModel):
     current_user_accessible: bool = False
     current_user_editable: bool = False
     current_user_admin_access: bool = False
+    current_user_branch_admin_access: bool = False
+    current_user_access_admin_access: bool = False
     updated_at: datetime | None = None
     source: str = "none"
     file_path: str | None = None

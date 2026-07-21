@@ -129,10 +129,12 @@ external integrations.
   never the full model tree.
 - Effective Workbench access merges TWC's direct authenticated branch result
   with direct project roles, group and nested-group roles, read-only branch
-  overrides, project-administration flags, and authenticated server claims.
+  overrides, and resource-scoped project-administration permissions. Global
+  Server Administrator status does not imply resource edit or project-admin
+  access.
 - Every exposed branch operation enforces the corresponding effective flag:
-  view for browsing, edit for model changes, and project admin for access-map
-  or branch-administration actions.
+  view for browsing, edit for model changes, access-right administration for
+  permission-map actions, and resource administration for branch actions.
 
 See:
 

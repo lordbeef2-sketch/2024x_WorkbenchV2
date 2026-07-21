@@ -4157,7 +4157,7 @@ export default function WorkspacePage() {
               !csrfToken
               || !selectedProjectId
               || !selectedBranchId
-              || !branchAccessManifestStatus?.current_user_admin_access
+              || !branchAccessManifestStatus?.current_user_access_admin_access
               || refreshBranchAccessManifestMutation.isPending
             }
           >
