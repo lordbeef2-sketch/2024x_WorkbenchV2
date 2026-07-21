@@ -105,6 +105,51 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _enabled_permission_terms(value: Any) -> list[str]:
+    terms: list[str] = []
+    if isinstance(value, str):
+        terms.append(value.lower())
+    elif isinstance(value, dict):
+        for key, nested in value.items():
+            if isinstance(nested, bool):
+                if nested:
+                    terms.append(str(key).lower())
+                continue
+            terms.extend(_enabled_permission_terms(nested))
+    elif isinstance(value, (list, tuple, set)):
+        for nested in value:
+            terms.extend(_enabled_permission_terms(nested))
+    return terms
+
+
+def _effective_editable_from_permission_payload(entity: dict[str, Any], payload: dict[str, Any]) -> bool:
+    for source in (entity, payload):
+        if "editable" in source:
+            explicit = source.get("editable")
+            if isinstance(explicit, bool):
+                return explicit
+            if isinstance(explicit, str) and explicit.strip().lower() in {"true", "false"}:
+                return explicit.strip().lower() == "true"
+
+    terms: list[str] = []
+    for source in (entity, payload):
+        for key in (
+            "permission",
+            "permissions",
+            "allowedActions",
+            "allowedOperations",
+            "kerml:permission",
+            "kerml:permissions",
+        ):
+            if key in source:
+                terms.extend(_enabled_permission_terms(source.get(key)))
+    return any(
+        keyword in term
+        for term in terms
+        for keyword in ("write", "update", "modify", "create", "delete", "lock", "commit", "merge", "edit")
+    )
+
+
 def _first_text(*values: Any) -> str:
     for value in values:
         if isinstance(value, str):
@@ -2610,7 +2655,14 @@ class TeamworkAdapter:
         entity = _payload_entity(payload)
         restricted = bool(isinstance(payload, dict) and payload.get("restricted"))
         accessible = isinstance(entity, dict) and not restricted
-        editable = bool(entity.get("editable", False)) if isinstance(entity, dict) else False
+        editable = (
+            _effective_editable_from_permission_payload(
+                entity,
+                payload if isinstance(payload, dict) else {},
+            )
+            if isinstance(entity, dict)
+            else False
+        )
         permission_payload: dict[str, Any] = {}
         for source in (entity if isinstance(entity, dict) else {}, payload if isinstance(payload, dict) else {}):
             for key in (

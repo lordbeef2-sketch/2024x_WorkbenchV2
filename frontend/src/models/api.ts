@@ -525,6 +525,9 @@ export interface BranchAccessManifestStatus {
   accessible_user_count: number;
   editable_user_count: number;
   admin_user_count: number;
+  current_user_accessible: boolean;
+  current_user_editable: boolean;
+  current_user_admin_access: boolean;
   updated_at?: string | null;
   source: string;
   file_path?: string | null;

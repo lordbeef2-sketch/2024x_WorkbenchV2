@@ -1016,13 +1016,7 @@ class PlatformService:
                 )
                 if visible_summary is not None:
                     return visible_summary
-                return summary.model_copy(
-                    update={
-                        "model_count": 0,
-                        "element_count": 0,
-                        "message": "The active Workbench user does not have access to this cached branch.",
-                    }
-                )
+                raise PermissionError("The active Workbench user does not have access to this cached branch.")
             return summary
         return self._branch_cache_summary(
             session,
@@ -1636,13 +1630,56 @@ class PlatformService:
                 source="none",
                 message="No plugin snapshot is cached for this branch yet.",
             )
+        if self._is_plugin_managed_summary(summary):
+            current_user_access = self._require_effective_branch_access(session, project_id, branch_id)
+        else:
+            visible_models = self._visible_cached_models_for_user(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                project_id,
+                branch_id,
+            )
+            if not visible_models:
+                raise PermissionError("The active Workbench user does not have access to this project branch.")
+            model_permissions = self._permissions_by_model_for_user(
+                self._user_key(session.user.preferred_username),
+                session.server.id,
+                project_id,
+                branch_id,
+            )
+            current_user_access = BranchAccessRecord(
+                user_id=self._user_key(session.user.preferred_username),
+                server_id=session.server.id,
+                project_id=project_id,
+                branch_id=branch_id,
+                accessible=True,
+                editable=any(
+                    permission.editable
+                    for permission in model_permissions.values()
+                    if permission.accessible and not permission.restricted
+                ),
+                admin_access=False,
+                source="legacy-model-permission-summary",
+            )
+
+        def with_current_user_access(status: BranchAccessManifestStatus) -> BranchAccessManifestStatus:
+            return status.model_copy(
+                update={
+                    "current_user_accessible": current_user_access.accessible,
+                    "current_user_editable": current_user_access.editable,
+                    "current_user_admin_access": current_user_access.admin_access,
+                }
+            )
+
         records = self.repo.list_branch_access_records(session.server.id, project_id, branch_id)
         status = self._branch_access_manifest_status_from_records(summary, records)
         if not self._is_plugin_managed_summary(summary):
-            return status.model_copy(update={"message": "This branch is not plugin-backed."})
+            return with_current_user_access(status.model_copy(update={"message": "This branch is not plugin-backed."}))
         if not records:
-            return status.model_copy(update={"message": "No shared access map has been generated for this branch yet."})
-        return status
+            return with_current_user_access(
+                status.model_copy(update={"message": "No shared access map has been generated for this branch yet."})
+            )
+        return with_current_user_access(status)
 
     async def refresh_branch_access_manifest(
         self,
@@ -1653,6 +1690,7 @@ class PlatformService:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         if not self._is_plugin_managed_summary(summary):
             raise ValueError("Shared access maps can only be generated for plugin-backed branches.")
+        self._require_effective_branch_access(session, project_id, branch_id, require_admin=True)
         records = await self._adapter_for_session(session).build_plugin_branch_access_manifest(
             project_id,
             branch_id,
@@ -1674,6 +1712,13 @@ class PlatformService:
             )
             for record in records
         ]
+        normalized_records = self._merge_manifest_with_effective_access_records(
+            session.server.id,
+            project_id,
+            branch_id,
+            summary.latest_revision,
+            normalized_records,
+        )
         self.repo.replace_branch_access_records_for_branch(session.server.id, project_id, branch_id, normalized_records)
         current_user_access = self._plugin_branch_access_or_source_fallback(
             self._user_key(session.user.preferred_username),
@@ -1697,8 +1742,14 @@ class PlatformService:
         )
         self._write_branch_access_manifest(summary, normalized_records)
         self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
+        current_user_access = self._require_effective_branch_access(session, project_id, branch_id, require_admin=True)
         return self._branch_access_manifest_status_from_records(summary, normalized_records).model_copy(
-            update={"message": f"Generated shared access map for {len(normalized_records)} users."}
+            update={
+                "current_user_accessible": current_user_access.accessible,
+                "current_user_editable": current_user_access.editable,
+                "current_user_admin_access": current_user_access.admin_access,
+                "message": f"Generated shared access map for {len(normalized_records)} users.",
+            }
         )
 
     def get_branch_cache_summary_for_user(
@@ -3925,6 +3976,10 @@ class PlatformService:
         branch_id: str,
         payload: BranchUpdateRequest,
     ):
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            await self._ensure_plugin_branch_permissions(session, project_id, branch_id, summary=summary)
+            self._require_effective_branch_access(session, project_id, branch_id, require_admin=True)
         return await self._adapter_for_session(session).update_branch(project_id, branch_id, payload.model_dump(exclude_none=True))
 
     async def get_item(
@@ -3987,6 +4042,11 @@ class PlatformService:
         project_id: str | None = None,
         branch_id: str | None = None,
     ) -> ItemDetails:
+        if project_id and branch_id:
+            summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+            if self._is_plugin_managed_summary(summary):
+                await self._ensure_plugin_branch_permissions(session, project_id, branch_id, summary=summary)
+                self._require_effective_branch_access(session, project_id, branch_id, require_edit=True)
         item = await self._adapter_for_session(session).update_item(item_id, payload, project_id, branch_id)
         shared_cache_updated = False
         if project_id and branch_id:
@@ -5056,7 +5116,7 @@ class PlatformService:
                     workspace_id=summary.workspace_id,
                     summary=summary,
                     force=force,
-                    prefer_manifest=False,
+                    prefer_manifest=True,
                 )
 
         if pending:
@@ -5096,6 +5156,7 @@ class PlatformService:
         if not needs_refresh:
             return
 
+        manifest_user_access: BranchAccessRecord | None = None
         if prefer_manifest:
             try:
                 manifest_records = await self._adapter_for_session(session).build_plugin_branch_access_manifest(
@@ -5119,6 +5180,14 @@ class PlatformService:
                     )
                     for record in manifest_records
                 ]
+                normalized_records = self._merge_manifest_with_effective_access_records(
+                    session.server.id,
+                    project_id,
+                    branch_id,
+                    expected_revision,
+                    normalized_records,
+                    exclude_user_id=user_id,
+                )
                 self.repo.replace_branch_access_records_for_branch(
                     session.server.id,
                     project_id,
@@ -5126,38 +5195,26 @@ class PlatformService:
                     normalized_records,
                 )
                 self._write_branch_access_manifest(resolved_summary, normalized_records)
-                current_user_access = self._plugin_branch_access_or_source_fallback(
+                manifest_user_access = self._plugin_branch_access_or_source_fallback(
                     user_id,
                     session.server.id,
                     project_id,
                     branch_id,
                     resolved_summary,
                 )
-                if current_user_access is not None:
-                    self.repo.replace_model_permissions_for_user_branch(
-                        user_id,
-                        session.server.id,
-                        project_id,
-                        branch_id,
-                        [
-                            self._plugin_permission_snapshot_from_branch_access(current_user_access, model)
-                            for model in models
-                        ],
+                if manifest_user_access is None:
+                    logger.info(
+                        "plugin-cache-current-user-not-in-access-manifest",
+                        server_id=session.server.id,
+                        project_id=project_id,
+                        branch_id=branch_id,
+                        user=session.user.preferred_username,
+                        manifest_user_count=len(normalized_records),
                     )
-                    self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
-                    return
-
-                logger.info(
-                    "plugin-cache-current-user-not-in-access-manifest",
-                    server_id=session.server.id,
-                    project_id=project_id,
-                    branch_id=branch_id,
-                    user=session.user.preferred_username,
-                    manifest_user_count=len(normalized_records),
-                )
-                # A server administrator or aliased TWC identity may be able to
-                # read the branch without appearing in its explicit role list.
-                # Fall through to the authoritative current-session probe.
+                # Always perform the current-session probe. The manifest adds
+                # direct-role, group, nested-group, read-only, and project-admin
+                # detail; the probe confirms the effective permission TWC
+                # actually grants this authenticated identity.
             except PermissionError as exc:
                 logger.info(
                     "plugin-cache-access-manifest-not-allowed",
@@ -5195,18 +5252,69 @@ class PlatformService:
                 user=session.user.preferred_username,
                 detail=str(exc),
             )
+            if manifest_user_access is None:
+                return
+            self.repo.replace_model_permissions_for_user_branch(
+                user_id,
+                session.server.id,
+                project_id,
+                branch_id,
+                [
+                    self._plugin_permission_snapshot_from_branch_access(manifest_user_access, model)
+                    for model in models
+                ],
+            )
+            self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
             return
 
+        accessible = any(permission.accessible and not permission.restricted for permission in permissions)
+        direct_editable = any(
+            permission.accessible and not permission.restricted and permission.editable for permission in permissions
+        )
+        direct_editability_known = any(
+            any(
+                key in permission.payload
+                for key in ("editable", "permission", "permissions", "allowedActions", "allowedOperations")
+            )
+            for permission in permissions
+        )
+        editable = bool(
+            accessible
+            and (
+                direct_editable
+                if direct_editability_known
+                else (
+                    manifest_user_access.editable
+                    if manifest_user_access is not None
+                    else session.authorization_context.can_manage_server_presets
+                )
+            )
+        )
+        effective_permissions = [
+            permission.model_copy(
+                update={
+                    "accessible": accessible,
+                    "restricted": not accessible,
+                    "editable": editable,
+                    "source": "twc-effective-permission-merge",
+                    "payload": {
+                        **(permission.payload or {}),
+                        "manifest_roles": manifest_user_access.roles if manifest_user_access else [],
+                        "manifest_groups": manifest_user_access.via_groups if manifest_user_access else [],
+                        "manifest_admin_access": manifest_user_access.admin_access if manifest_user_access else False,
+                        "session_roles": session.authorization_context.roles,
+                        "session_groups": session.authorization_context.groups,
+                    },
+                }
+            )
+            for permission in permissions
+        ]
         self.repo.replace_model_permissions_for_user_branch(
             user_id,
             session.server.id,
             project_id,
             branch_id,
-            permissions,
-        )
-        accessible = any(permission.accessible and not permission.restricted for permission in permissions)
-        editable = any(
-            permission.accessible and not permission.restricted and permission.editable for permission in permissions
+            effective_permissions,
         )
         fallback_record = BranchAccessRecord(
             user_id=user_id,
@@ -5218,11 +5326,29 @@ class PlatformService:
             latest_revision=expected_revision,
             accessible=accessible,
             editable=editable,
-            admin_access=False,
-            roles=[],
-            via_groups=[],
-            source="twc-session-probe",
-            payload={"model_ids": model_ids},
+            admin_access=bool(
+                accessible
+                and (
+                    (manifest_user_access.admin_access if manifest_user_access else False)
+                    or session.authorization_context.can_manage_server_presets
+                )
+            ),
+            roles=list(dict.fromkeys([
+                *(manifest_user_access.roles if manifest_user_access else []),
+                *session.authorization_context.roles,
+            ])),
+            via_groups=list(dict.fromkeys([
+                *(manifest_user_access.via_groups if manifest_user_access else []),
+                *session.authorization_context.groups,
+            ])),
+            source="twc-effective-permission-merge",
+            payload={
+                "model_ids": model_ids,
+                "direct_probe": True,
+                "manifest_match": manifest_user_access is not None,
+                "direct_editability_known": direct_editability_known,
+                "manifest_payload": manifest_user_access.payload if manifest_user_access else {},
+            },
             updated_at=utcnow(),
         )
         self.repo.upsert_branch_access_records([fallback_record])
@@ -5252,6 +5378,27 @@ class PlatformService:
         branch_id: str,
     ) -> BranchAccessRecord | None:
         return self.repo.get_branch_access_record(user_id, server_id, project_id, branch_id)
+
+    def _merge_manifest_with_effective_access_records(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        latest_revision: str | None,
+        manifest_records: list[BranchAccessRecord],
+        *,
+        exclude_user_id: str | None = None,
+    ) -> list[BranchAccessRecord]:
+        merged = {record.user_id: record for record in manifest_records}
+        for existing in self.repo.list_branch_access_records(server_id, project_id, branch_id):
+            if existing.source not in {"twc-session-probe", "twc-effective-permission-merge"}:
+                continue
+            if exclude_user_id and existing.user_id == exclude_user_id:
+                continue
+            if (existing.latest_revision or None) != (latest_revision or None):
+                continue
+            merged[existing.user_id] = existing
+        return sorted(merged.values(), key=lambda record: record.user_id)
 
     def _plugin_branch_access_or_source_fallback(
         self,
@@ -5300,6 +5447,24 @@ class PlatformService:
             branch_id,
             self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id),
         )
+
+    def _require_effective_branch_access(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        *,
+        require_edit: bool = False,
+        require_admin: bool = False,
+    ) -> BranchAccessRecord:
+        access = self._branch_access_for_session(session, project_id, branch_id)
+        if access is None or not access.accessible:
+            raise PermissionError("The active Workbench user does not have access to this project branch.")
+        if require_admin and not access.admin_access:
+            raise PermissionError("The active Workbench user does not have project-administrator access to this branch.")
+        if require_edit and not access.editable:
+            raise PermissionError("The active Workbench user does not have edit access to this branch.")
+        return access
 
     def _plugin_branch_permissions_known_for_user(
         self,

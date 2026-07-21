@@ -4153,7 +4153,13 @@ export default function WorkspacePage() {
             variant="outlined"
             startIcon={<RefreshRoundedIcon />}
             onClick={() => refreshBranchAccessManifestMutation.mutate()}
-            disabled={!csrfToken || !selectedProjectId || !selectedBranchId || refreshBranchAccessManifestMutation.isPending}
+            disabled={
+              !csrfToken
+              || !selectedProjectId
+              || !selectedBranchId
+              || !branchAccessManifestStatus?.current_user_admin_access
+              || refreshBranchAccessManifestMutation.isPending
+            }
           >
             Refresh Access Map
           </Button>
@@ -4217,6 +4223,17 @@ export default function WorkspacePage() {
               <TextField label="Filter containment tree" value={treeFilter} onChange={(event) => setTreeFilter(event.target.value)} fullWidth />
               {branchAccessManifestStatus ? (
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                  <Chip
+                    label={
+                      branchAccessManifestStatus.current_user_admin_access
+                        ? "Your access: project admin"
+                        : branchAccessManifestStatus.current_user_editable
+                          ? "Your access: editor"
+                          : "Your access: viewer"
+                    }
+                    color={branchAccessManifestStatus.current_user_admin_access ? "primary" : "default"}
+                    variant="outlined"
+                  />
                   <Chip label={`${branchAccessManifestStatus.accessible_user_count} viewers`} variant="outlined" />
                   <Chip label={`${branchAccessManifestStatus.editable_user_count} editors`} variant="outlined" />
                   <Chip label={`${branchAccessManifestStatus.admin_user_count} admins`} variant="outlined" />

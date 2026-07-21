@@ -607,6 +607,9 @@ class BranchAccessManifestStatus(BaseModel):
     accessible_user_count: int = 0
     editable_user_count: int = 0
     admin_user_count: int = 0
+    current_user_accessible: bool = False
+    current_user_editable: bool = False
+    current_user_admin_access: bool = False
     updated_at: datetime | None = None
     source: str = "none"
     file_path: str | None = None

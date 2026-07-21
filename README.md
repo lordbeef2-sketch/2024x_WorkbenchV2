@@ -127,6 +127,12 @@ external integrations.
   uploaded project branches and persists the results per user. Subsequent list
   refreshes reuse those records and probe only new or revision-changed uploads,
   never the full model tree.
+- Effective Workbench access merges TWC's direct authenticated branch result
+  with direct project roles, group and nested-group roles, read-only branch
+  overrides, project-administration flags, and authenticated server claims.
+- Every exposed branch operation enforces the corresponding effective flag:
+  view for browsing, edit for model changes, and project admin for access-map
+  or branch-administration actions.
 
 See:
 

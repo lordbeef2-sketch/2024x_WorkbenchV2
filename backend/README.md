@@ -58,6 +58,18 @@ user against those registered branches with bounded concurrency. Later project
 list reads reuse matching revision records and contact TWC only for a newly
 uploaded branch, a changed revision, or an explicit refresh; model elements are
 never scanned to determine project visibility.
+Each stored user/branch result merges the direct effective-access probe with
+the detailed TWC role manifest: direct role assignments, group and nested-group
+assignments, view/edit/admin role flags, read-only branch overrides, and the
+authenticated session's server roles/groups. Workbench enforces the resulting
+view/edit/admin flags rather than granting permissions merely because a user is
+known to the application.
+Read, edit, and project-administration operations are checked independently;
+for example, an editor cannot refresh the shared permission map unless TWC also
+grants that identity project-administrator access.
+Workbench recognizes explicit `editable` values as well as TWC permission,
+allowed-action, and allowed-operation payloads when resolving effective edit
+rights.
 
 See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
 
