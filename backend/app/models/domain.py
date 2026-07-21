@@ -250,6 +250,8 @@ class SessionData(BaseModel):
     bookmarks: list[Bookmark] = Field(default_factory=list)
     saved_searches: list[SavedSearch] = Field(default_factory=list)
     recent_items: list[Bookmark] = Field(default_factory=list)
+    permission_snapshot_attempted_at: datetime | None = None
+    permission_snapshot_refreshed_at: datetime | None = None
     created_at: datetime = Field(default_factory=utcnow)
     expires_at: datetime = Field(default_factory=utcnow)
 
@@ -597,6 +599,48 @@ class BranchAccessRecord(BaseModel):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class PermissionManifestEntry(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    scope_id: str = Field(default="", alias="scopeId")
+    scope_type: str = Field(default="project", alias="scopeType")
+    principal_id: str = Field(default="", alias="principalId")
+    principal_name: str = Field(default="", alias="principalName")
+    principal_type: str = Field(default="", alias="principalType")
+    role_name: str = Field(default="", alias="roleName")
+    action: str = ""
+    application: str = ""
+    inherited: bool = False
+    accessible: bool = False
+    editable: bool = False
+    branch_admin_access: bool = Field(default=False, alias="branchAdminAccess")
+    access_admin_access: bool = Field(default=False, alias="accessAdminAccess")
+    via_groups: list[str] = Field(default_factory=list, alias="viaGroups")
+
+
+class PermissionManifest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_version: str = Field(default="1.0", alias="schemaVersion")
+    captured_at: datetime = Field(default_factory=utcnow, alias="capturedAt")
+    captured_by: str = Field(default="", alias="capturedBy")
+    source: str = "cameo-plugin"
+    complete: bool = False
+    entries: list[PermissionManifestEntry] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class BranchPermissionAttachment(BaseModel):
+    server_id: str
+    project_id: str
+    branch_id: str
+    workspace_id: str | None = None
+    latest_revision: str | None = None
+    snapshot_hash: str | None = None
+    manifest: PermissionManifest
+    attached_at: datetime = Field(default_factory=utcnow)
+
+
 class BranchAccessManifestStatus(BaseModel):
     server_id: str
     project_id: str
@@ -845,6 +889,7 @@ class BranchSnapshotIngestRequest(BaseModel):
     revision_id: str | None = Field(default=None, alias="revisionId")
     snapshot_hash: str | None = Field(default=None, alias="snapshotHash")
     source_user: str = Field(alias="sourceUser")
+    permission_manifest: PermissionManifest | None = Field(default=None, alias="permissionManifest")
     models: list[IngestModelRecord] = Field(default_factory=list)
     elements: list[IngestElementRecord] = Field(default_factory=list)
 
@@ -869,6 +914,7 @@ class BranchDeltaIngestRequest(BaseModel):
     base_snapshot_hash: str | None = Field(default=None, alias="baseSnapshotHash")
     target_snapshot_hash: str | None = Field(default=None, alias="targetSnapshotHash")
     source_user: str = Field(alias="sourceUser")
+    permission_manifest: PermissionManifest | None = Field(default=None, alias="permissionManifest")
     added_models: list[IngestModelRecord] = Field(default_factory=list, alias="addedModels")
     updated_models: list[IngestModelRecord] = Field(default_factory=list, alias="updatedModels")
     removed_model_ids: list[str] = Field(default_factory=list, alias="removedModelIds")
@@ -901,6 +947,10 @@ class BranchIngestState(BaseModel):
     element_count: int = 0
     source_kind: str = "none"
     source_user: str | None = None
+    permission_manifest_source: str | None = None
+    permission_manifest_complete: bool = False
+    permission_manifest_entry_count: int = 0
+    permission_manifest_attached_at: datetime | None = None
     updated_at: datetime | None = None
 
 

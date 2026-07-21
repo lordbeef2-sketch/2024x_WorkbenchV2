@@ -82,6 +82,7 @@ public class DeltaExportService {
         delta.baseSnapshotHash = previous.snapshotHash;
         delta.targetSnapshotHash = current.snapshotHash;
         delta.sourceUser = current.sourceUser;
+        delta.permissionManifest = current.permissionManifest;
         return delta;
     }
 

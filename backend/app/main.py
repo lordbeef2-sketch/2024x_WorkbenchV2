@@ -22,6 +22,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings)
     app.state.container = ApplicationContainer(settings)
+    await app.state.container.start()
     yield
     await app.state.container.close()
 

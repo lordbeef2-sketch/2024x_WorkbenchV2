@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class BranchDeltaPayload {
-    public String schemaVersion = "1.0";
+    public String schemaVersion = "1.1";
     public String source = "cameo-plugin";
     public String exportedAt;
     public String exportReason;
@@ -21,6 +21,7 @@ public class BranchDeltaPayload {
     public String baseSnapshotHash;
     public String targetSnapshotHash;
     public String sourceUser;
+    public PermissionManifest permissionManifest;
     public List<ModelRecord> addedModels = new ArrayList<>();
     public List<ModelRecord> updatedModels = new ArrayList<>();
     public List<String> removedModelIds = new ArrayList<>();

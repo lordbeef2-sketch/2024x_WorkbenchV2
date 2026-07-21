@@ -103,6 +103,11 @@ scoped to that user's cached visibility.
 - `POST /api/cache-ingest/branch-snapshots`
 - `POST /api/cache-ingest/branch-deltas`
 
+Both payloads accept `permissionManifest`. The attachment is stored with the
+branch revision and can contain Cameo package ACL entries plus TWC resource-role
+entries. It is never treated as a grant: login and the 30-minute active-session
+refresh replace each user's effective access from the current TWC REST result.
+
 ### Cache edit endpoint
 
 - `PATCH /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`

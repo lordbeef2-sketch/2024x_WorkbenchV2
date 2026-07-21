@@ -53,6 +53,8 @@ Request body:
 - branch metadata
 - revision metadata
 - source user metadata
+- `permissionManifest`, containing the uploader identity plus Cameo
+  project/package ACL principals, actions, inheritance, and read/write flags
 - full model payload
 - every loaded 2024x model root returned by `Project.getModels()`, including
   attached-module roots
@@ -90,6 +92,13 @@ Request body:
 - changed element set
 - added/removed items
 - relationship updates
+- the current `permissionManifest`
+
+The stored permission attachment follows the server/project/branch record and
+is replaced or refreshed with its upload. Workbench may merge a complete TWC
+resource-role enumeration into it during login/periodic refresh. This manifest
+is comparison and audit data; authorization is always based on the current
+authenticated user's TWC REST probe and stored effective snapshot.
 
 Response:
 

@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class BranchSnapshotPayload {
-    public String schemaVersion = "1.0";
+    public String schemaVersion = "1.1";
     public String source = "cameo-plugin";
     public String exportedAt;
     public String exportReason;
@@ -19,6 +19,7 @@ public class BranchSnapshotPayload {
     public String revisionId;
     public String snapshotHash;
     public String sourceUser;
+    public PermissionManifest permissionManifest;
     public List<ModelRecord> models = new ArrayList<>();
     public List<ElementRecord> elements = new ArrayList<>();
 }

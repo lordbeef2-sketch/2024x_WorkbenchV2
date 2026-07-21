@@ -58,6 +58,9 @@ class SessionStore:
     def delete(self, session_id: str) -> None:
         raise NotImplementedError
 
+    def list_active(self) -> list[SessionData]:
+        raise NotImplementedError
+
 
 class InMemorySessionStore(SessionStore):
     def __init__(self) -> None:
@@ -81,6 +84,14 @@ class InMemorySessionStore(SessionStore):
         with self._lock:
             self._sessions.pop(session_id, None)
 
+    def list_active(self) -> list[SessionData]:
+        now = datetime.now(UTC)
+        with self._lock:
+            expired = [session_id for session_id, session in self._sessions.items() if session.expires_at <= now]
+            for session_id in expired:
+                self._sessions.pop(session_id, None)
+            return list(self._sessions.values())
+
 
 class RedisSessionStore(SessionStore):
     def __init__(self, redis_url: str) -> None:
@@ -98,6 +109,21 @@ class RedisSessionStore(SessionStore):
 
     def delete(self, session_id: str) -> None:
         self._redis.delete(f"twc:session:{session_id}")
+
+    def list_active(self) -> list[SessionData]:
+        now = datetime.now(UTC)
+        sessions: list[SessionData] = []
+        for key in self._redis.scan_iter(match="twc:session:*"):
+            payload = self._redis.get(key)
+            if not payload:
+                continue
+            try:
+                session = SessionData.model_validate_json(payload)
+            except Exception:
+                continue
+            if session.expires_at > now:
+                sessions.append(session)
+        return sessions
 
 
 class SessionManager:
@@ -146,6 +172,22 @@ class SessionManager:
 
     def destroy_session(self, session_id: str) -> None:
         self.store.delete(session_id)
+
+    def list_active_sessions(self) -> list[SessionData]:
+        return self.store.list_active()
+
+    def mark_permission_snapshot_attempt(
+        self,
+        session: SessionData,
+        attempted_at: datetime,
+        *,
+        successful: bool,
+    ) -> SessionData:
+        session.permission_snapshot_attempted_at = attempted_at
+        if successful:
+            session.permission_snapshot_refreshed_at = attempted_at
+        self.store.set(session)
+        return session
 
     def get_credentials(self, session: SessionData) -> TokenBundle:
         return self.cipher.decrypt(session.encrypted_credentials)

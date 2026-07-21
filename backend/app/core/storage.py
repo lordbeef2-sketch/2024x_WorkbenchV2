@@ -9,6 +9,7 @@ from typing import Any, Callable, Iterable, TypeVar
 
 from app.models.domain import (
     BranchAccessRecord,
+    BranchPermissionAttachment,
     BranchWebhookRegistration,
     BranchCacheSummary,
     CacheApiKeyRecord,
@@ -253,6 +254,21 @@ class SqliteRepository:
                 """
                 CREATE INDEX IF NOT EXISTS idx_twc_branch_access_records_branch
                 ON twc_branch_access_records (server_id, project_id, branch_id, user_id)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS twc_branch_permission_attachments (
+                    server_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    branch_id TEXT NOT NULL,
+                    latest_revision TEXT,
+                    attached_at TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    complete INTEGER NOT NULL,
+                    payload TEXT NOT NULL,
+                    PRIMARY KEY (server_id, project_id, branch_id)
+                )
                 """
             )
             connection.execute(
@@ -757,6 +773,14 @@ class SqliteRepository:
                 (server_id, project_id, branch_id),
             )
             connection.execute(
+                "DELETE FROM twc_branch_access_records WHERE server_id = ? AND project_id = ? AND branch_id = ?",
+                (server_id, project_id, branch_id),
+            )
+            connection.execute(
+                "DELETE FROM twc_branch_permission_attachments WHERE server_id = ? AND project_id = ? AND branch_id = ?",
+                (server_id, project_id, branch_id),
+            )
+            connection.execute(
                 "DELETE FROM twc_cached_elements WHERE server_id = ? AND project_id = ? AND branch_id = ?",
                 (server_id, project_id, branch_id),
             )
@@ -867,6 +891,54 @@ class SqliteRepository:
         if not row:
             return None
         return BranchAccessRecord.model_validate_json(row["payload"])
+
+    def get_branch_permission_attachment(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+    ) -> BranchPermissionAttachment | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload FROM twc_branch_permission_attachments
+                WHERE server_id = ? AND project_id = ? AND branch_id = ?
+                """,
+                (server_id, project_id, branch_id),
+            ).fetchone()
+        if not row:
+            return None
+        return BranchPermissionAttachment.model_validate_json(row["payload"])
+
+    def upsert_branch_permission_attachment(
+        self,
+        attachment: BranchPermissionAttachment,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if connection is not None:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO twc_branch_permission_attachments (
+                    server_id, project_id, branch_id, latest_revision,
+                    attached_at, source, complete, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attachment.server_id,
+                    attachment.project_id,
+                    attachment.branch_id,
+                    attachment.latest_revision,
+                    attachment.attached_at.isoformat(),
+                    attachment.manifest.source,
+                    int(attachment.manifest.complete),
+                    attachment.model_dump_json(),
+                ),
+            )
+            return
+        with self._lock, self._connect() as managed_connection:
+            self.upsert_branch_permission_attachment(attachment, connection=managed_connection)
+            managed_connection.commit()
 
     def list_branch_access_records(
         self,
@@ -1069,6 +1141,59 @@ class SqliteRepository:
                         )
                         for item in items
                     ],
+                )
+            connection.commit()
+
+    def replace_user_permission_snapshot(
+        self,
+        user_id: str,
+        server_id: str,
+        branch_records: Iterable[BranchAccessRecord],
+        model_permissions: Iterable[ModelPermissionSnapshot],
+        permission_attachments: Iterable[BranchPermissionAttachment] = (),
+    ) -> None:
+        """Atomically replace one user's complete stored permission snapshot.
+
+        Deleting and inserting in the same transaction is intentional: stale
+        grants must disappear when TWC revokes access, while readers must never
+        observe a half-refreshed snapshot.
+        """
+        branches = list(branch_records)
+        permissions = list(model_permissions)
+        attachments = list(permission_attachments)
+        if any(item.user_id != user_id or item.server_id != server_id for item in branches):
+            raise ValueError("Branch permission snapshot contains a different user or server.")
+        if any(item.user_id != user_id or item.server_id != server_id for item in permissions):
+            raise ValueError("Model permission snapshot contains a different user or server.")
+        if any(item.server_id != server_id for item in attachments):
+            raise ValueError("Permission attachment snapshot contains a different server.")
+
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM twc_branch_access_records WHERE user_id = ? AND server_id = ?",
+                (user_id, server_id),
+            )
+            connection.execute(
+                "DELETE FROM twc_cached_model_permissions WHERE user_id = ? AND server_id = ?",
+                (user_id, server_id),
+            )
+            self.upsert_branch_access_records(branches, connection=connection)
+            for attachment in attachments:
+                self.upsert_branch_permission_attachment(attachment, connection=connection)
+            for project_id, branch_id in sorted({(item.project_id, item.branch_id) for item in permissions}):
+                branch_permissions = [
+                    item
+                    for item in permissions
+                    if item.project_id == project_id and item.branch_id == branch_id
+                ]
+                self.replace_model_permissions_for_user_branch(
+                    user_id,
+                    server_id,
+                    project_id,
+                    branch_id,
+                    branch_permissions,
+                    connection=connection,
                 )
             connection.commit()
 
@@ -1638,6 +1763,7 @@ class SqliteRepository:
         for table in (
             "twc_branch_cache",
             "twc_branch_access_records",
+            "twc_branch_permission_attachments",
             "twc_cached_models",
             "twc_cached_model_permissions",
             "twc_cached_elements",
@@ -1652,6 +1778,7 @@ class SqliteRepository:
         for table in (
             "twc_branch_cache",
             "twc_branch_access_records",
+            "twc_branch_permission_attachments",
             "twc_cached_models",
             "twc_cached_model_permissions",
             "twc_cached_elements",
@@ -1663,6 +1790,7 @@ class SqliteRepository:
         for table in (
             "twc_branch_cache",
             "twc_branch_access_records",
+            "twc_branch_permission_attachments",
             "twc_cached_models",
             "twc_cached_model_permissions",
             "twc_cached_elements",

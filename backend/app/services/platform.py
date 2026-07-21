@@ -27,6 +27,7 @@ from app.models.domain import (
     BranchIngestState,
     BranchAccessManifestStatus,
     BranchAccessRecord,
+    BranchPermissionAttachment,
     Bookmark,
     BranchDeltaIngestRequest,
     BranchWebhookRegistration,
@@ -71,6 +72,8 @@ from app.models.domain import (
     JobType,
     MaterializedCacheStatus,
     ModelPermissionSnapshot,
+    PermissionManifest,
+    PermissionManifestEntry,
     OSLCAuthorizationStatus,
     OSLCConsumerCredentials,
     OSLCExecuteRequest,
@@ -125,8 +128,6 @@ SERVER_ADMIN_ROLE_NAMES = {"server administrator", "configure server"}
 PROJECT_LIST_CACHE_KEY = "projects"
 BRANCH_REVISION_PROBE_TTL_SECONDS = 20
 FAILED_BRANCH_CACHE_RETRY_SECONDS = 300
-PLUGIN_PERMISSION_PROBE_TTL_SECONDS = 60
-PLUGIN_ACCESS_MANIFEST_TTL_SECONDS = 300
 PLUGIN_CACHE_SOURCE_KIND = "cameo-plugin"
 
 
@@ -155,6 +156,7 @@ class PlatformService:
         self.jobs = jobs
         self.publisher = publisher
         self._model_cache_server_locks: dict[str, asyncio.Lock] = {}
+        self._permission_snapshot_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._branch_revision_probe_cache: dict[tuple[str, str, str], tuple[datetime, str | None]] = {}
         contract_path = Path(__file__).resolve().parents[3] / "contracts" / "RealSwagger.json"
         if not contract_path.exists():
@@ -659,19 +661,9 @@ class PlatformService:
         return projects
 
     async def list_project_branches(self, session: SessionData, project_id: str, workspace_id: str | None = None, refresh: bool = False):
-        cache_key = self._branch_cache_key(project_id)
-        if not refresh:
-            cached_branches = self._cached_model_list(session, cache_key, BranchSummary)
-            if cached_branches is not None:
-                return cached_branches
-
+        # Always filter branch names from the current stored permission
+        # snapshot; a pre-refresh UI cache must not survive a revocation.
         branches = self._branch_summaries_from_cache_for_user(session, project_id)
-        self.repo.upsert_user_cache(
-            self._user_key(session.user.preferred_username),
-            session.server.id,
-            cache_key,
-            [json.loads(branch.model_dump_json()) for branch in branches],
-        )
         logger.info(
             "twc-branch-list-ui",
             user=session.user.preferred_username,
@@ -1150,6 +1142,7 @@ class PlatformService:
     def get_branch_ingest_state(self, server_id: str, project_id: str, branch_id: str) -> BranchIngestState:
         server = self._require_server(server_id, include_disabled=True)
         summary = self.repo.get_branch_cache_summary(server.id, project_id, branch_id)
+        permission_attachment = self.repo.get_branch_permission_attachment(server.id, project_id, branch_id)
         if summary is None:
             return BranchIngestState(
                 server_id=server.id,
@@ -1171,6 +1164,10 @@ class PlatformService:
             element_count=summary.element_count,
             source_kind=summary.source_kind,
             source_user=summary.source_user,
+            permission_manifest_source=permission_attachment.manifest.source if permission_attachment else None,
+            permission_manifest_complete=bool(permission_attachment and permission_attachment.manifest.complete),
+            permission_manifest_entry_count=len(permission_attachment.manifest.entries) if permission_attachment else 0,
+            permission_manifest_attached_at=permission_attachment.attached_at if permission_attachment else None,
             updated_at=summary.updated_at,
         )
 
@@ -1179,6 +1176,75 @@ class PlatformService:
             return None
         cleaned = value.strip()
         return cleaned or None
+
+    def _permission_attachment_from_upload(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        workspace_id: str | None,
+        latest_revision: str | None,
+        snapshot_hash: str | None,
+        source_user: str,
+        supplied_manifest: PermissionManifest | None,
+        attached_at: datetime,
+    ) -> BranchPermissionAttachment:
+        normalized_user = self._user_key(source_user)
+        if supplied_manifest is None:
+            manifest = PermissionManifest(
+                captured_at=attached_at,
+                captured_by=source_user,
+                source="cameo-plugin-publisher-evidence",
+                complete=False,
+                entries=[
+                    PermissionManifestEntry(
+                        scope_id=branch_id,
+                        scope_type="project-branch",
+                        principal_name=normalized_user,
+                        principal_type="user",
+                        role_name="Snapshot Publisher",
+                        accessible=True,
+                        editable=True,
+                    )
+                ],
+                warnings=[
+                    "The plugin did not provide a package permission manifest. Current TWC REST permissions must be captured at login."
+                ],
+            )
+        else:
+            entries = list(supplied_manifest.entries)
+            if not any(
+                self._user_key(entry.principal_name or entry.principal_id) == normalized_user
+                and entry.scope_type in {"project", "project-branch"}
+                for entry in entries
+            ):
+                entries.append(
+                    PermissionManifestEntry(
+                        scope_id=branch_id,
+                        scope_type="project-branch",
+                        principal_name=normalized_user,
+                        principal_type="user",
+                        role_name="Snapshot Publisher",
+                        accessible=True,
+                        editable=True,
+                    )
+                )
+            manifest = supplied_manifest.model_copy(
+                update={
+                    "captured_by": supplied_manifest.captured_by or source_user,
+                    "entries": entries,
+                }
+            )
+        return BranchPermissionAttachment(
+            server_id=server_id,
+            project_id=project_id,
+            branch_id=branch_id,
+            workspace_id=workspace_id,
+            latest_revision=latest_revision,
+            snapshot_hash=snapshot_hash,
+            manifest=manifest,
+            attached_at=attached_at,
+        )
 
     def _snapshot_hash_document(
         self,
@@ -1283,6 +1349,17 @@ class PlatformService:
                 updated_at=ingested_at,
             )
         ]
+        permission_attachment = self._permission_attachment_from_upload(
+            server.id,
+            payload.project_id,
+            payload.branch_id,
+            payload.workspace_id,
+            payload.revision_id,
+            snapshot_hash,
+            payload.source_user,
+            payload.permission_manifest,
+            ingested_at,
+        )
 
         summary = BranchCacheSummary(
             server_id=server.id,
@@ -1312,6 +1389,7 @@ class PlatformService:
                 resolved_elements,
                 permissions,
                 access_records,
+                permission_attachment,
                 summary,
             )
         )
@@ -1474,6 +1552,20 @@ class PlatformService:
                 ],
                 connection=connection,
             )
+            self.repo.upsert_branch_permission_attachment(
+                self._permission_attachment_from_upload(
+                    server.id,
+                    payload.project_id,
+                    payload.branch_id,
+                    payload.workspace_id or existing_summary.workspace_id,
+                    payload.to_revision_id or existing_summary.latest_revision,
+                    target_snapshot_hash or existing_snapshot_hash,
+                    payload.source_user,
+                    payload.permission_manifest,
+                    ingested_at,
+                ),
+                connection=connection,
+            )
 
             summary_holder["summary"] = BranchCacheSummary(
                 server_id=server.id,
@@ -1520,6 +1612,7 @@ class PlatformService:
         elements: list[CachedElementRecord],
         permissions: list[ModelPermissionSnapshot],
         access_records: list[BranchAccessRecord],
+        permission_attachment: BranchPermissionAttachment,
         summary: BranchCacheSummary,
     ) -> None:
         self.repo.delete_branch_models_except(
@@ -1539,6 +1632,7 @@ class PlatformService:
             connection=connection,
         )
         self.repo.upsert_branch_access_records(access_records, connection=connection)
+        self.repo.upsert_branch_permission_attachment(permission_attachment, connection=connection)
         for model in models:
             model_elements = [item for item in elements if item.model_id == model.model_id]
             self.repo.replace_cached_elements(
@@ -1714,36 +1808,9 @@ class PlatformService:
             )
             for record in records
         ]
-        normalized_records = self._merge_manifest_with_effective_access_records(
-            session.server.id,
-            project_id,
-            branch_id,
-            summary.latest_revision,
-            normalized_records,
-        )
-        self.repo.replace_branch_access_records_for_branch(session.server.id, project_id, branch_id, normalized_records)
-        current_user_access = self._plugin_branch_access_or_source_fallback(
-            self._user_key(session.user.preferred_username),
-            session.server.id,
-            project_id,
-            branch_id,
-            summary,
-        )
-        models = self.repo.list_cached_models(session.server.id, project_id, branch_id)
-        self.repo.replace_model_permissions_for_user_branch(
-            self._user_key(session.user.preferred_username),
-            session.server.id,
-            project_id,
-            branch_id,
-            [
-                self._plugin_permission_snapshot_from_branch_access(current_user_access, model)
-                for model in models
-            ]
-            if current_user_access is not None
-            else [],
-        )
+        # The shared role map is reporting data, not authorization data. It must
+        # never overwrite the login/scheduled effective-permission snapshot.
         self._write_branch_access_manifest(summary, normalized_records)
-        self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
         current_user_access = self._require_effective_branch_access(
             session,
             project_id,
@@ -4949,7 +5016,19 @@ class PlatformService:
         )
         session = self.sessions.create_session(server, user, authorization_context, credentials, capabilities)
         self._update_user_server_state(user.preferred_username, server.id, session.created_at)
-        await self._ensure_plugin_listing_permissions(session, force=True)
+        try:
+            await self.refresh_user_permission_snapshot(session, reason="login")
+        except Exception as exc:
+            self.sessions.destroy_session(session.session_id)
+            logger.exception(
+                "twc-login-permission-snapshot-failed",
+                user=user.preferred_username,
+                server_id=server.id,
+                detail=str(exc),
+            )
+            raise PermissionError(
+                "Workbench could not establish a complete permission snapshot for this login. No session was created."
+            ) from exc
         logger.info(log_event, user=user.preferred_username, server_id=server.id)
         return session
 
@@ -5092,44 +5171,9 @@ class PlatformService:
         project_id: str | None = None,
         force: bool = False,
     ) -> None:
-        summaries = self.repo.list_branch_cache_summaries(session.server.id)
-        user_id = self._user_key(session.user.preferred_username)
-        pending: list[BranchCacheSummary] = []
-        for summary in summaries:
-            if not self._is_plugin_managed_summary(summary):
-                continue
-            if project_id and summary.project_id != project_id:
-                continue
-            existing = self._branch_access_for_user(
-                user_id,
-                session.server.id,
-                summary.project_id,
-                summary.branch_id,
-            )
-            if (
-                not force
-                and existing is not None
-                and (existing.latest_revision or None) == (summary.latest_revision or None)
-            ):
-                continue
-            pending.append(summary)
-
-        semaphore = asyncio.Semaphore(6)
-
-        async def probe(summary: BranchCacheSummary) -> None:
-            async with semaphore:
-                await self._ensure_plugin_branch_permissions(
-                    session,
-                    summary.project_id,
-                    summary.branch_id,
-                    workspace_id=summary.workspace_id,
-                    summary=summary,
-                    force=force,
-                    prefer_manifest=True,
-                )
-
-        if pending:
-            await asyncio.gather(*(probe(summary) for summary in pending))
+        # Listing is storage-only even when the caller refreshes project data.
+        # Permission refresh belongs only to login and the scheduled lifecycle.
+        return None
 
     async def _ensure_plugin_branch_permissions(
         self,
@@ -5142,141 +5186,228 @@ class PlatformService:
         force: bool = False,
         prefer_manifest: bool = True,
     ) -> None:
-        resolved_summary = summary or self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
-        if not self._is_plugin_managed_summary(resolved_summary):
-            return
+        # Per-request authorization is storage-only, including content refresh
+        # requests. Login and the scheduled lifecycle own permission refresh.
+        return None
 
-        models = self.repo.list_cached_models(session.server.id, project_id, branch_id)
-        if not models:
-            return
-
+    async def refresh_user_permission_snapshot(
+        self,
+        session: SessionData,
+        *,
+        reason: str,
+    ) -> datetime:
         user_id = self._user_key(session.user.preferred_username)
-        expected_revision = resolved_summary.latest_revision
-        refresh_cutoff = utcnow() - timedelta(seconds=PLUGIN_ACCESS_MANIFEST_TTL_SECONDS)
-        model_ids = [model.model_id for model in models]
-        existing_access = self._branch_access_for_user(user_id, session.server.id, project_id, branch_id)
-        needs_refresh = force or existing_access is None
-        if not needs_refresh and existing_access is not None:
-            needs_refresh = (
-                (existing_access.latest_revision or None) != (expected_revision or None)
-                or existing_access.updated_at <= refresh_cutoff
-            )
+        lock_key = (session.server.id, user_id)
+        lock = self._permission_snapshot_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            refreshed_at = utcnow()
+            summaries = [
+                summary
+                for summary in self.repo.list_branch_cache_summaries(session.server.id)
+                if self._is_plugin_managed_summary(summary)
+            ]
+            semaphore = asyncio.Semaphore(6)
 
-        if not needs_refresh:
-            return
-
-        manifest_user_access: BranchAccessRecord | None = None
-        if prefer_manifest:
-            try:
-                manifest_records = await self._adapter_for_session(session).build_plugin_branch_access_manifest(
-                    project_id,
-                    branch_id,
-                    latest_revision=expected_revision,
-                    workspace_id=workspace_id or resolved_summary.workspace_id,
-                )
-                refreshed_at = utcnow()
-                normalized_records = [
-                    record.model_copy(
-                        update={
-                            "server_id": session.server.id,
-                            "project_id": project_id,
-                            "branch_id": branch_id,
-                            "workspace_id": resolved_summary.workspace_id or workspace_id,
-                            "branch_name": resolved_summary.branch_name or branch_id,
-                            "latest_revision": expected_revision,
-                            "updated_at": refreshed_at,
-                        }
+            async def resolve(summary: BranchCacheSummary):
+                async with semaphore:
+                    return await self._resolve_user_branch_permission_snapshot(
+                        session,
+                        summary,
+                        refreshed_at=refreshed_at,
                     )
-                    for record in manifest_records
-                ]
-                normalized_records = self._merge_manifest_with_effective_access_records(
-                    session.server.id,
-                    project_id,
-                    branch_id,
-                    expected_revision,
-                    normalized_records,
-                    exclude_user_id=user_id,
-                )
-                self.repo.replace_branch_access_records_for_branch(
-                    session.server.id,
-                    project_id,
-                    branch_id,
-                    normalized_records,
-                )
-                self._write_branch_access_manifest(resolved_summary, normalized_records)
-                manifest_user_access = self._plugin_branch_access_or_source_fallback(
-                    user_id,
-                    session.server.id,
-                    project_id,
-                    branch_id,
-                    resolved_summary,
-                )
-                if manifest_user_access is None:
-                    logger.info(
-                        "plugin-cache-current-user-not-in-access-manifest",
-                        server_id=session.server.id,
-                        project_id=project_id,
-                        branch_id=branch_id,
-                        user=session.user.preferred_username,
-                        manifest_user_count=len(normalized_records),
-                    )
-                # Always perform the current-session probe. The manifest adds
-                # direct-role, group, nested-group, read-only, and project-admin
-                # detail; the probe confirms the effective permission TWC
-                # actually grants this authenticated identity.
-            except PermissionError as exc:
-                logger.info(
-                    "plugin-cache-access-manifest-not-allowed",
-                    server_id=session.server.id,
-                    project_id=project_id,
-                    branch_id=branch_id,
-                    user=session.user.preferred_username,
-                    detail=str(exc),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "plugin-cache-access-manifest-refresh-failed",
-                    server_id=session.server.id,
-                    project_id=project_id,
-                    branch_id=branch_id,
-                    user=session.user.preferred_username,
-                    detail=str(exc),
-                )
 
-        try:
-            permissions = await self._adapter_for_session(session).probe_plugin_branch_permissions(
-                user_id,
-                project_id,
-                branch_id,
-                model_ids,
-                latest_revision=expected_revision,
-                workspace_id=workspace_id or resolved_summary.workspace_id,
-            )
-        except Exception as exc:
-            logger.warning(
-                "plugin-cache-permission-refresh-failed",
-                server_id=session.server.id,
-                project_id=project_id,
-                branch_id=branch_id,
-                user=session.user.preferred_username,
-                detail=str(exc),
-            )
-            if manifest_user_access is None:
-                return
-            self.repo.replace_model_permissions_for_user_branch(
+            resolved = await asyncio.gather(*(resolve(summary) for summary in summaries))
+            branch_records = [branch_record for branch_record, _, _ in resolved]
+            model_permissions = [permission for _, permissions, _ in resolved for permission in permissions]
+            permission_attachments = [attachment for _, _, attachment in resolved if attachment is not None]
+
+            # Security boundary: delete the old user/server snapshot and insert
+            # this complete result in one transaction. Revoked and removed
+            # branches therefore disappear instead of surviving an upsert.
+            self.repo.replace_user_permission_snapshot(
                 user_id,
                 session.server.id,
-                project_id,
-                branch_id,
-                [
-                    self._plugin_permission_snapshot_from_branch_access(manifest_user_access, model)
-                    for model in models
-                ],
+                branch_records,
+                model_permissions,
+                permission_attachments,
             )
-            self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
-            return
+            self.sessions.mark_permission_snapshot_attempt(session, refreshed_at, successful=True)
+            self.repo.delete_user_cache(user_id, session.server.id, PROJECT_LIST_CACHE_KEY)
+            self.repo.delete_user_cache_prefix(user_id, session.server.id, "project:")
+            logger.info(
+                "twc-user-permission-snapshot-replaced",
+                user=session.user.preferred_username,
+                server_id=session.server.id,
+                branch_count=len(branch_records),
+                model_permission_count=len(model_permissions),
+                permission_attachment_count=len(permission_attachments),
+                reason=reason,
+                refreshed_at=refreshed_at.isoformat(),
+            )
+            return refreshed_at
 
-        accessible = any(permission.accessible and not permission.restricted for permission in permissions)
+    async def refresh_due_permission_snapshots(self) -> None:
+        now = utcnow()
+        refresh_after = timedelta(minutes=self.settings.permission_snapshot_refresh_minutes)
+        sessions_by_identity: dict[tuple[str, str], list[SessionData]] = {}
+        for session in self.sessions.list_active_sessions():
+            key = (session.server.id, self._user_key(session.user.preferred_username))
+            sessions_by_identity.setdefault(key, []).append(session)
+
+        due_groups: list[list[SessionData]] = []
+        for sessions in sessions_by_identity.values():
+            last_attempt = max(
+                (
+                    session.permission_snapshot_attempted_at
+                    or session.permission_snapshot_refreshed_at
+                    or session.created_at
+                    for session in sessions
+                ),
+                default=now,
+            )
+            if last_attempt + refresh_after <= now:
+                due_groups.append(sessions)
+
+        semaphore = asyncio.Semaphore(3)
+
+        async def refresh_group(group: list[SessionData]) -> None:
+            async with semaphore:
+                representative = max(group, key=lambda item: item.expires_at)
+                live_session = representative
+                attempted_at = utcnow()
+                try:
+                    live_session = await self._refresh_session_credentials_if_needed(representative)
+                    refreshed_at = await self.refresh_user_permission_snapshot(
+                        live_session,
+                        reason="scheduled-permission-refresh",
+                    )
+                except Exception as exc:
+                    user_id = self._user_key(representative.user.preferred_username)
+                    try:
+                        self.repo.replace_user_permission_snapshot(
+                            user_id,
+                            representative.server.id,
+                            [],
+                            [],
+                        )
+                        self.repo.delete_user_cache(user_id, representative.server.id, PROJECT_LIST_CACHE_KEY)
+                        self.repo.delete_user_cache_prefix(user_id, representative.server.id, "project:")
+                    except Exception as revoke_exc:
+                        logger.exception(
+                            "twc-user-permission-snapshot-revoke-failed",
+                            user=representative.user.preferred_username,
+                            server_id=representative.server.id,
+                            detail=str(revoke_exc),
+                        )
+                    for item in group:
+                        session_to_mark = live_session if item.session_id == live_session.session_id else item
+                        self.sessions.mark_permission_snapshot_attempt(session_to_mark, attempted_at, successful=False)
+                    logger.warning(
+                        "twc-user-permission-snapshot-refresh-failed-closed",
+                        user=representative.user.preferred_username,
+                        server_id=representative.server.id,
+                        detail=str(exc),
+                    )
+                    return
+                for item in group:
+                    if item.session_id != representative.session_id:
+                        self.sessions.mark_permission_snapshot_attempt(item, refreshed_at, successful=True)
+
+        if due_groups:
+            await asyncio.gather(*(refresh_group(group) for group in due_groups))
+
+    async def _resolve_user_branch_permission_snapshot(
+        self,
+        session: SessionData,
+        summary: BranchCacheSummary,
+        *,
+        refreshed_at: datetime,
+    ) -> tuple[BranchAccessRecord, list[ModelPermissionSnapshot], BranchPermissionAttachment | None]:
+        user_id = self._user_key(session.user.preferred_username)
+        models = self.repo.list_cached_models(session.server.id, summary.project_id, summary.branch_id)
+        model_ids = [model.model_id for model in models]
+        adapter = self._adapter_for_session(session)
+        manifest_user_access: BranchAccessRecord | None = None
+        rest_attachment: BranchPermissionAttachment | None = None
+        attached_before_refresh = self.repo.get_branch_permission_attachment(
+            session.server.id,
+            summary.project_id,
+            summary.branch_id,
+        )
+        manifest_error: str | None = None
+        try:
+            manifest_records = await adapter.build_plugin_branch_access_manifest(
+                summary.project_id,
+                summary.branch_id,
+                latest_revision=summary.latest_revision,
+                workspace_id=summary.workspace_id,
+            )
+            manifest_user_access = next(
+                (record for record in manifest_records if self._user_key(record.user_id) == user_id),
+                None,
+            )
+            rest_attachment = self._permission_attachment_from_rest_manifest(
+                session,
+                summary,
+                manifest_records,
+                refreshed_at,
+                attached_before_refresh,
+            )
+        except Exception as exc:
+            manifest_error = str(exc)
+            logger.info(
+                "twc-user-permission-manifest-unavailable",
+                user=session.user.preferred_username,
+                server_id=session.server.id,
+                project_id=summary.project_id,
+                branch_id=summary.branch_id,
+                detail=manifest_error,
+            )
+
+        probe_error: str | None = None
+        try:
+            permissions = await adapter.probe_plugin_branch_permissions(
+                user_id,
+                summary.project_id,
+                summary.branch_id,
+                model_ids,
+                latest_revision=summary.latest_revision,
+                workspace_id=summary.workspace_id,
+            )
+        except Exception as exc:
+            # A refresh that cannot prove access records a denial. This prevents
+            # stale grants from surviving a TWC outage or malformed response.
+            probe_error = str(exc)
+            permissions = [
+                ModelPermissionSnapshot(
+                    user_id=user_id,
+                    server_id=session.server.id,
+                    project_id=summary.project_id,
+                    branch_id=summary.branch_id,
+                    model_id=model.model_id,
+                    workspace_id=summary.workspace_id or model.workspace_id,
+                    latest_revision=summary.latest_revision,
+                    accessible=False,
+                    restricted=True,
+                    editable=False,
+                    source="twc-permission-snapshot-denied",
+                    payload={"probe_error": probe_error},
+                    updated_at=refreshed_at,
+                )
+                for model in models
+            ]
+            logger.warning(
+                "twc-user-permission-probe-failed-closed",
+                user=session.user.preferred_username,
+                server_id=session.server.id,
+                project_id=summary.project_id,
+                branch_id=summary.branch_id,
+                detail=probe_error,
+            )
+
+        accessible = bool(permissions) and any(
+            permission.accessible and not permission.restricted for permission in permissions
+        )
         direct_editable = any(
             permission.accessible and not permission.restricted and permission.editable for permission in permissions
         )
@@ -5292,12 +5423,16 @@ class PlatformService:
             and (
                 direct_editable
                 if direct_editability_known
-                else (
-                    manifest_user_access.editable
-                    if manifest_user_access is not None
-                    else False
-                )
+                else bool(manifest_user_access and manifest_user_access.editable)
             )
+        )
+        permission_comparison = self._compare_attached_and_live_permissions(
+            session,
+            attached_before_refresh,
+            accessible=accessible,
+            editable=editable,
+            branch_admin=bool(accessible and self._branch_admin_access(manifest_user_access)),
+            access_admin=bool(accessible and self._access_admin_access(manifest_user_access)),
         )
         effective_permissions = [
             permission.model_copy(
@@ -5305,42 +5440,31 @@ class PlatformService:
                     "accessible": accessible,
                     "restricted": not accessible,
                     "editable": editable,
-                    "source": "twc-effective-permission-merge",
+                    "source": "twc-user-permission-snapshot",
+                    "updated_at": refreshed_at,
                     "payload": {
                         **(permission.payload or {}),
                         "manifest_roles": manifest_user_access.roles if manifest_user_access else [],
                         "manifest_groups": manifest_user_access.via_groups if manifest_user_access else [],
-                        "manifest_admin_access": manifest_user_access.admin_access if manifest_user_access else False,
                         "manifest_branch_admin_access": self._branch_admin_access(manifest_user_access),
                         "manifest_access_admin_access": self._access_admin_access(manifest_user_access),
-                        "session_roles": session.authorization_context.roles,
-                        "session_groups": session.authorization_context.groups,
+                        "attached_permission_comparison": permission_comparison,
                     },
                 }
             )
             for permission in permissions
         ]
-        self.repo.replace_model_permissions_for_user_branch(
-            user_id,
-            session.server.id,
-            project_id,
-            branch_id,
-            effective_permissions,
-        )
-        fallback_record = BranchAccessRecord(
+        branch_record = BranchAccessRecord(
             user_id=user_id,
             server_id=session.server.id,
-            project_id=project_id,
-            branch_id=branch_id,
-            workspace_id=resolved_summary.workspace_id or workspace_id,
-            branch_name=resolved_summary.branch_name or branch_id,
-            latest_revision=expected_revision,
+            project_id=summary.project_id,
+            branch_id=summary.branch_id,
+            workspace_id=summary.workspace_id,
+            branch_name=summary.branch_name or summary.branch_id,
+            latest_revision=summary.latest_revision,
             accessible=accessible,
             editable=editable,
-            admin_access=bool(
-                accessible
-                and (manifest_user_access.admin_access if manifest_user_access else False)
-            ),
+            admin_access=bool(accessible and manifest_user_access and manifest_user_access.admin_access),
             roles=list(dict.fromkeys([
                 *(manifest_user_access.roles if manifest_user_access else []),
                 *session.authorization_context.roles,
@@ -5349,24 +5473,147 @@ class PlatformService:
                 *(manifest_user_access.via_groups if manifest_user_access else []),
                 *session.authorization_context.groups,
             ])),
-            source="twc-effective-permission-merge",
+            source="twc-user-permission-snapshot",
             payload={
                 "model_ids": model_ids,
-                "direct_probe": True,
+                "direct_probe": probe_error is None,
+                "probe_error": probe_error,
                 "manifest_match": manifest_user_access is not None,
+                "manifest_error": manifest_error,
                 "direct_editability_known": direct_editability_known,
                 "manifest_payload": manifest_user_access.payload if manifest_user_access else {},
-                "branch_admin_access": self._branch_admin_access(manifest_user_access),
-                "access_admin_access": self._access_admin_access(manifest_user_access),
+                "branch_admin_access": bool(accessible and self._branch_admin_access(manifest_user_access)),
+                "access_admin_access": bool(accessible and self._access_admin_access(manifest_user_access)),
+                "snapshot_replaced_at": refreshed_at.isoformat(),
+                "attached_permission_comparison": permission_comparison,
             },
-            updated_at=utcnow(),
+            updated_at=refreshed_at,
         )
-        self.repo.upsert_branch_access_records([fallback_record])
-        self._write_branch_access_manifest(
-            resolved_summary,
-            self.repo.list_branch_access_records(session.server.id, project_id, branch_id),
+        return branch_record, effective_permissions, rest_attachment
+
+    def _permission_attachment_from_rest_manifest(
+        self,
+        session: SessionData,
+        summary: BranchCacheSummary,
+        records: list[BranchAccessRecord],
+        captured_at: datetime,
+        previous_attachment: BranchPermissionAttachment | None,
+    ) -> BranchPermissionAttachment:
+        package_entries = (
+            [entry for entry in previous_attachment.manifest.entries if entry.scope_type == "package"]
+            if previous_attachment
+            else []
         )
-        self._invalidate_shared_branch_caches(session.server.id, project_id, branch_id)
+        role_entries = [
+            PermissionManifestEntry(
+                scope_id=summary.branch_id,
+                scope_type="project-branch",
+                principal_name=record.user_id,
+                principal_type="user",
+                role_name=", ".join(record.roles),
+                accessible=record.accessible,
+                editable=record.editable,
+                branch_admin_access=self._branch_admin_access(record),
+                access_admin_access=self._access_admin_access(record),
+                via_groups=record.via_groups,
+            )
+            for record in records
+        ]
+        entries = [*package_entries, *role_entries]
+        prior_warnings = list(previous_attachment.manifest.warnings) if previous_attachment else []
+        source = (
+            "cameo-package-permissions+twc-rest-role-manifest"
+            if package_entries
+            else "twc-rest-role-manifest"
+        )
+        return BranchPermissionAttachment(
+            server_id=session.server.id,
+            project_id=summary.project_id,
+            branch_id=summary.branch_id,
+            workspace_id=summary.workspace_id,
+            latest_revision=summary.latest_revision,
+            snapshot_hash=summary.snapshot_hash,
+            manifest=PermissionManifest(
+                captured_at=captured_at,
+                captured_by=session.user.preferred_username,
+                source=source,
+                complete=True,
+                entries=entries,
+                warnings=prior_warnings,
+            ),
+            attached_at=captured_at,
+        )
+
+    def _compare_attached_and_live_permissions(
+        self,
+        session: SessionData,
+        attachment: BranchPermissionAttachment | None,
+        *,
+        accessible: bool,
+        editable: bool,
+        branch_admin: bool,
+        access_admin: bool,
+    ) -> dict[str, Any]:
+        live_flags = {
+            "accessible": accessible,
+            "editable": editable,
+            "branch_admin_access": branch_admin,
+            "access_admin_access": access_admin,
+        }
+        if attachment is None:
+            return {
+                "result": "no-attached-manifest",
+                "manifest_complete": False,
+                "matched_entry_count": 0,
+                "attached": None,
+                "live": live_flags,
+                "enforced_source": "twc-rest-current-user",
+            }
+
+        identities = {
+            self._user_key(session.user.preferred_username),
+            *(self._user_key(value) for value in session.authorization_context.roles),
+            *(self._user_key(value) for value in session.authorization_context.groups),
+        }
+        matched_entries: list[PermissionManifestEntry] = []
+        for entry in attachment.manifest.entries:
+            principal_type = self._user_key(entry.principal_type)
+            principal_names = {
+                self._user_key(entry.principal_name),
+                self._user_key(entry.principal_id),
+                *(self._user_key(value) for value in entry.via_groups),
+            }
+            if "everyone" in principal_type or "everyone" in principal_names or identities & principal_names:
+                matched_entries.append(entry)
+
+        action_terms = {self._user_key(entry.action).replace("_", "-") for entry in matched_entries}
+        attached_flags = {
+            "accessible": any(entry.accessible for entry in matched_entries)
+            or any("read" in action for action in action_terms),
+            "editable": any(entry.editable for entry in matched_entries)
+            or any("write" in action for action in action_terms),
+            "branch_admin_access": any(entry.branch_admin_access for entry in matched_entries),
+            "access_admin_access": any(entry.access_admin_access for entry in matched_entries),
+        }
+        if not attachment.manifest.complete:
+            result = "incomplete-attached-reference"
+        elif attached_flags == live_flags:
+            result = "consistent"
+        elif any(attached_flags[key] and not live_flags[key] for key in live_flags):
+            result = "live-more-restrictive"
+        else:
+            result = "live-more-permissive"
+        return {
+            "result": result,
+            "manifest_source": attachment.manifest.source,
+            "manifest_complete": attachment.manifest.complete,
+            "manifest_revision": attachment.latest_revision,
+            "manifest_snapshot_hash": attachment.snapshot_hash,
+            "matched_entry_count": len(matched_entries),
+            "attached": attached_flags,
+            "live": live_flags,
+            "enforced_source": "twc-rest-current-user",
+        }
 
     def _permissions_by_model_for_user(
         self,
@@ -5388,27 +5635,6 @@ class PlatformService:
         branch_id: str,
     ) -> BranchAccessRecord | None:
         return self.repo.get_branch_access_record(user_id, server_id, project_id, branch_id)
-
-    def _merge_manifest_with_effective_access_records(
-        self,
-        server_id: str,
-        project_id: str,
-        branch_id: str,
-        latest_revision: str | None,
-        manifest_records: list[BranchAccessRecord],
-        *,
-        exclude_user_id: str | None = None,
-    ) -> list[BranchAccessRecord]:
-        merged = {record.user_id: record for record in manifest_records}
-        for existing in self.repo.list_branch_access_records(server_id, project_id, branch_id):
-            if existing.source not in {"twc-session-probe", "twc-effective-permission-merge"}:
-                continue
-            if exclude_user_id and existing.user_id == exclude_user_id:
-                continue
-            if (existing.latest_revision or None) != (latest_revision or None):
-                continue
-            merged[existing.user_id] = existing
-        return sorted(merged.values(), key=lambda record: record.user_id)
 
     def _plugin_branch_access_or_source_fallback(
         self,
@@ -6681,6 +6907,29 @@ class ApplicationContainer:
             jobs=self.jobs,
             publisher=self.publisher,
         )
+        self._permission_refresh_task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        if self._permission_refresh_task is None:
+            self._permission_refresh_task = asyncio.create_task(
+                self._permission_refresh_loop(),
+                name="twc-permission-snapshot-refresh",
+            )
+
+    async def _permission_refresh_loop(self) -> None:
+        while True:
+            try:
+                await self.platform.refresh_due_permission_snapshots()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("twc-permission-refresh-loop-failed", detail=str(exc))
+            await asyncio.sleep(60)
 
     async def close(self) -> None:
-        return None
+        if self._permission_refresh_task is None:
+            return
+        self._permission_refresh_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._permission_refresh_task
+        self._permission_refresh_task = None

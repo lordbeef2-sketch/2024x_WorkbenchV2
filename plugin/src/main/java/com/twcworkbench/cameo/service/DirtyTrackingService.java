@@ -366,6 +366,7 @@ public class DirtyTrackingService {
         copy.revisionId = payload.revisionId;
         copy.snapshotHash = payload.snapshotHash;
         copy.sourceUser = payload.sourceUser;
+        copy.permissionManifest = payload.permissionManifest;
         for (ModelRecord model : payload.models) {
             copy.models.add(copyModel(model));
         }

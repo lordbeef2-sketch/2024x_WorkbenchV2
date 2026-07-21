@@ -72,9 +72,28 @@ checked independently. An editor cannot refresh the shared permission map
 without Manage Owned Resource Access Right (or Manage User Permissions), and a
 branch action requires the documented Read Resources, Edit Resources, Edit
 Resource Properties, and Administer Resources combination.
+At login, the backend probes every plugin-uploaded branch for the authenticated
+identity and stores one complete user/server permission snapshot. Request-time
+authorization uses only that stored snapshot. A background task refreshes each
+active identity every 30 minutes (configurable with
+`PERMISSION_SNAPSHOT_REFRESH_MINUTES`) and replaces both branch and model
+permission rows in one SQLite transaction. Missing, removed, and revoked grants
+are deleted; a branch probe failure is stored as denied rather than preserving
+stale access. If the scheduled TWC credential/refresh operation fails before a
+new snapshot can be proven, Workbench replaces that identity's snapshot with
+an empty set and clears its project caches. Database transactions remain
+all-or-nothing, so readers never receive a partially refreshed permission set.
 Workbench recognizes explicit `editable` values as well as TWC permission,
 allowed-action, and allowed-operation payloads when resolving effective edit
 rights.
+
+Every plugin snapshot and delta also stores a revision-bound permission
+attachment. Cameo contributes its project/package ACL entries; a successful TWC
+role enumeration merges direct users, expanded groups, view/edit, branch-admin,
+access-admin, and read-only branch results into that attachment. Login compares
+the prior attachment with the newly proven effective access before atomically
+replacing the user's permission rows. Attached data never grants access by
+itself, and a failed current-user probe is denied.
 
 See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
 

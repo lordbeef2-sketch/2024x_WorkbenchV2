@@ -30,6 +30,14 @@ public class BranchIngestState {
     public String sourceKind;
     @JsonAlias("source_user")
     public String sourceUser;
+    @JsonAlias("permission_manifest_source")
+    public String permissionManifestSource;
+    @JsonAlias("permission_manifest_complete")
+    public boolean permissionManifestComplete;
+    @JsonAlias("permission_manifest_entry_count")
+    public int permissionManifestEntryCount;
+    @JsonAlias("permission_manifest_attached_at")
+    public String permissionManifestAttachedAt;
     @JsonAlias("updated_at")
     public String updatedAt;
 }

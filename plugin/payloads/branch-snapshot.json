@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "source": "cameo-plugin",
   "exportedAt": "2026-05-13T12:00:00Z",
   "exportReason": "manual",
@@ -13,6 +13,34 @@
   "branchName": "trunk",
   "revisionId": "456789",
   "sourceUser": "jdoe",
+  "permissionManifest": {
+    "schemaVersion": "1.0",
+    "capturedAt": "2026-05-13T12:00:00Z",
+    "capturedBy": "jdoe",
+    "source": "cameo-package-permissions",
+    "complete": false,
+    "entries": [
+      {
+        "scopeId": "project-123",
+        "scopeType": "project-branch",
+        "principalId": "",
+        "principalName": "jdoe",
+        "principalType": "user",
+        "roleName": "Snapshot Publisher",
+        "action": "",
+        "application": "",
+        "inherited": false,
+        "accessible": true,
+        "editable": true,
+        "branchAdminAccess": false,
+        "accessAdminAccess": false,
+        "viaGroups": []
+      }
+    ],
+    "warnings": [
+      "TWC resource roles are refreshed by Workbench at login."
+    ]
+  },
   "models": [
     {
       "modelId": "model-001",

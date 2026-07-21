@@ -179,6 +179,7 @@ class Settings(BaseSettings):
     twc_oslc_consumer_secret: str | None = None
     twc_oslc_callback_path: str | None = None
     session_ttl_minutes: int = 480
+    permission_snapshot_refresh_minutes: int = Field(default=30, ge=1)
     secure_cookies: bool = False
     csrf_header_name: str = "X-CSRF-Token"
     upstream_auth_cookie_names: list[str] = Field(default_factory=list)

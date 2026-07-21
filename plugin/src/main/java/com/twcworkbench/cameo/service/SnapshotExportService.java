@@ -17,6 +17,8 @@ import com.twcworkbench.cameo.config.PluginConfig;
 import com.twcworkbench.cameo.model.BranchSnapshotPayload;
 import com.twcworkbench.cameo.model.ElementRecord;
 import com.twcworkbench.cameo.model.ModelRecord;
+import com.twcworkbench.cameo.model.PermissionManifest;
+import com.twcworkbench.cameo.model.PermissionManifestEntry;
 import org.eclipse.emf.common.util.URI;
 import org.eclipse.emf.ecore.EAttribute;
 import org.eclipse.emf.ecore.EReference;
@@ -35,6 +37,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -236,7 +239,91 @@ public class SnapshotExportService {
                 payload.branchId = "trunk".equals(payload.branchName) ? "master" : String.valueOf(branchInfo.getID());
             }
         }
+        payload.permissionManifest = capturePermissionManifest(project, payload.sourceUser, payload.branchId, progress);
         return payload;
+    }
+
+    private PermissionManifest capturePermissionManifest(
+            Project project,
+            String sourceUser,
+            String branchId,
+            Consumer<String> progress
+    ) {
+        PermissionManifest manifest = new PermissionManifest();
+        manifest.capturedAt = OffsetDateTime.now().toString();
+        manifest.capturedBy = sourceUser;
+        manifest.complete = false;
+
+        PermissionManifestEntry publisher = new PermissionManifestEntry();
+        publisher.scopeId = branchId;
+        publisher.scopeType = "project-branch";
+        publisher.principalName = sourceUser;
+        publisher.principalType = "user";
+        publisher.roleName = "Snapshot Publisher";
+        publisher.accessible = true;
+        publisher.editable = safeInvokeBoolean(project, "isEditable", false);
+        manifest.entries.add(publisher);
+
+        try {
+            Class<?> permissionServiceClass = Class.forName(
+                    "com.nomagic.magicdraw.esi.persistence.security.PermissionService"
+            );
+            Object primaryProject = project.getPrimaryProject();
+            Object permissionService = primaryProject.getClass()
+                    .getMethod("getService", Class.class)
+                    .invoke(primaryProject, permissionServiceClass);
+            Object projectPermissions = permissionServiceClass
+                    .getMethod("getProjectPermissions")
+                    .invoke(permissionService);
+            if (projectPermissions instanceof Map<?, ?>) {
+                for (Map.Entry<?, ?> scopedPermissions : ((Map<?, ?>) projectPermissions).entrySet()) {
+                    Object packagePermissions = scopedPermissions.getValue();
+                    if (packagePermissions == null) {
+                        continue;
+                    }
+                    boolean inherited = safeInvokeBoolean(packagePermissions, "isUseParentPermissions", false);
+                    Object accessPermissions = safeInvoke(packagePermissions, "getAccessPermissions");
+                    if (!(accessPermissions instanceof Iterable<?>)) {
+                        continue;
+                    }
+                    for (Object accessPermission : (Iterable<?>) accessPermissions) {
+                        if (accessPermission == null) {
+                            continue;
+                        }
+                        Object principal = safeInvoke(accessPermission, "getPrincipal");
+                        String action = safeObjectString(safeInvoke(accessPermission, "getAction"));
+                        PermissionManifestEntry entry = new PermissionManifestEntry();
+                        entry.scopeId = String.valueOf(scopedPermissions.getKey());
+                        entry.scopeType = "package";
+                        entry.principalId = firstNonBlank(
+                                safeInvokeString(principal, "esiID"),
+                                safeInvokeString(principal, "getID")
+                        );
+                        entry.principalName = firstNonBlank(
+                                safeInvokeString(principal, "getName"),
+                                entry.principalId,
+                                safeObjectString(principal)
+                        );
+                        entry.principalType = principal == null ? "" : principal.getClass().getSimpleName();
+                        entry.action = action;
+                        entry.application = safeObjectString(safeInvoke(accessPermission, "getApplication"));
+                        entry.inherited = inherited;
+                        entry.accessible = action.toLowerCase(Locale.ROOT).contains("read");
+                        entry.editable = action.toLowerCase(Locale.ROOT).contains("write");
+                        manifest.entries.add(entry);
+                    }
+                }
+            }
+            report(progress, "Attached " + manifest.entries.size() + " project/package permission entries to the snapshot.");
+        }
+        catch (Exception exception) {
+            manifest.warnings.add("Cameo package permissions were unavailable: " + exception.getClass().getSimpleName());
+            report(progress, "Package permission capture was unavailable; Workbench will use the live TWC REST comparison at login.");
+        }
+        manifest.warnings.add(
+                "Cameo package permissions do not replace Teamwork Cloud resource roles; Workbench refreshes those through TWC REST at login."
+        );
+        return manifest;
     }
 
     private ModelRecord mapModel(Project project, Element model, CaptureContext captureContext) {
@@ -1013,6 +1100,27 @@ public class SnapshotExportService {
         catch (Exception ignored) {
             return null;
         }
+    }
+
+    private Object safeInvoke(Object target, String methodName) {
+        if (target == null) {
+            return null;
+        }
+        try {
+            return target.getClass().getMethod(methodName).invoke(target);
+        }
+        catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private boolean safeInvokeBoolean(Object target, String methodName, boolean fallback) {
+        Object value = safeInvoke(target, methodName);
+        return value instanceof Boolean ? (Boolean) value : fallback;
+    }
+
+    private String safeObjectString(Object value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     private String safeString(String value) {

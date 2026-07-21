@@ -169,6 +169,12 @@ public class WorkbenchIngestClient {
         BranchIngestState state = objectMapper.readValue(response.body(), BranchIngestState.class);
         if (state.exists) {
             report(progress, "Workbench branch state: revision " + safe(state.latestRevision) + ", fingerprint " + safe(state.snapshotHash) + ".");
+            report(
+                    progress,
+                    "Attached permission manifest: " + state.permissionManifestEntryCount
+                            + " entries from " + safe(state.permissionManifestSource)
+                            + (state.permissionManifestComplete ? " (complete)." : " (awaiting/using live TWC comparison).")
+            );
         }
         else {
             report(progress, "Workbench branch state: no stored snapshot exists yet.");
