@@ -5215,6 +5215,7 @@ class PlatformService:
     def fallback_cache_refresh_status(self, session: SessionData) -> FallbackCacheRefreshStatus:
         window_open, _, local_now = self._fallback_cache_window()
         summaries = self.repo.list_branch_cache_summaries(session.server.id)
+        self._active_fallback_cache_refresh_job(session.server.id)
         jobs = [
             job
             for job in self.repo.list_jobs()
@@ -5254,6 +5255,24 @@ class PlatformService:
             message=message,
         )
 
+    def _active_fallback_cache_refresh_job(self, server_id: str) -> JobRecord | None:
+        now = utcnow()
+        stale_pending_before = now - timedelta(minutes=1)
+        for job in self.repo.list_jobs():
+            if job.server_id != server_id or job.job_type != JobType.FALLBACK_CACHE_REFRESH:
+                continue
+            if job.status == JobStatus.PENDING and job.updated_at <= stale_pending_before:
+                job.status = JobStatus.FAILED
+                job.message = "Background fallback refresh never started; it may be queued again."
+                job.logs.append(f"[{now.strftime('%H:%M:%S')}] ERROR {job.message}")
+                job.updated_at = now
+                job.finished_at = now
+                self.repo.upsert_job(job)
+                continue
+            if job.status in {JobStatus.PENDING, JobStatus.RUNNING}:
+                return job
+        return None
+
     def _submit_fallback_cache_refresh(
         self,
         session: SessionData,
@@ -5266,16 +5285,7 @@ class PlatformService:
             raise PermissionError("A current TWC Server Administrator session is required.")
         if request.branch_id and not request.project_id:
             raise ValueError("project_id is required when branch_id is supplied.")
-        active = next(
-            (
-                job
-                for job in self.repo.list_jobs()
-                if job.server_id == session.server.id
-                and job.job_type == JobType.FALLBACK_CACHE_REFRESH
-                and job.status in {JobStatus.PENDING, JobStatus.RUNNING}
-            ),
-            None,
-        )
+        active = self._active_fallback_cache_refresh_job(session.server.id)
         if active is not None:
             return active
         payload: dict[str, Any] = {
@@ -7266,8 +7276,6 @@ class PlatformService:
             model_id=resolved_model_id,
             element_id=element.element_id,
             workspace_id=workspace_id,
-            project_name=project_name,
-            branch_name=branch_name,
             latest_revision=latest_revision,
             name=display_name,
             item_type=item_type,

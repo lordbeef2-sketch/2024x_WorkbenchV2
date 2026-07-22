@@ -72,6 +72,19 @@ class JobCoordinator:
         job: JobRecord,
         handler: Callable[[JobExecutionContext], Awaitable[dict[str, Any]]],
     ) -> JobRecord:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError as exc:
+            now = datetime.now(UTC)
+            failed = self.repo.get_job(job.id) or job
+            failed.status = JobStatus.FAILED
+            failed.message = "Background job could not start because no application event loop was available."
+            failed.logs.append(f"[{now.strftime('%H:%M:%S')}] ERROR {failed.message}")
+            failed.updated_at = now
+            failed.finished_at = now
+            self.repo.upsert_job(failed)
+            raise RuntimeError(failed.message) from exc
+
         cancel_event = asyncio.Event()
         self._cancel_events[job.id] = cancel_event
 
@@ -116,7 +129,7 @@ class JobCoordinator:
                 self._tasks.pop(job.id, None)
                 self._cancel_events.pop(job.id, None)
 
-        self._tasks[job.id] = asyncio.create_task(runner(), name=f"job-{job.id}")
+        self._tasks[job.id] = loop.create_task(runner(), name=f"job-{job.id}")
         return job
 
     def list_jobs(self, owner: str) -> list[JobRecord]:

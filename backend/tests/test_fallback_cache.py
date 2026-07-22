@@ -1,15 +1,21 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from inspect import iscoroutinefunction
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 
 from app.core.storage import SqliteRepository
+from app.api.routes.workspace import refresh_fallback_cache, sync_workbench_agent_knowledge
+from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
     BranchCacheSummary,
     CachedElementRecord,
     CachedModelRecord,
     FallbackCacheRefreshRequest,
+    JobRecord,
+    JobStatus,
+    JobType,
     MaterializedCacheStatus,
     ModelPermissionSnapshot,
 )
@@ -17,6 +23,55 @@ from app.services.platform import PlatformService
 
 
 class FallbackCacheTests(unittest.TestCase):
+    def test_background_job_routes_run_on_application_event_loop(self) -> None:
+        self.assertTrue(iscoroutinefunction(refresh_fallback_cache))
+        self.assertTrue(iscoroutinefunction(sync_workbench_agent_knowledge))
+
+    def test_job_submission_without_event_loop_fails_persisted_job(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            coordinator = JobCoordinator(repo)
+            job = coordinator.create_job(
+                job_type=JobType.FALLBACK_CACHE_REFRESH,
+                title="fallback",
+                owner="admin",
+                server_id="server",
+                payload={},
+            )
+
+            async def handler(_context):
+                return {}
+
+            with self.assertRaisesRegex(RuntimeError, "no application event loop"):
+                coordinator.submit(job, handler)
+
+            stored = repo.get_job(job.id)
+            self.assertEqual(stored.status, JobStatus.FAILED)
+            self.assertIsNotNone(stored.finished_at)
+
+    def test_stale_pending_refresh_is_failed_and_does_not_block_requeue(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            pending = JobRecord(
+                job_type=JobType.FALLBACK_CACHE_REFRESH,
+                title="fallback",
+                owner="admin",
+                server_id="server",
+                payload={},
+                updated_at=datetime.now(UTC) - timedelta(minutes=2),
+            )
+            repo.upsert_job(pending)
+            service = object.__new__(PlatformService)
+            service.repo = repo
+
+            active = service._active_fallback_cache_refresh_job("server")
+
+            self.assertIsNone(active)
+            stored = repo.get_job(pending.id)
+            self.assertEqual(stored.status, JobStatus.FAILED)
+            self.assertIn("never started", stored.message)
+            self.assertIsNotNone(stored.finished_at)
+
     def test_nightly_window_uses_configured_timezone_and_handles_midnight(self) -> None:
         service = object.__new__(PlatformService)
         service.settings = SimpleNamespace(

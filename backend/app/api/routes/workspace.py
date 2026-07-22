@@ -468,7 +468,7 @@ def fallback_cache_status(
 
 
 @router.post("/fallback-cache/refresh", status_code=status.HTTP_202_ACCEPTED)
-def refresh_fallback_cache(
+async def refresh_fallback_cache(
     payload: FallbackCacheRefreshRequest,
     session=Depends(require_csrf),
     container: ApplicationContainer = Depends(get_container),
@@ -821,7 +821,7 @@ async def workbench_agent_models(session=Depends(get_session), container: Applic
 
 
 @router.post("/agent/knowledge/sync", status_code=status.HTTP_202_ACCEPTED)
-def sync_workbench_agent_knowledge(
+async def sync_workbench_agent_knowledge(
     payload: WorkbenchAgentKnowledgeSyncRequest,
     session=Depends(require_csrf),
     container: ApplicationContainer = Depends(get_container),

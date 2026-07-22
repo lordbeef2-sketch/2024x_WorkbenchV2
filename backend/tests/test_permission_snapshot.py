@@ -18,6 +18,8 @@ from app.models.domain import (
     JobRecord,
     JobStatus,
     JobType,
+    IngestElementRecord,
+    IngestModelRecord,
     ModelPermissionSnapshot,
     PermissionManifest,
     PermissionManifestEntry,
@@ -606,6 +608,53 @@ class ManualCapabilityRefreshTests(unittest.IsolatedAsyncioTestCase):
 
 
 class IngestPermissionLifecycleTests(unittest.TestCase):
+    def test_snapshot_with_elements_builds_cached_records_without_undefined_names(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            data_dir = Path(directory)
+            repo = SqliteRepository(data_dir / "workbench.db")
+            repo.upsert_server(ServerProfile(id="server", name="Server", base_url="https://twc.example"))
+            due_calls: list[str] = []
+            service = object.__new__(PlatformService)
+            service.repo = repo
+            service.settings = SimpleNamespace(resolved_data_dir=data_dir)
+            service.sessions = SimpleNamespace(
+                mark_server_permission_snapshots_due=lambda server_id: due_calls.append(server_id)
+            )
+            service._permission_inventory_dirty_notifier = None
+
+            summary = service.ingest_branch_snapshot(
+                BranchSnapshotIngestRequest(
+                    serverId="server",
+                    projectId="project",
+                    projectName="Project",
+                    branchId="main",
+                    branchName="Main",
+                    revisionId="1",
+                    sourceUser="publisher",
+                    models=[
+                        IngestModelRecord(
+                            modelId="model",
+                            name="Model",
+                            rootElementIds=["element"],
+                        )
+                    ],
+                    elements=[
+                        IngestElementRecord(
+                            elementId="element",
+                            modelId="model",
+                            name="Element",
+                            qualifiedName="Model::Element",
+                        )
+                    ],
+                )
+            )
+
+            cached = repo.get_cached_element("server", "project", "main", "element", model_id="model")
+            self.assertEqual(summary.element_count, 1)
+            self.assertIsNotNone(cached)
+            self.assertEqual(cached.path, "Model::Element")
+            self.assertEqual(due_calls, ["server"])
+
     def test_acl_delta_marks_users_due_and_tombstone_revokes_branch_atomically(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             data_dir = Path(directory)
