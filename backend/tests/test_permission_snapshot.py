@@ -17,6 +17,8 @@ from app.models.domain import (
     BranchSnapshotIngestRequest,
     BranchTombstoneRequest,
     CapabilitySummary,
+    CacheProjectBranchEntry,
+    CacheProjectEntry,
     CachedModelRecord,
     JobRecord,
     JobStatus,
@@ -38,6 +40,47 @@ from app.services.platform import PermissionSnapshotIndeterminateError, Platform
 
 
 class PermissionSnapshotReplacementTests(unittest.TestCase):
+    def test_project_listing_filters_actual_cache_entries_through_branch_summaries(self) -> None:
+        service = object.__new__(PlatformService)
+        service.list_cached_projects_for_user = lambda server_id, username: [
+            CacheProjectEntry(
+                project_id="project",
+                project_name="Project",
+                branches=[
+                    CacheProjectBranchEntry(branch_id="main", branch_name="Main"),
+                    CacheProjectBranchEntry(branch_id="legacy", branch_name="Legacy"),
+                ],
+            )
+        ]
+        summaries = {
+            "main": BranchCacheSummary(
+                server_id="server",
+                project_id="project",
+                branch_id="main",
+                source_kind="cameo-plugin",
+            ),
+            "legacy": BranchCacheSummary(
+                server_id="server",
+                project_id="project",
+                branch_id="legacy",
+                source_kind="twc-rest",
+            ),
+        }
+        service.repo = SimpleNamespace(
+            get_branch_cache_summary=lambda server_id, project_id, branch_id: summaries[branch_id]
+        )
+        session = SimpleNamespace(
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="Alice"),
+        )
+
+        projects = service._project_summaries_from_cache_for_user(session)
+        branches = service._branch_summaries_from_cache_for_user(session, "project")
+
+        self.assertEqual([item.id for item in projects], ["project"])
+        self.assertEqual([item.id for item in projects[0].branches], ["main"])
+        self.assertEqual([item.id for item in branches], ["main"])
+
     def test_current_permission_status_uses_plugin_publisher_fallback_used_by_branch_listing(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             repo = SqliteRepository(Path(directory) / "workbench.db")

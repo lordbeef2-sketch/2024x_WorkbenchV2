@@ -806,7 +806,11 @@ class PlatformService:
         cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
         projects: list[ProjectSummary] = []
         for project in cached_projects:
-            plugin_branches = [branch for branch in project.branches if self._is_plugin_managed_summary(branch)]
+            plugin_branches = self._plugin_cache_project_branches(
+                session.server.id,
+                project.project_id,
+                project.branches,
+            )
             if not plugin_branches:
                 continue
             projects.append(ProjectSummary(
@@ -832,6 +836,11 @@ class PlatformService:
         for project in cached_projects:
             if project.project_id != project_id:
                 continue
+            plugin_branches = self._plugin_cache_project_branches(
+                session.server.id,
+                project.project_id,
+                project.branches,
+            )
             return [
                 BranchSummary(
                     id=branch.branch_id,
@@ -839,11 +848,25 @@ class PlatformService:
                     description=f"Stored branch model cache ({branch.status.value})",
                 )
                 for branch in sorted(
-                    (item for item in project.branches if self._is_plugin_managed_summary(item)),
+                    plugin_branches,
                     key=lambda item: ((item.branch_name or item.branch_id).lower(), item.branch_id),
                 )
             ]
         return []
+
+    def _plugin_cache_project_branches(
+        self,
+        server_id: str,
+        project_id: str,
+        branches: list[CacheProjectBranchEntry],
+    ) -> list[CacheProjectBranchEntry]:
+        return [
+            branch
+            for branch in branches
+            if self._is_plugin_managed_summary(
+                self.repo.get_branch_cache_summary(server_id, project_id, branch.branch_id)
+            )
+        ]
 
     async def get_model_tree(
         self,
