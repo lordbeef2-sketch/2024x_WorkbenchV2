@@ -650,6 +650,7 @@ class ScheduledPermissionRefreshTests(unittest.IsolatedAsyncioTestCase):
         service._resolve_user_branch_permission_snapshot = AsyncMock(side_effect=resolved)
         service.repo = SimpleNamespace(
             list_branch_cache_summaries=lambda server_id: summaries,
+            get_branch_permission_attachment=lambda *args: None,
             replace_user_permission_snapshot=lambda *args: replacements.append(args),
             delete_user_cache=lambda *args: None,
             delete_user_cache_prefix=lambda *args: None,
@@ -1141,6 +1142,77 @@ class ServerPermissionInventoryCadenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(service._is_twc_server_administrator(server_admin))
         self.assertFalse(service._is_twc_server_administrator(app_admin_only))
         self.assertTrue(service._is_twc_server_administrator(uuid_role_with_server_permission))
+
+    async def test_inventory_expands_each_imported_project_once_and_attaches_every_branch(self) -> None:
+        summaries = [
+            BranchCacheSummary(
+                server_id="server",
+                project_id="project",
+                branch_id="main",
+                branch_name="Main",
+                latest_revision="10",
+                source_kind="cameo-plugin",
+            ),
+            BranchCacheSummary(
+                server_id="server",
+                project_id="project",
+                branch_id="release",
+                branch_name="Release",
+                latest_revision="9",
+                source_kind="cameo-plugin",
+            ),
+        ]
+        manifest_record = BranchAccessRecord(
+            user_id="alice",
+            server_id="server",
+            project_id="project",
+            branch_id="main",
+            accessible=True,
+            editable=True,
+            roles=["Resource Manager"],
+            via_groups=["Engineering"],
+            payload={
+                "role_editable_access": True,
+                "readonly_branch_ids": ["release"],
+                "branch_admin_access": True,
+                "access_admin_access": False,
+            },
+        )
+        stored: list[BranchPermissionAttachment] = []
+        service = object.__new__(PlatformService)
+        service.repo = SimpleNamespace(
+            list_branch_cache_summaries=lambda server_id: summaries,
+            get_branch_permission_attachment=lambda *args: None,
+            upsert_branch_permission_attachment=lambda attachment: stored.append(attachment),
+        )
+        adapter = SimpleNamespace(
+            build_plugin_branch_access_manifest=AsyncMock(return_value=[manifest_record]),
+        )
+        session = SimpleNamespace(
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="Administrator"),
+        )
+        inventory = ServerPermissionInventory(
+            server_id="server",
+            roles=[{"ID": "resource-manager"}],
+            groups=[{"ID": "engineering"}],
+        )
+
+        counts = await service._refresh_plugin_permission_attachments(session, adapter, inventory)
+
+        adapter.build_plugin_branch_access_manifest.assert_awaited_once()
+        self.assertEqual(counts["permission_project_count"], 1)
+        self.assertEqual(counts["permission_branch_count"], 2)
+        self.assertEqual(counts["permission_user_count"], 1)
+        self.assertEqual({item.branch_id for item in stored}, {"main", "release"})
+        entries = {
+            item.branch_id: next(entry for entry in item.manifest.entries if entry.principal_name == "alice")
+            for item in stored
+        }
+        self.assertTrue(entries["main"].editable)
+        self.assertTrue(entries["main"].branch_admin_access)
+        self.assertFalse(entries["release"].editable)
+        self.assertFalse(entries["release"].branch_admin_access)
 
     async def test_fresh_inventory_is_reused_for_six_hours(self) -> None:
         inventory = ServerPermissionInventory(

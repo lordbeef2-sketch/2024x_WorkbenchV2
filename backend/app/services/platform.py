@@ -5145,6 +5145,14 @@ class PlatformService:
                     or inventory.captured_at + timedelta(hours=self.settings.permission_inventory_refresh_hours) <= utcnow()
                 ):
                     raise RuntimeError("Teamwork Cloud did not return a complete current server role/group inventory.")
+                await context.report(45, "Resolving every role and group against imported projects")
+                attachment_counts = await self._refresh_plugin_permission_attachments(
+                    live_session,
+                    self._adapter_for_session(live_session),
+                    inventory,
+                    report=context.report,
+                )
+                self.sessions.mark_server_permission_snapshots_due(live_session.server.id)
                 self.repo.append_server_permission_inventory_audit(
                     ServerPermissionInventoryAuditRecord(
                         server_id=live_session.server.id,
@@ -5166,12 +5174,13 @@ class PlatformService:
                         duration_ms=max(0, int((utcnow() - started_at).total_seconds() * 1000)),
                     )
                 )
-                await context.report(95, "Server role/group inventory replaced; user permission snapshots marked due")
+                await context.report(95, "Project permission attachments replaced; user permission snapshots marked due")
                 return {
                     "server_id": live_session.server.id,
                     "captured_at": inventory.captured_at.isoformat(),
                     "role_count": len(inventory.roles),
                     "group_count": len(inventory.groups),
+                    **attachment_counts,
                     "affected_user_count": len({
                         self._user_key(item.user.preferred_username)
                         for item in self.sessions.list_active_sessions()
@@ -5180,6 +5189,7 @@ class PlatformService:
                     "reason": reason,
                 }
             except Exception as exc:
+                self.repo.mark_server_permission_inventory_dirty(live_session.server.id)
                 current = self.repo.get_server_permission_inventory(live_session.server.id)
                 safe_error = self._permission_error_text(exc)
                 self.repo.append_server_permission_inventory_audit(
@@ -6139,18 +6149,35 @@ class PlatformService:
             # locally registered branch instead of repeating the same API call
             # for every branch. Keep this small fan-out bounded independently
             # of the branch resolver.
-            readonly_project_ids = sorted({
-                summary.project_id
-                for summary in summaries
+            readonly_project_ids: list[str] = []
+            for project_id in sorted({summary.project_id for summary in summaries}):
+                project_summaries = [summary for summary in summaries if summary.project_id == project_id]
+                has_current_attachments = all(
+                    self._attached_rest_manifest_is_current(
+                        summary,
+                        self.repo.get_branch_permission_attachment(
+                            session.server.id,
+                            summary.project_id,
+                            summary.branch_id,
+                        ),
+                        permission_inventory,
+                    )
+                    for summary in project_summaries
+                )
+                if has_current_attachments:
+                    continue
                 if (
                     not session.authorization_context.permissions_included
-                    or self._session_resource_permission_flags(
-                        session,
-                        summary.project_id,
-                        summary.workspace_id,
-                    )["editable"]
-                )
-            })
+                    or any(
+                        self._session_resource_permission_flags(
+                            session,
+                            summary.project_id,
+                            summary.workspace_id,
+                        )["editable"]
+                        for summary in project_summaries
+                    )
+                ):
+                    readonly_project_ids.append(project_id)
             readonly_by_project: dict[str, list[str]] = {}
             readonly_semaphore = asyncio.Semaphore(min(2, max_parallel_probes))
 
@@ -6409,8 +6436,6 @@ class PlatformService:
                 captured_at=utcnow(),
             )
             self.repo.upsert_server_permission_inventory(inventory)
-            if sessions := getattr(self, "sessions", None):
-                sessions.mark_server_permission_snapshots_due(server_id)
             logger.info(
                 "twc-server-permission-inventory-refreshed",
                 server_id=server_id,
@@ -6419,6 +6444,110 @@ class PlatformService:
                 refresh_hours=self.settings.permission_inventory_refresh_hours,
             )
             return inventory
+
+    async def _refresh_plugin_permission_attachments(
+        self,
+        session: SessionData,
+        adapter,
+        inventory: ServerPermissionInventory,
+        *,
+        report=None,
+    ) -> dict[str, int]:
+        """Resolve complete TWC role/group access once per imported project.
+
+        The resulting user-specific records are copied to each locally imported
+        branch and stored as revision-bound permission attachments. User login
+        refreshes can therefore compare against local authoritative evidence
+        without repeating the server-wide role/group expansion.
+        """
+        summaries = [
+            summary
+            for summary in self.repo.list_branch_cache_summaries(session.server.id)
+            if self._is_plugin_managed_summary(summary)
+        ]
+        projects: dict[str, list[BranchCacheSummary]] = {}
+        for summary in summaries:
+            projects.setdefault(summary.project_id, []).append(summary)
+
+        captured_at = utcnow()
+        attached_branch_count = 0
+        resolved_user_ids: set[str] = set()
+        ordered_projects = sorted(projects.items(), key=lambda item: item[0].lower())
+        for index, (project_id, project_summaries) in enumerate(ordered_projects, start=1):
+            project_summaries.sort(key=lambda item: (item.branch_name.lower(), item.branch_id.lower()))
+            representative = project_summaries[0]
+            if report is not None:
+                progress = 45 + int(40 * (index - 1) / max(1, len(ordered_projects)))
+                await report(
+                    progress,
+                    f"Resolving roles and groups for imported project {index} of {len(ordered_projects)}",
+                )
+            project_records = await adapter.build_plugin_branch_access_manifest(
+                project_id,
+                representative.branch_id,
+                latest_revision=representative.latest_revision,
+                workspace_id=representative.workspace_id,
+                admin_roles_inventory=inventory.roles,
+                usergroups_inventory=inventory.groups,
+            )
+            resolved_user_ids.update(self._user_key(record.user_id) for record in project_records)
+
+            for summary in project_summaries:
+                branch_records: list[BranchAccessRecord] = []
+                for record in project_records:
+                    payload = dict(record.payload or {})
+                    readonly_branch_ids = list(dict.fromkeys(payload.get("readonly_branch_ids", [])))
+                    branch_read_only = summary.branch_id in readonly_branch_ids
+                    accessible = bool(record.accessible)
+                    role_editable = bool(payload.get("role_editable_access", record.editable))
+                    branch_admin = bool(payload.get("branch_admin_access", False)) and not branch_read_only
+                    access_admin = bool(payload.get("access_admin_access", False))
+                    payload.update(
+                        {
+                            "readonly_branch_ids": readonly_branch_ids,
+                            "branch_read_only": branch_read_only,
+                            "role_editable_access": role_editable,
+                            "branch_admin_access": branch_admin,
+                            "access_admin_access": access_admin,
+                        }
+                    )
+                    branch_records.append(
+                        record.model_copy(
+                            update={
+                                "server_id": session.server.id,
+                                "project_id": summary.project_id,
+                                "branch_id": summary.branch_id,
+                                "workspace_id": summary.workspace_id,
+                                "branch_name": summary.branch_name or summary.branch_id,
+                                "latest_revision": summary.latest_revision,
+                                "accessible": accessible,
+                                "editable": bool(accessible and role_editable and not branch_read_only),
+                                "admin_access": bool(accessible and (branch_admin or access_admin)),
+                                "payload": payload,
+                                "updated_at": captured_at,
+                            }
+                        )
+                    )
+                previous_attachment = self.repo.get_branch_permission_attachment(
+                    session.server.id,
+                    summary.project_id,
+                    summary.branch_id,
+                )
+                attachment = self._permission_attachment_from_rest_manifest(
+                    session,
+                    summary,
+                    branch_records,
+                    captured_at,
+                    previous_attachment,
+                )
+                self.repo.upsert_branch_permission_attachment(attachment)
+                attached_branch_count += 1
+
+        return {
+            "permission_project_count": len(projects),
+            "permission_branch_count": attached_branch_count,
+            "permission_user_count": len(resolved_user_ids),
+        }
 
     def _permission_candidate_summaries(
         self,
@@ -6429,20 +6558,11 @@ class PlatformService:
         # published by the Cameo plugin participate in user visibility and
         # permission refresh.
         summaries = [summary for summary in summaries if self._is_plugin_managed_summary(summary)]
-        # When TWC returned effective permissions, Read Resources scopes are a
-        # complete, user-specific project filter. If an older TWC response did
-        # not include permissions, retain the direct-probe compatibility path.
-        if not session.authorization_context.permissions_included:
-            return summaries
-        return [
-            summary
-            for summary in summaries
-            if self._session_resource_permission_flags(
-                session,
-                summary.project_id,
-                summary.workspace_id,
-            )["accessible"]
-        ]
+        # The TWC current-user payload is not a complete project filter: access
+        # can arrive through scoped roles, server groups, and nested groups that
+        # are absent from that response. Resolve every imported project against
+        # its saved permission attachment, then store only this user's matches.
+        return summaries
 
     def _attach_inventory_role_names(
         self,
@@ -6633,11 +6753,11 @@ class PlatformService:
             summary.project_id,
             summary.workspace_id,
         )
-        # Security authority remains fresh per-user evidence. The six-hour
-        # group/role inventory is discovery and comparison data only.
+        manifest_accessible = bool(manifest_user_access and manifest_user_access.accessible)
         accessible = bool(
             direct_accessible
             or permission_claim_access["accessible"]
+            or manifest_accessible
         )
         direct_editable = any(
             permission.accessible and not permission.restricted and permission.editable for permission in permissions
@@ -6658,13 +6778,26 @@ class PlatformService:
             ),
         ]))
         branch_read_only = summary.branch_id in readonly_branch_ids
+        manifest_editable = bool(manifest_user_access and manifest_user_access.editable)
+        manifest_branch_admin = self._branch_admin_access(manifest_user_access)
+        manifest_access_admin = self._access_admin_access(manifest_user_access)
         editable = bool(
             accessible
             and not branch_read_only
             and (
                 direct_editable
                 or permission_claim_access["editable"]
+                or manifest_editable
             )
+        )
+        branch_admin = bool(
+            accessible
+            and not branch_read_only
+            and (permission_claim_access["branch_admin_access"] or manifest_branch_admin)
+        )
+        access_admin = bool(
+            accessible
+            and (permission_claim_access["access_admin_access"] or manifest_access_admin)
         )
         if not direct_probe_performed:
             permissions = [
@@ -6691,8 +6824,8 @@ class PlatformService:
             attached_before_refresh,
             accessible=accessible,
             editable=editable,
-            branch_admin=bool(accessible and not branch_read_only and permission_claim_access["branch_admin_access"]),
-            access_admin=bool(accessible and permission_claim_access["access_admin_access"]),
+            branch_admin=branch_admin,
+            access_admin=access_admin,
         )
         effective_permissions = [
             permission.model_copy(
@@ -6706,8 +6839,8 @@ class PlatformService:
                         **(permission.payload or {}),
                         "manifest_roles": manifest_user_access.roles if manifest_user_access else [],
                         "manifest_groups": manifest_user_access.via_groups if manifest_user_access else [],
-                        "manifest_branch_admin_access": self._branch_admin_access(manifest_user_access),
-                        "manifest_access_admin_access": self._access_admin_access(manifest_user_access),
+                        "manifest_branch_admin_access": manifest_branch_admin,
+                        "manifest_access_admin_access": manifest_access_admin,
                         "readonly_branch_ids": readonly_branch_ids,
                         "branch_read_only": branch_read_only,
                         "current_user_permission_claims": permission_claim_access["matched_permissions"],
@@ -6730,8 +6863,8 @@ class PlatformService:
             admin_access=bool(
                 accessible
                 and (
-                    (not branch_read_only and permission_claim_access["branch_admin_access"])
-                    or permission_claim_access["access_admin_access"]
+                    branch_admin
+                    or access_admin
                 )
             ),
             roles=list(dict.fromkeys([
@@ -6752,10 +6885,8 @@ class PlatformService:
                 "manifest_error": manifest_error,
                 "direct_editability_known": direct_editability_known,
                 "manifest_payload": manifest_user_access.payload if manifest_user_access else {},
-                "branch_admin_access": bool(
-                    accessible and not branch_read_only and permission_claim_access["branch_admin_access"]
-                ),
-                "access_admin_access": bool(accessible and permission_claim_access["access_admin_access"]),
+                "branch_admin_access": branch_admin,
+                "access_admin_access": access_admin,
                 "readonly_branch_ids": readonly_branch_ids,
                 "branch_read_only": branch_read_only,
                 "current_user_permission_claims": permission_claim_access["matched_permissions"],

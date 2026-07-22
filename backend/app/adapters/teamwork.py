@@ -2750,6 +2750,7 @@ class TeamworkAdapter:
                 "via_groups": details["via_groups"],
                 "readonly_branch_ids": readonly_branch_ids,
                 "role_descriptions": details["role_descriptions"],
+                "role_editable_access": details["editable"],
                 "branch_admin_access": details["branch_admin_access"],
                 "access_admin_access": details["access_admin_access"],
             }

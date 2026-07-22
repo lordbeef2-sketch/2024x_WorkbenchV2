@@ -8,8 +8,11 @@ from app.models.domain import (
     AuthorizationPermissionClaim,
     BranchAccessRecord,
     BranchCacheSummary,
+    BranchPermissionAttachment,
     CachedModelRecord,
     ModelPermissionSnapshot,
+    PermissionManifest,
+    PermissionManifestEntry,
     ServerPermissionInventory,
 )
 from app.services.platform import PlatformService
@@ -266,7 +269,7 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.authorization_context.roles, ["Resource Manager"])
         self.assertEqual(updated_sessions[0].role_ids, ["resource-manager-role"])
 
-    def test_refresh_candidates_include_only_user_permitted_project_scopes(self) -> None:
+    def test_refresh_candidates_include_every_imported_project_for_manifest_matching(self) -> None:
         service = object.__new__(PlatformService)
         session = SimpleNamespace(
             authorization_context=AuthorizationContext(
@@ -287,9 +290,12 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
 
         candidates = service._permission_candidate_summaries(session, summaries)
 
-        self.assertEqual([(item.project_id, item.branch_id) for item in candidates], [("project-a", "main")])
+        self.assertEqual(
+            [(item.project_id, item.branch_id) for item in candidates],
+            [("project-a", "main"), ("project-b", "main")],
+        )
 
-    def test_refresh_with_explicit_empty_permissions_checks_no_projects(self) -> None:
+    def test_refresh_with_explicit_empty_permissions_still_checks_imported_projects(self) -> None:
         service = object.__new__(PlatformService)
         session = SimpleNamespace(
             authorization_context=AuthorizationContext(
@@ -299,7 +305,92 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
         )
         summaries = [BranchCacheSummary(server_id="server", project_id="project-a", branch_id="main", source_kind="cameo-plugin")]
 
-        self.assertEqual(service._permission_candidate_summaries(session, summaries), [])
+        self.assertEqual(service._permission_candidate_summaries(session, summaries), summaries)
+
+    async def test_saved_group_role_manifest_grants_access_when_current_user_permissions_are_empty(self) -> None:
+        captured_at = CachedModelRecord(
+            server_id="server",
+            project_id="project-a",
+            branch_id="main",
+            model_id="model-1",
+        ).synced_at
+        summary = BranchCacheSummary(
+            server_id="server",
+            project_id="project-a",
+            branch_id="main",
+            latest_revision="42",
+            source_kind="cameo-plugin",
+        )
+        model = CachedModelRecord(
+            server_id="server",
+            project_id="project-a",
+            branch_id="main",
+            model_id="model-1",
+        )
+        attachment = BranchPermissionAttachment(
+            server_id="server",
+            project_id="project-a",
+            branch_id="main",
+            latest_revision="42",
+            attached_at=captured_at,
+            manifest=PermissionManifest(
+                source="twc-rest-role-manifest",
+                complete=True,
+                entries=[
+                    PermissionManifestEntry(
+                        scope_id="main",
+                        scope_type="project-branch",
+                        principal_name="alice",
+                        principal_type="user",
+                        role_name="Resource Manager",
+                        accessible=True,
+                        editable=True,
+                        branch_admin_access=True,
+                        via_groups=["Engineering"],
+                    )
+                ],
+            ),
+        )
+        inventory = ServerPermissionInventory(
+            server_id="server",
+            roles=[{"ID": "resource-manager"}],
+            groups=[{"ID": "engineering"}],
+            captured_at=captured_at,
+        )
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_inventory_refresh_hours=6)
+        service.repo = SimpleNamespace(
+            list_cached_models=lambda *args: [model],
+            get_branch_permission_attachment=lambda *args: attachment,
+        )
+        adapter = SimpleNamespace(probe_plugin_branch_permissions=AsyncMock())
+        session = SimpleNamespace(
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="Alice"),
+            authorization_context=AuthorizationContext(
+                permissions_included=True,
+                permissions=[],
+                roles=[],
+                groups=[],
+            ),
+        )
+
+        branch, permissions, _ = await service._resolve_user_branch_permission_snapshot(
+            session,
+            summary,
+            adapter=adapter,
+            permission_inventory=inventory,
+            refreshed_at=captured_at,
+        )
+
+        self.assertTrue(branch.accessible)
+        self.assertTrue(branch.editable)
+        self.assertTrue(branch.admin_access)
+        self.assertEqual(branch.roles, ["Resource Manager"])
+        self.assertEqual(branch.via_groups, ["Engineering"])
+        self.assertTrue(permissions[0].accessible)
+        self.assertTrue(permissions[0].editable)
+        adapter.probe_plugin_branch_permissions.assert_not_awaited()
 
 
 if __name__ == "__main__":
