@@ -169,6 +169,7 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
             user=SimpleNamespace(preferred_username="Administrator"),
             authorization_context=AuthorizationContext(
                 roles=["Server Administrator", "Resource Manager"],
+                groups=["Global Resource Admins"],
                 permissions=[
                     AuthorizationPermissionClaim(name="Read Resources"),
                     AuthorizationPermissionClaim(name="Edit Resources"),
@@ -192,6 +193,7 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(branch_access.via_groups, ["Global Resource Admins"])
         self.assertTrue(model_permissions[0].accessible)
         self.assertFalse(model_permissions[0].restricted)
+        adapter.build_plugin_branch_access_manifest.assert_not_awaited()
 
     def test_current_user_global_resource_permissions_apply_to_every_project(self) -> None:
         adapter = object.__new__(TeamworkAdapter)
@@ -278,8 +280,9 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         summaries = [
-            BranchCacheSummary(server_id="server", project_id="project-a", branch_id="main"),
-            BranchCacheSummary(server_id="server", project_id="project-b", branch_id="main"),
+            BranchCacheSummary(server_id="server", project_id="project-a", branch_id="main", source_kind="cameo-plugin"),
+            BranchCacheSummary(server_id="server", project_id="project-b", branch_id="main", source_kind="cameo-plugin"),
+            BranchCacheSummary(server_id="server", project_id="project-a", branch_id="legacy-rest", source_kind="twc-rest"),
         ]
 
         candidates = service._permission_candidate_summaries(session, summaries)
@@ -294,7 +297,7 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
                 permissions=[],
             )
         )
-        summaries = [BranchCacheSummary(server_id="server", project_id="project-a", branch_id="main")]
+        summaries = [BranchCacheSummary(server_id="server", project_id="project-a", branch_id="main", source_kind="cameo-plugin")]
 
         self.assertEqual(service._permission_candidate_summaries(session, summaries), [])
 

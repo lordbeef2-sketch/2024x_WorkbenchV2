@@ -88,6 +88,8 @@ Request body:
 
 - branch identity
 - source revision
+- required baseline snapshot SHA-256 matching the current Workbench branch state
+- required target snapshot SHA-256 for the fully materialized post-delta state
 - target revision
 - changed element set
 - added/removed items

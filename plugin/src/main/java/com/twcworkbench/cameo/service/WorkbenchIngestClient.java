@@ -336,6 +336,9 @@ public class WorkbenchIngestClient {
 
     private void validateDeltaForWorkbench(BranchDeltaPayload payload) throws IOException {
         validateCommonWorkbenchFields(payload.serverId, payload.serverUrl, payload.resourceId, payload.projectId, payload.branchId, payload.sourceUser);
+        if (isBlank(payload.baseSnapshotHash) || isBlank(payload.targetSnapshotHash)) {
+            throw new IOException("Workbench delta ingest requires both baseline and target snapshot fingerprints. Publish a full snapshot to rebaseline.");
+        }
     }
 
     private void validateCommonWorkbenchFields(

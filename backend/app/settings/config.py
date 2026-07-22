@@ -165,7 +165,7 @@ class Settings(BaseSettings):
     fallback_cache_sync_time: str = "00:00"
     fallback_cache_sync_timezone: str = "America/New_York"
     fallback_cache_sync_window_minutes: int = Field(default=60, ge=1, le=720)
-    permission_snapshot_max_parallel_probes: int = Field(default=4, ge=1, le=16)
+    permission_snapshot_max_parallel_probes: int = Field(default=2, ge=1, le=16)
     permission_refresh_lease_seconds: int = Field(default=900, ge=60, le=7200)
     permission_refresh_warning_failures: int = Field(default=3, ge=1)
     permission_alert_webhook_url: str | None = None

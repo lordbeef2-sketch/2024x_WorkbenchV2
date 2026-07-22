@@ -89,6 +89,7 @@ public class SnapshotHashService {
         entry.put("diagram_element_ids", new ArrayList<>(element.diagramElementIds));
         entry.put("attributes", normalizeValue(element.attributes));
         entry.put("references", normalizeValue(element.references));
+        entry.put("spec_sections", normalizeValue(element.specSections));
         return entry;
     }
 

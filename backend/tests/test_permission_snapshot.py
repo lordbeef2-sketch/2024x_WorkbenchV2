@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch
 from app.core.storage import SqliteRepository
 from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
+    AuthorizationContext,
+    AuthorizationPermissionClaim,
     BranchAccessRecord,
     BranchCacheSummary,
     BranchDeltaIngestRequest,
@@ -549,6 +551,137 @@ class PermissionAttachmentComparisonTests(unittest.TestCase):
 
 
 class ScheduledPermissionRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_fetches_readonly_branches_once_per_project(self) -> None:
+        now = datetime.now(UTC)
+        summaries = [
+            BranchCacheSummary(
+                server_id="server",
+                project_id="project",
+                branch_id=branch_id,
+                branch_name=branch_id,
+                source_kind="cameo-plugin",
+            )
+            for branch_id in ("main", "release")
+        ]
+        session = SimpleNamespace(
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="Alice"),
+            authorization_context=AuthorizationContext(
+                permissions=[
+                    AuthorizationPermissionClaim(
+                        name="Read Resources",
+                        related_resources=["project"],
+                    ),
+                    AuthorizationPermissionClaim(
+                        name="Edit Resources",
+                        related_resources=["project"],
+                    ),
+                ],
+                permissions_included=True,
+            ),
+        )
+        resolved = [
+            (
+                BranchAccessRecord(
+                    user_id="alice",
+                    server_id="server",
+                    project_id="project",
+                    branch_id=summary.branch_id,
+                ),
+                [],
+                None,
+            )
+            for summary in summaries
+        ]
+        adapter = SimpleNamespace(
+            current_user_context=AsyncMock(return_value=None),
+            _user_readonly_branches=AsyncMock(return_value=["release"]),
+        )
+        replacements = []
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_snapshot_max_parallel_probes=2)
+        service._permission_snapshot_locks = {}
+        service._adapter_for_session = lambda item: adapter
+        service._server_permission_inventory = AsyncMock(return_value=None)
+        service._attach_inventory_role_names = lambda item, inventory: item
+        service._resolve_user_branch_permission_snapshot = AsyncMock(side_effect=resolved)
+        service.repo = SimpleNamespace(
+            list_branch_cache_summaries=lambda server_id: summaries,
+            replace_user_permission_snapshot=lambda *args: replacements.append(args),
+            delete_user_cache=lambda *args: None,
+            delete_user_cache_prefix=lambda *args: None,
+        )
+        service.sessions = SimpleNamespace(
+            mark_permission_snapshot_attempt=lambda *args, **kwargs: None,
+        )
+
+        refreshed_at = await service.refresh_user_permission_snapshot(session, reason="login")
+
+        self.assertGreaterEqual(refreshed_at, now)
+        adapter.current_user_context.assert_not_awaited()
+        adapter._user_readonly_branches.assert_awaited_once_with("project", "alice")
+        self.assertEqual(service._resolve_user_branch_permission_snapshot.await_count, 2)
+        for call in service._resolve_user_branch_permission_snapshot.await_args_list:
+            self.assertEqual(call.kwargs["readonly_branch_ids"], ["release"])
+        self.assertEqual(len(replacements), 1)
+
+    async def test_complete_current_user_permissions_skip_branch_and_manifest_probes(self) -> None:
+        now = datetime.now(UTC)
+        model = CachedModelRecord(
+            server_id="server",
+            project_id="project",
+            branch_id="main",
+            model_id="model",
+        )
+        service = object.__new__(PlatformService)
+        service.repo = SimpleNamespace(
+            list_cached_models=lambda *args: [model],
+            get_branch_permission_attachment=lambda *args: None,
+        )
+        adapter = SimpleNamespace(
+            build_plugin_branch_access_manifest=AsyncMock(),
+            probe_plugin_branch_permissions=AsyncMock(),
+            _user_readonly_branches=AsyncMock(),
+        )
+        session = SimpleNamespace(
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="Alice"),
+            authorization_context=AuthorizationContext(
+                permissions=[
+                    AuthorizationPermissionClaim(
+                        name="Read Resources",
+                        related_resources=["project"],
+                    ),
+                    AuthorizationPermissionClaim(
+                        name="Edit Resources",
+                        related_resources=["project"],
+                    ),
+                ],
+                permissions_included=True,
+            ),
+        )
+
+        branch, permissions, attachment = await service._resolve_user_branch_permission_snapshot(
+            session,
+            BranchCacheSummary(
+                server_id="server",
+                project_id="project",
+                branch_id="main",
+            ),
+            adapter=adapter,
+            readonly_branch_ids=[],
+            refreshed_at=now,
+        )
+
+        self.assertTrue(branch.accessible)
+        self.assertTrue(branch.editable)
+        self.assertTrue(permissions[0].accessible)
+        self.assertTrue(permissions[0].editable)
+        self.assertIsNone(attachment)
+        adapter.build_plugin_branch_access_manifest.assert_not_awaited()
+        adapter.probe_plugin_branch_permissions.assert_not_awaited()
+        adapter._user_readonly_branches.assert_not_awaited()
+
     async def test_recent_snapshot_does_not_call_twc(self) -> None:
         now = datetime.now(UTC)
         session = SimpleNamespace(
@@ -660,6 +793,7 @@ class ManualCapabilityRefreshTests(unittest.IsolatedAsyncioTestCase):
         fake_job = SimpleNamespace(id="permission-job")
         service = object.__new__(PlatformService)
         service._adapter_for_session = lambda item: adapter
+        service._snapshot_capabilities = lambda server: capabilities
         service.sessions = SimpleNamespace(
             update_capabilities=lambda item, value: SimpleNamespace(
                 session_id=item.session_id,
@@ -678,9 +812,83 @@ class ManualCapabilityRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.permission_refresh_job_id, "permission-job")
         self.assertEqual(len(submitted), 1)
+        adapter.discover_capabilities.assert_not_awaited()
 
 
 class IngestPermissionLifecycleTests(unittest.TestCase):
+    def test_snapshot_fingerprint_changes_when_native_specification_changes(self) -> None:
+        service = object.__new__(PlatformService)
+        original = BranchSnapshotIngestRequest(
+            serverId="server",
+            projectId="project",
+            branchId="main",
+            sourceUser="publisher",
+            models=[IngestModelRecord(modelId="model", rootElementIds=["element"])],
+            elements=[
+                IngestElementRecord(
+                    elementId="element",
+                    modelId="model",
+                    specSections={"properties": {"documentation": "before"}},
+                )
+            ],
+        )
+        changed = original.model_copy(deep=True)
+        changed.elements[0].spec_sections["properties"]["documentation"] = "after"
+
+        self.assertNotEqual(
+            service._snapshot_hash_from_ingest_payload(original),
+            service._snapshot_hash_from_ingest_payload(changed),
+        )
+
+    def test_delta_without_baseline_and_target_fingerprints_is_rejected(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            repo.upsert_server(ServerProfile(id="server", name="Server", base_url="https://twc.example"))
+            repo.upsert_branch_cache_summary(
+                BranchCacheSummary(
+                    server_id="server",
+                    project_id="project",
+                    branch_id="main",
+                    snapshot_hash="baseline",
+                    source_kind="cameo-plugin",
+                )
+            )
+            service = object.__new__(PlatformService)
+            service.repo = repo
+
+            with self.assertRaisesRegex(RuntimeError, "baseline fingerprint"):
+                service.ingest_branch_delta(
+                    BranchDeltaIngestRequest(
+                        serverId="server",
+                        projectId="project",
+                        branchId="main",
+                        sourceUser="publisher",
+                    )
+                )
+
+            with self.assertRaisesRegex(RuntimeError, "target snapshot fingerprint"):
+                service.ingest_branch_delta(
+                    BranchDeltaIngestRequest(
+                        serverId="server",
+                        projectId="project",
+                        branchId="main",
+                        baseSnapshotHash="baseline",
+                        sourceUser="publisher",
+                    )
+                )
+
+            with self.assertRaisesRegex(RuntimeError, "changed on the server"):
+                service.ingest_branch_delta(
+                    BranchDeltaIngestRequest(
+                        serverId="server",
+                        projectId="project",
+                        branchId="main",
+                        baseSnapshotHash="wrong-baseline",
+                        targetSnapshotHash="target",
+                        sourceUser="publisher",
+                    )
+                )
+
     def test_snapshot_with_elements_builds_cached_records_without_undefined_names(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             data_dir = Path(directory)
@@ -759,7 +967,7 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
                     )
                 ],
             )
-            service.ingest_branch_snapshot(
+            initial_summary = service.ingest_branch_snapshot(
                 BranchSnapshotIngestRequest(
                     serverId="server",
                     projectId="project",
@@ -780,6 +988,8 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
                     projectId="project",
                     branchId="main",
                     toRevisionId="2",
+                    baseSnapshotHash=initial_summary.snapshot_hash,
+                    targetSnapshotHash=initial_summary.snapshot_hash,
                     sourceUser="publisher",
                     permissionManifest=initial_manifest,
                 )
@@ -799,6 +1009,8 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
                     projectId="project",
                     branchId="main",
                     toRevisionId="3",
+                    baseSnapshotHash=initial_summary.snapshot_hash,
+                    targetSnapshotHash=initial_summary.snapshot_hash,
                     sourceUser="publisher",
                     permissionManifest=changed_manifest,
                 )

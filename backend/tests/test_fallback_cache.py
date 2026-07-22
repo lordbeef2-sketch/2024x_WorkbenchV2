@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import asyncio
 from inspect import iscoroutinefunction
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +24,14 @@ from app.services.platform import PlatformService
 
 
 class FallbackCacheTests(unittest.TestCase):
+    def test_nightly_fallback_scheduler_is_disabled(self) -> None:
+        service = object.__new__(PlatformService)
+        service.sessions = SimpleNamespace(
+            list_active_sessions=lambda: self.fail("disabled fallback must not inspect active sessions")
+        )
+
+        asyncio.run(service.refresh_due_fallback_caches())
+
     def test_background_job_routes_run_on_application_event_loop(self) -> None:
         self.assertTrue(iscoroutinefunction(refresh_fallback_cache))
         self.assertTrue(iscoroutinefunction(sync_workbench_agent_knowledge))
@@ -92,13 +101,13 @@ class FallbackCacheTests(unittest.TestCase):
         self.assertEqual(local_now.hour, 0)
         self.assertFalse(closed_window)
 
-    def test_manual_trigger_requires_twc_server_administrator(self) -> None:
+    def test_manual_trigger_is_disabled(self) -> None:
         service = object.__new__(PlatformService)
         session = SimpleNamespace(
             authorization_context=SimpleNamespace(roles=["Resource Manager"], permissions=[]),
         )
 
-        with self.assertRaises(PermissionError):
+        with self.assertRaisesRegex(RuntimeError, "model and element fallback is disabled"):
             service.trigger_fallback_cache_refresh(session, FallbackCacheRefreshRequest())
 
     def test_plugin_snapshot_atomically_blocks_fallback_replacement(self) -> None:

@@ -100,11 +100,8 @@ Important settings:
 - `CACHE_API_TOKENS`: optional legacy fallback map of bearer token to Workbench username for cache-read API access. The preferred path is to let users create their own API keys from Workbench Settings.
 - `PERMISSION_SNAPSHOT_REFRESH_MINUTES`: active-user effective permissions are atomically replaced on this interval; defaults to `30`.
 - `PERMISSION_INVENTORY_REFRESH_HOURS`: refresh interval for the shared role/group catalog; defaults to `6`.
-- `FALLBACK_CACHE_SYNC_TIME`: nightly TWC REST fallback start time in 24-hour `HH:MM` format; defaults to `00:00`.
-- `FALLBACK_CACHE_SYNC_TIMEZONE`: IANA timezone for the nightly fallback window; defaults to `America/New_York`.
-- `FALLBACK_CACHE_SYNC_WINDOW_MINUTES`: scheduler window after the configured start; defaults to `60`.
 - `JOB_RETENTION_DAYS`: automatic retention period for completed, failed, and cancelled job records; defaults to `30`.
-- `PERMISSION_SNAPSHOT_MAX_PARALLEL_PROBES`: bounded per-user branch probe concurrency; defaults to `4`.
+- `PERMISSION_SNAPSHOT_MAX_PARALLEL_PROBES`: bounded compatibility-probe concurrency when TWC does not return complete current-user permission claims; defaults to `2` and Workbench enforces an effective maximum of `2`.
 - `PERMISSION_REFRESH_LEASE_SECONDS`: renewable database lease used to prevent duplicate cross-worker refreshes; defaults to `900`.
 - `PERMISSION_REFRESH_WARNING_FAILURES`: consecutive indeterminate attempts before a persistent warning; defaults to `3`.
 - `PERMISSION_ALERT_WEBHOOK_URL`: optional endpoint for sanitized repeated inventory-refresh failure alerts.
@@ -125,20 +122,19 @@ external integrations.
 - The shared model cache is stored once per branch, while Workbench maintains a
   per-user visibility and editability overlay so TWC access stays user-scoped
   without caching the same model N times.
-- Workbench discovers and materializes TWC REST fallback branches only during
-  the nightly window, or from a manual TWC Server Administrator trigger.
-- A Cameo plugin snapshot atomically replaces a REST fallback. REST refreshes
-  skip plugin-backed branches and recheck that invariant at commit time.
-- Cached project discovery probes missing branch-access records with the
-  signed-in user's own TWC session, allowing authorized users to discover
-  projects published or committed by someone else without exposing them to
-  users who lack TWC access.
+- TWC REST is used for current-user and administrative permission data. It does
+  not enumerate models or elements or create partial model caches.
+- Projects, branches, models, and elements appear only from authoritative
+  Cameo Workbench plugin snapshots.
+- Cached project discovery is storage-only. The current user's effective TWC
+  permission response is compared with all locally registered Cameo snapshots,
+  allowing authorized users to discover projects published by someone else
+  without exposing them to users who lack TWC access.
 - The Workbench project selector refreshes on focus and every 30 seconds so an
   already-open session discovers newly published shared projects.
 - Login evaluates the signed-in user only against Workbench's local registry of
   uploaded project branches and persists the results per user. Subsequent list
-  refreshes reuse those records and probe only new or revision-changed uploads,
-  never the full model tree.
+  refreshes reuse those records and never probe the model tree.
 - Effective Workbench access merges TWC's direct authenticated branch result
   with direct project roles, group and nested-group roles, read-only branch
   overrides, and resource-scoped project-administration permissions. Global

@@ -13,6 +13,8 @@
   "branchName": "trunk",
   "fromRevisionId": "456789",
   "toRevisionId": "456790",
+  "baseSnapshotHash": "replace-with-the-previous-full-snapshot-sha256",
+  "targetSnapshotHash": "replace-with-the-current-full-snapshot-sha256",
   "sourceUser": "jdoe",
   "permissionManifest": {
     "schemaVersion": "1.0",

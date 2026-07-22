@@ -40,33 +40,23 @@ Use `Authorization: Bearer <api-key>` on those requests. The API key identity ma
 Stereotype search accepts either a stereotype id or a stereotype name fragment and can return either lightweight cached element records or full cached item details with `includeDetails=true`.
 Key labels, creation time, and last-used time are stored for light auditability, while the full secret is only shown once at creation time.
 
-Workbench uses a hybrid cache by default. A background TWC REST refresh fills
-branches that do not yet have a Cameo snapshot. It runs at `00:00`
-`America/New_York` by default and is configured with
-`FALLBACK_CACHE_SYNC_TIME`, `FALLBACK_CACHE_SYNC_TIMEZONE`, and
-`FALLBACK_CACHE_SYNC_WINDOW_MINUTES`. Only an active TWC Server Administrator
-session can supply the delegated access for that job. A TWC Server
-Administrator can also queue the same server-wide job from Workbench Settings
-with `POST /api/workspace/fallback-cache/refresh`; the response is immediate and
-the work continues in the background. Status is available at
-`GET /api/workspace/fallback-cache/status`.
-
-A Cameo plugin snapshot is authoritative. The REST job skips plugin-backed
-branches and the database transaction checks the source again before replacing
-a branch, so a snapshot that arrives during a REST traversal still wins.
+Workbench uses TWC REST for permission authority only. Background and manual
+REST model/element fallback synchronization are disabled. Projects, branches,
+models, elements, specifications, usages, and presentation data enter the
+shared cache only through Cameo Workbench plugin snapshots. The retained
+`GET /api/workspace/fallback-cache/status` endpoint reports that disabled state;
+`POST /api/workspace/fallback-cache/refresh` rejects attempts to start the
+legacy crawler.
 
 The cache API stores the shared branch model payload once and keeps per-user
 permission overlays separately. That avoids duplicating the same branch model
 for every user while still keeping visibility scoped to the TWC-backed
 Workbench user identity.
-Project listing bootstraps missing permission overlays by probing cached plugin
-branches with the current user's own TWC session before filtering the list. A
-project published or updated by another Workbench user therefore appears as
-soon as TWC confirms the viewer can access its branch; inaccessible projects
-remain hidden.
-This discovery check uses a direct branch request rather than relying on the
-shared role manifest, because TWC server administrators and aliased identities
-may have valid access without appearing in a project's explicit role-user list.
+Project listing is storage-only. Login and the 30-minute active-user refresh
+compare TWC's effective current-user permission response with the locally
+registered Cameo plugin branches, then atomically replace that user's visibility
+overlay. A project published by another Workbench user appears when the viewer's
+stored TWC permission snapshot grants access; inaccessible projects remain hidden.
 The uploaded project registry is the local `branch_cache_summaries` table and
 the per-user result map is `branch_access_records`. Login refreshes the current
 user against those registered branches with bounded concurrency. Later project
@@ -138,6 +128,12 @@ scan. It immediately queues a `permission_refresh` job, refreshes the signed-in
 user's effective permission claims, filters
 the uploaded registry to matching global/workspace/project Read Resources
 scopes, and replaces permissions only for those permitted projects.
+That interactive path uses the locally registered uploaded-project/branch
+catalog: it does not enumerate the TWC model tree, elements, all users, all
+groups, or all roles. A complete current-user permission response requires no
+per-branch permission probe. Read-only branches are fetched once per matching
+project and reused for all of its registered branches. Older TWC responses that
+omit effective permissions use the bounded compatibility probe path only.
 The open model and its cached queries remain mounted during this work. The UI
 reconciles project, branch, and model access independently, closing only the
 selection whose access was authoritatively revoked.
@@ -145,9 +141,9 @@ The UI polls `GET /api/workspace/permissions/current` against the stored
 snapshot for its selected project/branch/model; this lightweight check performs
 no upstream TWC call and also catches scheduled-refresh revocations.
 SQLite-backed renewable leases coordinate refresh ownership across backend
-workers. Probe concurrency is bounded by
-`PERMISSION_SNAPSHOT_MAX_PARALLEL_PROBES`, with the selected project/branch
-queued first. Every completed or indeterminate pass appends a sanitized audit
+workers. Compatibility-probe concurrency is bounded by
+`PERMISSION_SNAPSHOT_MAX_PARALLEL_PROBES` (default and effective maximum `2`), with the
+selected project/branch queued first. Every completed or indeterminate pass appends a sanitized audit
 record containing before/after hashes and grant/revocation deltas; administrators
 can query `GET /api/workspace/permission-refresh/audit`. Repeated failures are
 surfaced after `PERMISSION_REFRESH_WARNING_FAILURES` attempts or

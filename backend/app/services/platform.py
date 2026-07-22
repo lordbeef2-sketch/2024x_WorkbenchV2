@@ -55,6 +55,7 @@ from app.models.domain import (
     CacheServerEntry,
     CacheProjectBranchEntry,
     CacheProjectEntry,
+    Capability,
     CapabilityState,
     CachedElementQueryResponse,
     CachedElementRecord,
@@ -375,8 +376,7 @@ class PlatformService:
         session: SessionData,
         payload: PermissionRefreshRequest | None = None,
     ):
-        adapter = self._adapter_for_session(session)
-        capabilities = await adapter.discover_capabilities()
+        capabilities = self._snapshot_capabilities(session.server)
         request = payload or PermissionRefreshRequest()
         existing_job = next(
             (
@@ -440,6 +440,46 @@ class PlatformService:
             permission_refresh_job_id=job.id,
         )
         return updated_session.capabilities
+
+    def _snapshot_capabilities(self, server: ServerProfile) -> CapabilitySummary:
+        version = server.version.value if server.version != TWCVersion.AUTO else "2024x"
+        capabilities = {
+            "repository": Capability(
+                name="repository",
+                state=CapabilityState.READY,
+                reason="Project and branch browsing uses stored Cameo Workbench snapshots.",
+                source="workbench-snapshot",
+            ),
+            "models": Capability(
+                name="models",
+                state=CapabilityState.READY,
+                reason="Models and elements are supplied by Cameo Workbench snapshots, not REST traversal.",
+                source="workbench-snapshot",
+            ),
+            "revisiondiff": Capability(
+                name="revisiondiff",
+                state=CapabilityState.READY,
+                reason="Branch and project comparison uses stored snapshot contents.",
+                source="workbench-snapshot",
+            ),
+            "edit": Capability(
+                name="edit",
+                state=CapabilityState.READY,
+                reason="Explicit saves remain guarded by the stored TWC permission snapshot.",
+                source="permission-snapshot",
+            ),
+            "user_access": Capability(
+                name="user_access",
+                state=CapabilityState.READY,
+                reason="TWC remains the authority for current-user, group, role, and scoped resource permissions.",
+                source="twc-permissions",
+            ),
+        }
+        return CapabilitySummary(
+            detected_version=version,
+            reachable_endpoints={"permissions": True},
+            capabilities=capabilities,
+        )
 
     def update_preferences(self, session: SessionData, preferences: SessionPreferences) -> SessionPreferences:
         return self.sessions.update_preferences(session, preferences).preferences
@@ -763,11 +803,15 @@ class PlatformService:
 
     def _project_summaries_from_cache_for_user(self, session: SessionData) -> list[ProjectSummary]:
         cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
-        return [
-            ProjectSummary(
+        projects: list[ProjectSummary] = []
+        for project in cached_projects:
+            plugin_branches = [branch for branch in project.branches if self._is_plugin_managed_summary(branch)]
+            if not plugin_branches:
+                continue
+            projects.append(ProjectSummary(
                 id=project.project_id,
                 name=project.project_name,
-                description="Stored Workbench model cache with TWC-scoped user access",
+                description="Stored Cameo Workbench snapshot with TWC-scoped user access",
                 favorite=False,
                 branches=[
                     BranchSummary(
@@ -775,13 +819,12 @@ class PlatformService:
                         name=branch.branch_name,
                         description=f"Stored branch model cache ({branch.status.value})",
                     )
-                    for branch in sorted(project.branches, key=lambda item: ((item.branch_name or item.branch_id).lower(), item.branch_id))
+                    for branch in sorted(plugin_branches, key=lambda item: ((item.branch_name or item.branch_id).lower(), item.branch_id))
                 ],
                 workspace_id=project.workspace_id,
                 resource_id=project.project_id,
-            )
-            for project in cached_projects
-        ]
+            ))
+        return projects
 
     def _branch_summaries_from_cache_for_user(self, session: SessionData, project_id: str) -> list[BranchSummary]:
         cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
@@ -794,7 +837,10 @@ class PlatformService:
                     name=branch.branch_name,
                     description=f"Stored branch model cache ({branch.status.value})",
                 )
-                for branch in sorted(project.branches, key=lambda item: ((item.branch_name or item.branch_id).lower(), item.branch_id))
+                for branch in sorted(
+                    (item for item in project.branches if self._is_plugin_managed_summary(item)),
+                    key=lambda item: ((item.branch_name or item.branch_id).lower(), item.branch_id),
+                )
             ]
         return []
 
@@ -992,61 +1038,10 @@ class PlatformService:
         raise RuntimeError(self._fallback_cache_missing_message(project_id, branch_id))
 
     async def submit_branch_cache_sync(self, session: SessionData, request: BranchCacheSyncRequest) -> JobRecord:
-        if not self._is_twc_server_administrator(session):
-            raise PermissionError("A current TWC Server Administrator session is required for a manual fallback cache refresh.")
-        resolved_workspace_id = request.workspace_id or await self._workspace_id_for_project(session, request.project_id)
-        active_job = self._active_branch_cache_job(session, request.project_id, request.branch_id)
-        if active_job is not None:
-            return active_job
-
-        existing_summary = self.repo.get_branch_cache_summary(session.server.id, request.project_id, request.branch_id)
-        if self._is_plugin_managed_summary(existing_summary):
-            raise RuntimeError("This branch is plugin-backed and cannot be overwritten by a TWC fallback refresh.")
-        job = self.jobs.create_job(
-            job_type=JobType.MODEL_CACHE,
-            title=f"Model cache: {request.project_id}/{request.branch_id}",
-            owner=session.user.preferred_username,
-            server_id=session.server.id,
-            payload={
-                "project_id": request.project_id,
-                "branch_id": request.branch_id,
-                "workspace_id": resolved_workspace_id,
-                "force_full_refresh": request.force_full_refresh,
-            },
+        raise RuntimeError(
+            "TWC REST model and element synchronization is disabled. "
+            "Publish this branch from the Cameo Workbench plugin to populate its model snapshot."
         )
-        async def handler(context):
-            live_session = self.sessions.get_session(session.session_id)
-            if live_session is None:
-                raise RuntimeError("The TWC Server Administrator session ended before fallback refresh started.")
-            live_session = await self._refresh_session_credentials_if_needed(live_session)
-            server_lock = self._model_cache_server_lock(session.server.id)
-            if server_lock.locked():
-                await context.report(
-                    1,
-                    "Waiting for another model cache sync on this server to finish before starting.",
-                )
-            async with server_lock:
-                start_message = (
-                    "Starting model cache sync."
-                    if MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS <= 0
-                    else f"Starting paced model cache sync with a minimum {MODEL_CACHE_SYNC_MIN_REQUEST_INTERVAL_SECONDS:g}s gap between upstream requests."
-                )
-                await context.report(
-                    max(2, self.jobs.get_job(job.id).progress if self.jobs.get_job(job.id) else 2),
-                    start_message,
-                )
-                return await self._run_branch_cache_sync(
-                    live_session,
-                    self._adapter_for_session(live_session),
-                    request.project_id,
-                    request.branch_id,
-                    resolved_workspace_id,
-                    context.report,
-                    context.cancel_requested,
-                    job.id,
-                )
-
-        return self.jobs.submit(job, handler)
 
     async def handle_model_cache_webhook(
         self,
@@ -1355,7 +1350,10 @@ class PlatformService:
                 "name": model.name,
                 "human_name": model.human_name,
                 "qualified_name": model.qualified_name,
-                "owner_id": model.owner_id,
+                "owner_id": model.owner_id or "",
+                "primary": model.primary,
+                "usage_type": model.usage_type,
+                "resource_uri": model.resource_uri or "",
                 "root_element_ids": list(model.root_element_ids),
             }
             for model in payload.models
@@ -1363,9 +1361,9 @@ class PlatformService:
         elements = [
             {
                 "element_id": element.element_id,
-                "model_id": element.model_id,
-                "local_id": element.local_id,
-                "owner_id": element.owner_id,
+                "model_id": element.model_id or "",
+                "local_id": element.local_id or "",
+                "owner_id": element.owner_id or "",
                 "name": element.name,
                 "human_name": element.human_name,
                 "qualified_name": element.qualified_name,
@@ -1511,6 +1509,10 @@ class PlatformService:
         existing_snapshot_hash = self._normalize_snapshot_hash(existing_summary.snapshot_hash)
         base_snapshot_hash = self._normalize_snapshot_hash(payload.base_snapshot_hash)
         target_snapshot_hash = self._normalize_snapshot_hash(payload.target_snapshot_hash)
+        if not base_snapshot_hash:
+            raise RuntimeError("A delta requires the full snapshot baseline fingerprint. Publish a full snapshot to rebaseline.")
+        if not target_snapshot_hash:
+            raise RuntimeError("A delta requires the target snapshot fingerprint. Publish a full snapshot to rebaseline.")
         if base_snapshot_hash and not existing_snapshot_hash:
             raise RuntimeError("Stored branch snapshot is missing a baseline fingerprint. Publish a full snapshot to rebaseline before applying deltas.")
         if existing_snapshot_hash and base_snapshot_hash and existing_snapshot_hash != base_snapshot_hash:
@@ -5213,7 +5215,7 @@ class PlatformService:
         return False, None, local_now
 
     def fallback_cache_refresh_status(self, session: SessionData) -> FallbackCacheRefreshStatus:
-        window_open, _, local_now = self._fallback_cache_window()
+        _, _, local_now = self._fallback_cache_window()
         summaries = self.repo.list_branch_cache_summaries(session.server.id)
         self._active_fallback_cache_refresh_job(session.server.id)
         jobs = [
@@ -5227,20 +5229,17 @@ class PlatformService:
             for item in self.sessions.list_active_sessions()
             if item.server.id == session.server.id and self._is_twc_server_administrator(item)
         ]
-        running = bool(latest_job and latest_job.status in {JobStatus.PENDING, JobStatus.RUNNING})
-        if running:
-            message = "A TWC REST fallback refresh is running in the background."
-        elif window_open:
-            message = "The nightly fallback refresh window is open."
-        else:
-            message = "Fallback caches refresh during the nightly window or when a TWC Server Administrator starts one manually."
+        message = (
+            "REST model and element fallback is disabled. Workbench uses TWC REST only for permission data; "
+            "Cameo plugin snapshots populate projects, branches, models, and elements."
+        )
         return FallbackCacheRefreshStatus(
             server_id=session.server.id,
             schedule_time=self.settings.fallback_cache_sync_time,
             schedule_timezone=self.settings.fallback_cache_sync_timezone,
             schedule_window_minutes=self.settings.fallback_cache_sync_window_minutes,
             current_local_time=local_now,
-            current_user_can_refresh=self._is_twc_server_administrator(session),
+            current_user_can_refresh=False,
             active_server_administrator_count=len(active_admins),
             fallback_branch_count=sum(not self._is_plugin_managed_summary(item) for item in summaries),
             plugin_branch_count=sum(self._is_plugin_managed_summary(item) for item in summaries),
@@ -5251,7 +5250,7 @@ class PlatformService:
             last_trigger_reason=str(latest_job.payload.get("reason") or "") if latest_job else None,
             last_started_at=latest_job.started_at if latest_job else None,
             last_finished_at=latest_job.finished_at if latest_job else None,
-            nightly_window_open=window_open,
+            nightly_window_open=False,
             message=message,
         )
 
@@ -5281,6 +5280,10 @@ class PlatformService:
         reason: str,
         schedule_date: str | None = None,
     ) -> JobRecord:
+        raise RuntimeError(
+            "TWC REST model and element fallback is disabled. "
+            "Use the Cameo Workbench plugin to publish a model snapshot."
+        )
         if not self._is_twc_server_administrator(session):
             raise PermissionError("A current TWC Server Administrator session is required.")
         if request.branch_id and not request.project_id:
@@ -5425,6 +5428,7 @@ class PlatformService:
         return self._submit_fallback_cache_refresh(session, request, reason="server-administrator-manual-trigger")
 
     async def refresh_due_fallback_caches(self) -> None:
+        return None
         window_open, schedule_date, _ = self._fallback_cache_window()
         if not window_open or not schedule_date:
             return
@@ -5842,11 +5846,7 @@ class PlatformService:
         adapter = self._adapter_for_credentials(server, credentials)
         current_user_context = await adapter.current_user_context()
         preferred_username = self._resolve_preferred_username(current_user_context, fallback_username)
-        capabilities = await adapter.discover_capabilities()
-        if not self._has_remote_access(capabilities):
-            raise PermissionError(
-                "The authenticated Teamwork Cloud user did not expose any repository endpoints. Ensure the TWC session or token belongs to a user with repository access."
-            )
+        capabilities = self._snapshot_capabilities(server)
 
         user = UserContext(
             preferred_username=preferred_username,
@@ -5940,8 +5940,8 @@ class PlatformService:
 
     def _fallback_cache_missing_message(self, project_id: str, branch_id: str) -> str:
         return (
-            f"Project {project_id} / branch {branch_id} has no stored model cache yet. "
-            "A nightly TWC fallback refresh or a Cameo plugin snapshot must populate it first."
+            f"Project {project_id} / branch {branch_id} has no Cameo Workbench snapshot yet. "
+            "Publish the branch from the Cameo Workbench plugin to populate it."
         )
 
     def _tree_cache_key(self, project_id: str | None, branch_id: str | None) -> str | None:
@@ -6071,7 +6071,10 @@ class PlatformService:
         async with lock:
             refreshed_at = utcnow()
             adapter = self._adapter_for_session(session)
-            current_user_context = await adapter.current_user_context()
+            # Login already fetched and attached this exact current-user
+            # permission response while creating the session. Do not repeat
+            # the same TWC call immediately.
+            current_user_context = None if reason == "login" else await adapter.current_user_context()
             if current_user_context is not None:
                 session = self.sessions.update_authorization_context(
                     session,
@@ -6102,7 +6105,50 @@ class PlatformService:
                     summary.branch_id,
                 )
             )
-            semaphore = asyncio.Semaphore(self.settings.permission_snapshot_max_parallel_probes)
+            # Keep the upstream pressure hard-capped even if a deployment
+            # carries forward an older, higher environment setting.
+            max_parallel_probes = min(2, self.settings.permission_snapshot_max_parallel_probes)
+            semaphore = asyncio.Semaphore(max_parallel_probes)
+
+            # Read-only branch overrides are project-scoped in TWC. Fetch them
+            # once per candidate project and share the result across every
+            # locally registered branch instead of repeating the same API call
+            # for every branch. Keep this small fan-out bounded independently
+            # of the branch resolver.
+            readonly_project_ids = sorted({
+                summary.project_id
+                for summary in summaries
+                if (
+                    not session.authorization_context.permissions_included
+                    or self._session_resource_permission_flags(
+                        session,
+                        summary.project_id,
+                        summary.workspace_id,
+                    )["editable"]
+                )
+            })
+            readonly_by_project: dict[str, list[str]] = {}
+            readonly_semaphore = asyncio.Semaphore(min(2, max_parallel_probes))
+
+            async def load_readonly_branches(project_id: str) -> None:
+                async with readonly_semaphore:
+                    try:
+                        readonly_by_project[project_id] = await adapter._user_readonly_branches(
+                            project_id,
+                            user_id,
+                        )
+                    except Exception as exc:
+                        readonly_by_project[project_id] = []
+                        logger.info(
+                            "twc-current-user-readonly-branches-unavailable",
+                            user=session.user.preferred_username,
+                            server_id=session.server.id,
+                            project_id=project_id,
+                            detail=self._permission_error_text(exc),
+                        )
+
+            if readonly_project_ids:
+                await asyncio.gather(*(load_readonly_branches(project_id) for project_id in readonly_project_ids))
 
             async def resolve(summary: BranchCacheSummary):
                 async with semaphore:
@@ -6111,6 +6157,7 @@ class PlatformService:
                         summary,
                         adapter=adapter,
                         permission_inventory=permission_inventory,
+                        readonly_branch_ids=readonly_by_project.get(summary.project_id, []),
                         refreshed_at=refreshed_at,
                     )
 
@@ -6141,6 +6188,10 @@ class PlatformService:
                 permission_attachment_count=len(permission_attachments),
                 registered_branch_count=len(registered_summaries),
                 permission_candidate_count=len(summaries),
+                readonly_project_probe_count=len(readonly_project_ids),
+                direct_branch_probe_count=(
+                    0 if session.authorization_context.permissions_included else len(summaries)
+                ),
                 reason=reason,
                 refreshed_at=refreshed_at.isoformat(),
             )
@@ -6350,6 +6401,10 @@ class PlatformService:
         session: SessionData,
         summaries: list[BranchCacheSummary],
     ) -> list[BranchCacheSummary]:
+        # REST-created model caches are legacy partial data. Only branches
+        # published by the Cameo plugin participate in user visibility and
+        # permission refresh.
+        summaries = [summary for summary in summaries if self._is_plugin_managed_summary(summary)]
         # When TWC returned effective permissions, Read Resources scopes are a
         # complete, user-specific project filter. If an older TWC response did
         # not include permissions, retain the direct-probe compatibility path.
@@ -6492,6 +6547,7 @@ class PlatformService:
         *,
         adapter=None,
         permission_inventory: ServerPermissionInventory | None = None,
+        readonly_branch_ids: list[str] | None = None,
         refreshed_at: datetime,
     ) -> tuple[BranchAccessRecord, list[ModelPermissionSnapshot], BranchPermissionAttachment | None]:
         user_id = self._user_key(session.user.preferred_username)
@@ -6512,62 +6568,38 @@ class PlatformService:
                 summary,
                 attached_before_refresh,
             )
-        else:
+
+        probe_error: str | None = None
+        permissions: list[ModelPermissionSnapshot] = []
+        direct_probe_performed = not getattr(
+            getattr(session, "authorization_context", None),
+            "permissions_included",
+            False,
+        )
+        if direct_probe_performed:
             try:
-                manifest_records = await adapter.build_plugin_branch_access_manifest(
+                permissions = await adapter.probe_plugin_branch_permissions(
+                    user_id,
                     summary.project_id,
                     summary.branch_id,
+                    model_ids,
                     latest_revision=summary.latest_revision,
                     workspace_id=summary.workspace_id,
-                    admin_roles_inventory=permission_inventory.roles if permission_inventory else [],
-                    usergroups_inventory=permission_inventory.groups if permission_inventory else [],
-                )
-                manifest_user_access = next(
-                    (record for record in manifest_records if self._user_key(record.user_id) == user_id),
-                    None,
-                )
-                rest_attachment = self._permission_attachment_from_rest_manifest(
-                    session,
-                    summary,
-                    manifest_records,
-                    refreshed_at,
-                    attached_before_refresh,
                 )
             except Exception as exc:
-                manifest_error = str(exc)
-                logger.info(
-                    "twc-user-permission-manifest-unavailable",
+                probe_error = str(exc)
+                logger.warning(
+                    "twc-user-permission-probe-indeterminate",
                     user=session.user.preferred_username,
                     server_id=session.server.id,
                     project_id=summary.project_id,
                     branch_id=summary.branch_id,
-                    detail=manifest_error,
+                    detail=probe_error,
                 )
-
-        probe_error: str | None = None
-        try:
-            permissions = await adapter.probe_plugin_branch_permissions(
-                user_id,
-                summary.project_id,
-                summary.branch_id,
-                model_ids,
-                latest_revision=summary.latest_revision,
-                workspace_id=summary.workspace_id,
-            )
-        except Exception as exc:
-            probe_error = str(exc)
-            logger.warning(
-                "twc-user-permission-probe-indeterminate",
-                user=session.user.preferred_username,
-                server_id=session.server.id,
-                project_id=summary.project_id,
-                branch_id=summary.branch_id,
-                detail=probe_error,
-            )
-            raise PermissionSnapshotIndeterminateError(
-                f"Teamwork Cloud did not return an authoritative permission result for "
-                f"{summary.project_id}/{summary.branch_id}; the last valid snapshot was retained."
-            ) from exc
+                raise PermissionSnapshotIndeterminateError(
+                    f"Teamwork Cloud did not return an authoritative permission result for "
+                    f"{summary.project_id}/{summary.branch_id}; the last valid snapshot was retained."
+                ) from exc
 
         direct_accessible = bool(permissions) and any(
             permission.accessible and not permission.restricted for permission in permissions
@@ -6593,22 +6625,14 @@ class PlatformService:
             )
             for permission in permissions
         )
-        readonly_branch_ids = list(
-            (manifest_user_access.payload or {}).get("readonly_branch_ids", [])
-            if manifest_user_access
-            else []
-        )
-        if manifest_user_access is None:
-            try:
-                readonly_branch_ids = await adapter._user_readonly_branches(summary.project_id, user_id)
-            except Exception as exc:
-                logger.info(
-                    "twc-current-user-readonly-branches-unavailable",
-                    user=session.user.preferred_username,
-                    server_id=session.server.id,
-                    project_id=summary.project_id,
-                    detail=str(exc),
-                )
+        readonly_branch_ids = list(dict.fromkeys([
+            *(readonly_branch_ids or []),
+            *(
+                (manifest_user_access.payload or {}).get("readonly_branch_ids", [])
+                if manifest_user_access
+                else []
+            ),
+        ]))
         branch_read_only = summary.branch_id in readonly_branch_ids
         editable = bool(
             accessible
@@ -6618,6 +6642,26 @@ class PlatformService:
                 or permission_claim_access["editable"]
             )
         )
+        if not direct_probe_performed:
+            permissions = [
+                ModelPermissionSnapshot(
+                    user_id=user_id,
+                    server_id=session.server.id,
+                    project_id=summary.project_id,
+                    branch_id=summary.branch_id,
+                    model_id=model_id,
+                    accessible=accessible,
+                    restricted=not accessible,
+                    editable=editable,
+                    source="twc-current-user-permissions",
+                    updated_at=refreshed_at,
+                    payload={
+                        "permission_source": "current-user-effective-permissions",
+                        "remote_model_probe": False,
+                    },
+                )
+                for model_id in model_ids
+            ]
         permission_comparison = self._compare_attached_and_live_permissions(
             session,
             attached_before_refresh,
@@ -6677,7 +6721,7 @@ class PlatformService:
             source="twc-user-permission-snapshot",
             payload={
                 "model_ids": model_ids,
-                "direct_probe": probe_error is None,
+                "direct_probe": direct_probe_performed and probe_error is None,
                 "direct_accessible": direct_accessible,
                 "probe_error": probe_error,
                 "manifest_match": manifest_user_access is not None,
@@ -8269,6 +8313,19 @@ class ApplicationContainer:
         if self._permission_refresh_task is None:
             self._permission_refresh_loop_handle = asyncio.get_running_loop()
             self.platform._permission_inventory_dirty_notifier = self.notify_permission_inventory_dirty
+            # REST model/element crawling is no longer part of Workbench.
+            # Cancel persisted work before any worker can resume it.
+            for job in self.repo.list_jobs():
+                if (
+                    job.job_type in {JobType.FALLBACK_CACHE_REFRESH, JobType.MODEL_CACHE}
+                    and job.status in {JobStatus.PENDING, JobStatus.RUNNING}
+                ):
+                    job.cancel_requested = True
+                    job.status = JobStatus.CANCELLED
+                    job.message = "Cancelled: TWC REST model and element synchronization is disabled."
+                    job.updated_at = utcnow()
+                    job.finished_at = job.updated_at
+                    self.repo.upsert_job(job)
             # Do not interfere with jobs owned by another live backend worker.
             # Only jobs stale beyond two lease windows are treated as abandoned.
             recovered = self.jobs.recover_interrupted_jobs(
@@ -8300,7 +8357,6 @@ class ApplicationContainer:
     async def _permission_refresh_loop(self) -> None:
         while True:
             try:
-                await self.platform.refresh_due_fallback_caches()
                 await self.platform.refresh_due_server_permission_inventories()
                 await self.platform.refresh_due_permission_snapshots()
                 self._cleanup_old_jobs()
