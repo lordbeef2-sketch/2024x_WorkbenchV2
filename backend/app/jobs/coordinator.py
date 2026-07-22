@@ -37,6 +37,23 @@ class JobCoordinator:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
 
+    def recover_interrupted_jobs(self, *, stale_before: datetime | None = None) -> list[JobRecord]:
+        recovered: list[JobRecord] = []
+        now = datetime.now(UTC)
+        for job in self.repo.list_jobs():
+            if job.status not in {JobStatus.PENDING, JobStatus.RUNNING}:
+                continue
+            if stale_before is not None and job.updated_at > stale_before:
+                continue
+            job.status = JobStatus.FAILED
+            job.message = "Interrupted by a Workbench restart; eligible background work will be requeued safely."
+            job.logs.append(f"[{now.strftime('%H:%M:%S')}] Workbench restarted before this job completed.")
+            job.updated_at = now
+            job.finished_at = now
+            self.repo.upsert_job(job)
+            recovered.append(job)
+        return recovered
+
     def create_job(
         self,
         *,

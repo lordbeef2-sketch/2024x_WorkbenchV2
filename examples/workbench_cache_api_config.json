@@ -12,5 +12,11 @@
   "parent_id": "",
   "root_id": "",
   "tree_depth": null,
-  "snapshot_payload_path": "../plugin/payloads/branch-snapshot.json"
+  "snapshot_payload_path": "../plugin/payloads/branch-snapshot.json",
+  "source_user": "",
+  "expected_revision_id": "",
+  "tombstone_reason": "Removed from Teamwork Cloud",
+  "confirm_tombstone": false,
+  "expected_branch_ids": [],
+  "confirm_project_tombstone": false
 }

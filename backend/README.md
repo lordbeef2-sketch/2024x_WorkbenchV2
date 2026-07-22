@@ -11,6 +11,8 @@ The backend also supports plugin-fed model cache ingestion. The preferred setup 
 
 - `POST /api/cache-ingest/branch-snapshots`
 - `POST /api/cache-ingest/branch-deltas`
+- `POST /api/cache-ingest/branch-tombstones`
+- `POST /api/cache-ingest/project-tombstones`
 
 Users can now create their own cache API keys from Workbench Settings for scripts, AI tools, and other integrations. Each key carries explicit `read`, `write`, and `edit` scopes. `CACHE_API_TOKENS` remains available as a legacy fallback for environment-managed bearer tokens. Cache access is exposed through:
 
@@ -34,7 +36,7 @@ Users can now create their own cache API keys from Workbench Settings for script
 Workspace comparison also supports `GET /api/workspace/compare/branches` with independent `leftProjectId`, `leftBranchId`, `rightProjectId`, and `rightBranchId` parameters. It compares the complete accessible cached element sets, matches same-project branches by element ID, and matches different projects by qualified path plus metaclass.
 
 Use `Authorization: Bearer <api-key>` on those requests. The API key identity maps back to the Workbench user who created it, so cache reads stay scoped to that user's cached visibility instead of becoming a server-wide bypass.
-`write` scope also allows `POST /api/cache-ingest/branch-snapshots` and `POST /api/cache-ingest/branch-deltas`. `edit` scope allows cache edits on plugin-backed branches when the user's TWC model permission overlay marks that model editable.
+`write` scope also allows the cache-ingest snapshot, delta, and tombstone routes. `edit` scope allows cache edits on plugin-backed branches when the user's TWC model permission overlay marks that model editable.
 Stereotype search accepts either a stereotype id or a stereotype name fragment and can return either lightweight cached element records or full cached item details with `includeDetails=true`.
 Key labels, creation time, and last-used time are stored for light auditability, while the full secret is only shown once at creation time.
 
@@ -87,8 +89,12 @@ The server-wide inventory of every role, group, nested membership, and scoped
 role assignment is stored separately and refreshed every six hours by default
 (`PERMISSION_INVENTORY_REFRESH_HOURS`). A new full branch upload marks that
 inventory dirty without discarding its last complete role-ID map and makes
-active sessions due for the next background user-permission refresh. The next
-Server Administrator login replaces the dirty inventory.
+active sessions due for the next background user-permission refresh. If an
+active Server Administrator session exists, the application loop queues a
+separate `permission_inventory_refresh` job; otherwise the next Server
+Administrator login queues it. Login and upload responses never wait for the
+global roles/groups scan. A full upload signals the scheduler immediately
+instead of waiting for its next one-minute cadence.
 The inventory supports discovery and comparison only; fresh current-user
 effective permissions and direct branch access remain the 30-minute security
 authority, so a stale inventory cannot preserve a revoked grant.
@@ -97,10 +103,23 @@ until either the server inventory or branch revision changes. This avoids
 rescanning every group and role for every logged-in user while leaving fresh
 current-user claims and direct probes authoritative.
 On every Server Administrator login, Workbench checks whether the shared
-inventory is missing, marked dirty by a full upload, or older than six hours.
-Only that administrator's current TWC session performs the global roles/groups
-scan. Regular-user logins and scheduled user refreshes reuse the last complete
-inventory and never call the global administration endpoints.
+inventory is missing, marked dirty by a full upload, or older than six hours,
+then deduplicates and queues the background job when needed. Only a current
+Server Administrator TWC session can perform the scan. Regular-user logins and
+scheduled user refreshes reuse the last complete inventory and never call the
+global administration endpoints. Administrators can inspect the local,
+lightweight `GET /api/workspace/permission-inventory/status` result in Settings;
+it reports dirty/refreshing/failure state, timestamps, role/group counts, and
+the most recent job without triggering an upstream scan. The same panel reports
+inventory age, duration and success/failure metrics, warns when a refresh is due
+without an active Server Administrator, and offers a non-blocking `Retry Now`
+action. `GET /api/workspace/permission-inventory/audit` exposes the append-only
+attempt history; it stores before/after hashes, counts, trigger, administrator,
+duration, and sanitized failures rather than duplicating permission contents.
+At startup, abandoned pending/running jobs are marked interrupted and inventory
+work is made due for safe requeue through the next active administrator session.
+Terminal jobs older than `JOB_RETENTION_DAYS` (30 by default) are deleted daily;
+permission audit records are retained separately.
 The UI's Refresh Capabilities action does not run that server-wide inventory
 scan. It immediately queues a `permission_refresh` job, refreshes the signed-in
 user's effective permission claims, filters
@@ -132,6 +151,18 @@ the prior attachment with the newly proven effective access before atomically
 replacing the user's permission rows. Attached data never grants access by
 itself, and a failed current-user probe is treated as indeterminate while the
 last valid snapshot remains in force.
+When a delta changes ACL evidence, Workbench marks active user permission
+snapshots due without rescanning global roles/groups. A revision-guarded branch
+tombstone atomically removes the stored branch, model data, per-user grants,
+permission attachment, webhook registration, and access file. Its append-only
+record remains available through `GET /api/workspace/branch-tombstones`.
+The project tombstone performs the equivalent deletion for every stored branch
+in one transaction and retains a project-level record.
+
+Set `PERMISSION_ALERT_WEBHOOK_URL` to forward sanitized repeated global
+inventory failures at multiples of `PERMISSION_REFRESH_WARNING_FAILURES`.
+Alerts never include role/group contents. Backup, multi-worker restart, and
+live-TWC smoke commands are documented in `backend/ops/README.md`.
 
 See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
 

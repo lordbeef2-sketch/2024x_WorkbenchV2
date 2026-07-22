@@ -3,20 +3,29 @@ from tempfile import TemporaryDirectory
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from app.core.storage import SqliteRepository
+from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
     BranchAccessRecord,
     BranchCacheSummary,
+    BranchDeltaIngestRequest,
     BranchPermissionAttachment,
+    BranchSnapshotIngestRequest,
+    BranchTombstoneRequest,
     CapabilitySummary,
+    JobRecord,
+    JobStatus,
+    JobType,
     ModelPermissionSnapshot,
     PermissionManifest,
     PermissionManifestEntry,
     PermissionRefreshAuditRecord,
+    ProjectTombstoneRequest,
     ServerProfile,
     ServerPermissionInventory,
+    ServerPermissionInventoryAuditRecord,
     SessionData,
     UserContext,
 )
@@ -228,6 +237,86 @@ class PermissionSnapshotReplacementTests(unittest.TestCase):
             dirty = repo.get_server_permission_inventory("server")
             self.assertTrue(dirty.dirty)
             self.assertEqual(dirty.roles[0]["name"], "Resource Manager")
+
+    def test_inventory_audit_is_append_only_and_job_retention_preserves_active_jobs(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            audit = ServerPermissionInventoryAuditRecord(
+                server_id="server",
+                job_id="job-1",
+                triggered_by="admin",
+                reason="upload",
+                status="succeeded",
+                previous_hash="before",
+                current_hash="after",
+                current_role_count=5,
+                current_group_count=7,
+            )
+            repo.append_server_permission_inventory_audit(audit)
+            old = datetime.now(UTC) - timedelta(days=60)
+            completed = JobRecord(
+                job_type=JobType.PERMISSION_INVENTORY_REFRESH,
+                status=JobStatus.SUCCEEDED,
+                title="done",
+                owner="admin",
+                server_id="server",
+                payload={},
+                created_at=old,
+                updated_at=old,
+            )
+            running = JobRecord(
+                job_type=JobType.PERMISSION_INVENTORY_REFRESH,
+                status=JobStatus.RUNNING,
+                title="running",
+                owner="admin",
+                server_id="server",
+                payload={},
+                created_at=old,
+                updated_at=old,
+            )
+            repo.upsert_job(completed)
+            repo.upsert_job(running)
+
+            deleted = repo.delete_completed_jobs_before(datetime.now(UTC) - timedelta(days=30))
+
+            self.assertEqual(repo.list_server_permission_inventory_audit("server"), [audit])
+            self.assertEqual(repo.server_permission_inventory_audit_counts("server")["succeeded"], 1)
+            self.assertEqual(deleted, 1)
+            self.assertIsNone(repo.get_job(completed.id))
+            self.assertIsNotNone(repo.get_job(running.id))
+
+    def test_restart_recovery_marks_abandoned_jobs_failed(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            abandoned = JobRecord(
+                job_type=JobType.PERMISSION_INVENTORY_REFRESH,
+                status=JobStatus.RUNNING,
+                title="inventory",
+                owner="admin",
+                server_id="server",
+                payload={},
+                updated_at=datetime.now(UTC) - timedelta(hours=1),
+            )
+            repo.upsert_job(abandoned)
+            fresh = JobRecord(
+                job_type=JobType.PERMISSION_INVENTORY_REFRESH,
+                status=JobStatus.RUNNING,
+                title="other worker",
+                owner="admin",
+                server_id="server",
+                payload={},
+            )
+            repo.upsert_job(fresh)
+
+            recovered = JobCoordinator(repo).recover_interrupted_jobs(
+                stale_before=datetime.now(UTC) - timedelta(minutes=30)
+            )
+
+            self.assertEqual([job.id for job in recovered], [abandoned.id])
+            stored = repo.get_job(abandoned.id)
+            self.assertEqual(stored.status, JobStatus.FAILED)
+            self.assertIn("restart", stored.message.lower())
+            self.assertEqual(repo.get_job(fresh.id).status, JobStatus.RUNNING)
 
 
 class PermissionAttachmentComparisonTests(unittest.TestCase):
@@ -516,6 +605,132 @@ class ManualCapabilityRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(submitted), 1)
 
 
+class IngestPermissionLifecycleTests(unittest.TestCase):
+    def test_acl_delta_marks_users_due_and_tombstone_revokes_branch_atomically(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            data_dir = Path(directory)
+            repo = SqliteRepository(data_dir / "workbench.db")
+            repo.upsert_server(ServerProfile(id="server", name="Server", base_url="https://twc.example"))
+            repo.upsert_server_permission_inventory(
+                ServerPermissionInventory(server_id="server", roles=[{"ID": "role"}])
+            )
+            due_calls: list[str] = []
+            wakeups: list[bool] = []
+            service = object.__new__(PlatformService)
+            service.repo = repo
+            service.settings = SimpleNamespace(resolved_data_dir=data_dir)
+            service.sessions = SimpleNamespace(
+                mark_server_permission_snapshots_due=lambda server_id: due_calls.append(server_id)
+            )
+            service._permission_inventory_dirty_notifier = lambda: wakeups.append(True)
+            initial_manifest = PermissionManifest(
+                source="cameo-package-permissions",
+                complete=True,
+                entries=[
+                    PermissionManifestEntry(
+                        scope_id="project",
+                        scope_type="project",
+                        principal_name="engineering",
+                        principal_type="group",
+                        action="READ",
+                        accessible=True,
+                    )
+                ],
+            )
+            service.ingest_branch_snapshot(
+                BranchSnapshotIngestRequest(
+                    serverId="server",
+                    projectId="project",
+                    projectName="Project",
+                    branchId="main",
+                    branchName="Main",
+                    revisionId="1",
+                    sourceUser="publisher",
+                    permissionManifest=initial_manifest,
+                )
+            )
+            due_calls.clear()
+            wakeups.clear()
+
+            service.ingest_branch_delta(
+                BranchDeltaIngestRequest(
+                    serverId="server",
+                    projectId="project",
+                    branchId="main",
+                    toRevisionId="2",
+                    sourceUser="publisher",
+                    permissionManifest=initial_manifest,
+                )
+            )
+            self.assertEqual(due_calls, [])
+
+            changed_manifest = initial_manifest.model_copy(
+                update={
+                    "entries": [
+                        initial_manifest.entries[0].model_copy(update={"editable": True, "action": "READ_WRITE"})
+                    ]
+                }
+            )
+            service.ingest_branch_delta(
+                BranchDeltaIngestRequest(
+                    serverId="server",
+                    projectId="project",
+                    branchId="main",
+                    toRevisionId="3",
+                    sourceUser="publisher",
+                    permissionManifest=changed_manifest,
+                )
+            )
+            self.assertEqual(due_calls, ["server"])
+
+            record = service.tombstone_ingested_branch(
+                BranchTombstoneRequest(
+                    serverId="server",
+                    projectId="project",
+                    branchId="main",
+                    expectedRevisionId="3",
+                    sourceUser="publisher",
+                    reason="Deleted from Teamwork Cloud",
+                )
+            )
+
+            self.assertIsNone(repo.get_branch_cache_summary("server", "project", "main"))
+            self.assertEqual(repo.list_branch_tombstones("server")[0].id, record.id)
+            self.assertFalse(
+                service._branch_access_manifest_file_path("server", "project", "main").exists()
+            )
+            self.assertTrue(repo.get_server_permission_inventory("server").dirty)
+            self.assertEqual(wakeups, [True])
+
+            for branch_id in ("one", "two"):
+                service.ingest_branch_snapshot(
+                    BranchSnapshotIngestRequest(
+                        serverId="server",
+                        projectId="project-2",
+                        projectName="Project 2",
+                        branchId=branch_id,
+                        branchName=branch_id.title(),
+                        revisionId="1",
+                        sourceUser="publisher",
+                        permissionManifest=initial_manifest,
+                    )
+                )
+            project_record = service.tombstone_ingested_project(
+                ProjectTombstoneRequest(
+                    serverId="server",
+                    projectId="project-2",
+                    expectedBranchIds=["one", "two"],
+                    sourceUser="publisher",
+                    reason="Project deleted from Teamwork Cloud",
+                )
+            )
+            self.assertEqual(project_record.branch_ids, ["one", "two"])
+            self.assertFalse(
+                [item for item in repo.list_branch_cache_summaries("server") if item.project_id == "project-2"]
+            )
+            self.assertEqual(repo.list_project_tombstones("server")[0].id, project_record.id)
+
+
 class ServerPermissionInventoryCadenceTests(unittest.IsolatedAsyncioTestCase):
     def test_only_twc_server_administrator_role_enables_global_inventory_refresh(self) -> None:
         service = object.__new__(PlatformService)
@@ -654,6 +869,172 @@ class ServerPermissionInventoryCadenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, inventory)
         adapter._admin_roles.assert_not_awaited()
         adapter._admin_usergroups.assert_not_awaited()
+
+    def test_dirty_inventory_is_queued_as_a_background_job_for_server_admin(self) -> None:
+        dirty = ServerPermissionInventory(server_id="server", dirty=True)
+        submitted: list[tuple[JobRecord, object]] = []
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_inventory_refresh_hours=6)
+        service.repo = SimpleNamespace(
+            get_server_permission_inventory=lambda server_id: dirty,
+            list_jobs=lambda: [],
+        )
+        service.jobs = SimpleNamespace(
+            create_job=lambda **kwargs: JobRecord(**kwargs),
+            submit=lambda job, handler: submitted.append((job, handler)) or job,
+        )
+        session = SimpleNamespace(
+            session_id="session",
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="admin"),
+            authorization_context=SimpleNamespace(roles=["Server Administrator"], permissions=[]),
+        )
+
+        result = service._submit_server_permission_inventory_refresh(
+            session,
+            reason="server-administrator-login",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.job_type, JobType.PERMISSION_INVENTORY_REFRESH)
+        self.assertEqual(result.payload["reason"], "server-administrator-login")
+        self.assertEqual(len(submitted), 1)
+
+    async def test_background_cadence_uses_only_active_server_administrator_sessions(self) -> None:
+        service = object.__new__(PlatformService)
+        admin = SimpleNamespace(
+            session_id="admin-session",
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="admin"),
+            authorization_context=SimpleNamespace(roles=["Server Administrator"], permissions=[]),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        regular = SimpleNamespace(
+            session_id="user-session",
+            server=SimpleNamespace(id="other-server"),
+            user=SimpleNamespace(preferred_username="user"),
+            authorization_context=SimpleNamespace(roles=["Resource Manager"], permissions=[]),
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+        service.sessions = SimpleNamespace(list_active_sessions=lambda: [regular, admin])
+        submitted: list[tuple[object, str]] = []
+        service._submit_server_permission_inventory_refresh = lambda session, *, reason: submitted.append((session, reason))
+
+        await service.refresh_due_server_permission_inventories()
+
+        self.assertEqual(submitted, [(admin, "active-administrator-dirty-inventory")])
+
+    def test_inventory_status_reports_failed_dirty_refresh_without_discarding_counts(self) -> None:
+        dirty = ServerPermissionInventory(
+            server_id="server",
+            roles=[{"ID": "role"}],
+            groups=[{"ID": "group"}],
+            dirty=True,
+        )
+        failed = JobRecord(
+            job_type=JobType.PERMISSION_INVENTORY_REFRESH,
+            status=JobStatus.FAILED,
+            title="Refresh inventory",
+            owner="admin",
+            server_id="server",
+            payload={},
+            message="gateway unavailable",
+        )
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_inventory_refresh_hours=6)
+        service.repo = SimpleNamespace(
+            get_server_permission_inventory=lambda server_id: dirty,
+            list_jobs=lambda: [failed],
+            list_server_permission_inventory_audit=lambda server_id, limit: [],
+            server_permission_inventory_audit_counts=lambda server_id: {"succeeded": 0, "failed": 0, "coalesced": 0},
+        )
+        service.sessions = SimpleNamespace(list_active_sessions=lambda: [])
+        session = SimpleNamespace(
+            server=SimpleNamespace(id="server"),
+            authorization_context=SimpleNamespace(roles=["Server Administrator"], permissions=[]),
+        )
+
+        status = service.permission_inventory_status(session)
+
+        self.assertEqual(status.state, "failed")
+        self.assertEqual(status.role_count, 1)
+        self.assertEqual(status.group_count, 1)
+        self.assertEqual(status.last_failure, "gateway unavailable")
+        self.assertTrue(status.current_user_can_refresh)
+        self.assertIn("no active", status.warning.lower())
+
+    async def test_force_inventory_refresh_bypasses_fresh_cache(self) -> None:
+        fresh = ServerPermissionInventory(server_id="server", roles=[{"ID": "old"}])
+        stored: list[ServerPermissionInventory] = []
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_inventory_refresh_hours=6)
+        service._permission_inventory_locks = {}
+        service.repo = SimpleNamespace(
+            get_server_permission_inventory=lambda server_id: stored[-1] if stored else fresh,
+            upsert_server_permission_inventory=lambda inventory: stored.append(inventory),
+        )
+        service.sessions = SimpleNamespace(mark_server_permission_snapshots_due=lambda server_id: None)
+        adapter = SimpleNamespace(
+            _admin_roles=AsyncMock(return_value=[{"ID": "new"}]),
+            _admin_usergroups=AsyncMock(return_value=[]),
+        )
+
+        result = await service._server_permission_inventory(adapter, "server", force_refresh=True)
+
+        self.assertEqual(result.roles, [{"ID": "new"}])
+        adapter._admin_roles.assert_awaited_once()
+
+    async def test_repeated_inventory_failures_forward_only_sanitized_alert_metadata(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            for index in range(3):
+                repo.append_server_permission_inventory_audit(
+                    ServerPermissionInventoryAuditRecord(
+                        server_id="server",
+                        job_id=f"job-{index}",
+                        triggered_by="admin",
+                        reason="scheduled",
+                        status="failed",
+                        error="gateway unavailable",
+                    )
+                )
+            service = object.__new__(PlatformService)
+            service.repo = repo
+            service.settings = SimpleNamespace(
+                permission_alert_webhook_url="https://alerts.example/workbench",
+                permission_refresh_warning_failures=3,
+            )
+            captured: list[dict[str, object]] = []
+
+            class FakeResponse:
+                def raise_for_status(self) -> None:
+                    return None
+
+            class FakeClient:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, exc_type, exc, traceback):
+                    return False
+
+                async def post(self, url, *, json):
+                    captured.append({"url": url, "json": json})
+                    return FakeResponse()
+
+            with patch("app.services.platform.httpx.AsyncClient", return_value=FakeClient()):
+                await service._forward_permission_inventory_failure_alert(
+                    server_id="server",
+                    job_id="job-2",
+                    triggered_by="admin",
+                    reason="scheduled",
+                    error="gateway unavailable",
+                )
+
+            self.assertEqual(len(captured), 1)
+            payload = captured[0]["json"]
+            self.assertEqual(payload["consecutive_failures"], 3)
+            self.assertNotIn("roles", payload)
+            self.assertNotIn("groups", payload)
 
 if __name__ == "__main__":
     unittest.main()

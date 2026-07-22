@@ -7,12 +7,14 @@ from app.models.domain import (
     BranchIngestState,
     BranchDeltaIngestRequest,
     BranchSnapshotIngestRequest,
+    BranchTombstoneRequest,
     CacheApiKeyScope,
     CacheChildrenResponse,
     CacheElementEditRequest,
     CacheElementGraphResponse,
     CacheElementSearchResponse,
     CacheTreeResponse,
+    ProjectTombstoneRequest,
     StereotypeElementSearchResponse,
 )
 from app.services.platform import ApplicationContainer
@@ -68,6 +70,50 @@ def ingest_branch_delta(
         return container.platform.ingest_branch_delta(payload)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.post("/cache-ingest/branch-tombstones")
+def tombstone_ingested_branch(
+    payload: BranchTombstoneRequest,
+    token=Depends(require_cache_ingest_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    authenticated_username = str(getattr(token, "preferred_username", "") or "").strip()
+    if authenticated_username and authenticated_username.casefold() != payload.source_user.strip().casefold():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A personal cache API key can tombstone branches only as its own Workbench user.",
+        )
+    try:
+        return container.platform.tombstone_ingested_branch(payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stored branch not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.post("/cache-ingest/project-tombstones")
+def tombstone_ingested_project(
+    payload: ProjectTombstoneRequest,
+    token=Depends(require_cache_ingest_token),
+    container: ApplicationContainer = Depends(get_container),
+):
+    authenticated_username = str(getattr(token, "preferred_username", "") or "").strip()
+    if authenticated_username and authenticated_username.casefold() != payload.source_user.strip().casefold():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A personal cache API key can tombstone projects only as its own Workbench user.",
+        )
+    try:
+        return container.platform.tombstone_ingested_project(payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stored project not found") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:

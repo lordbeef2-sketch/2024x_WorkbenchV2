@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import structlog
@@ -28,6 +28,8 @@ from app.models.domain import (
     BranchAccessManifestStatus,
     BranchAccessRecord,
     BranchPermissionAttachment,
+    BranchTombstoneRecord,
+    BranchTombstoneRequest,
     Bookmark,
     BranchDeltaIngestRequest,
     BranchWebhookRegistration,
@@ -85,6 +87,8 @@ from app.models.domain import (
     OSLCSharedConsumerStatus,
     OpenWebUIModelEntry,
     ProjectSummary,
+    ProjectTombstoneRecord,
+    ProjectTombstoneRequest,
     ProjectUsageResponse,
     ProjectUsageSummary,
     PublishRequest,
@@ -92,6 +96,8 @@ from app.models.domain import (
     SearchResponse,
     ServerHealth,
     ServerPermissionInventory,
+    ServerPermissionInventoryAuditRecord,
+    ServerPermissionInventoryStatus,
     ServerProfile,
     ServerProfileCreate,
     ServerProfileReorderRequest,
@@ -167,6 +173,7 @@ class PlatformService:
         self._model_cache_server_locks: dict[str, asyncio.Lock] = {}
         self._permission_snapshot_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._permission_inventory_locks: dict[str, asyncio.Lock] = {}
+        self._permission_inventory_dirty_notifier: Callable[[], None] | None = None
         self._permission_refresh_instance_id = secrets.token_hex(16)
         self._branch_revision_probe_cache: dict[tuple[str, str, str], tuple[datetime, str | None]] = {}
         contract_path = Path(__file__).resolve().parents[3] / "contracts" / "RealSwagger.json"
@@ -1323,6 +1330,20 @@ class PlatformService:
             attached_at=attached_at,
         )
 
+    @staticmethod
+    def _permission_attachment_acl_hash(attachment: BranchPermissionAttachment | None) -> str:
+        if attachment is None:
+            return ""
+        entries = [entry.model_dump(mode="json") for entry in attachment.manifest.entries]
+        entries.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), default=str))
+        encoded = json.dumps(
+            {"complete": attachment.manifest.complete, "entries": entries},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
     def _snapshot_hash_document(
         self,
         models: list[dict[str, Any]],
@@ -1476,6 +1497,8 @@ class PlatformService:
         # Administrator login replace it.
         self.repo.mark_server_permission_inventory_dirty(server.id)
         self.sessions.mark_server_permission_snapshots_due(server.id)
+        if self._permission_inventory_dirty_notifier is not None:
+            self._permission_inventory_dirty_notifier()
         self._write_branch_access_manifest(
             summary,
             self.repo.list_branch_access_records(server.id, payload.project_id, payload.branch_id),
@@ -1488,6 +1511,11 @@ class PlatformService:
         existing_summary = self.repo.get_branch_cache_summary(server.id, payload.project_id, payload.branch_id)
         if existing_summary is None:
             raise ValueError("A branch snapshot must be ingested before deltas can be applied.")
+        previous_permission_attachment = self.repo.get_branch_permission_attachment(
+            server.id,
+            payload.project_id,
+            payload.branch_id,
+        )
         existing_snapshot_hash = self._normalize_snapshot_hash(existing_summary.snapshot_hash)
         base_snapshot_hash = self._normalize_snapshot_hash(payload.base_snapshot_hash)
         target_snapshot_hash = self._normalize_snapshot_hash(payload.target_snapshot_hash)
@@ -1677,12 +1705,112 @@ class PlatformService:
 
         self.repo.run_in_transaction(apply_delta)
         summary = summary_holder["summary"]
+        current_permission_attachment = self.repo.get_branch_permission_attachment(
+            server.id,
+            payload.project_id,
+            payload.branch_id,
+        )
+        if self._permission_attachment_acl_hash(previous_permission_attachment) != self._permission_attachment_acl_hash(current_permission_attachment):
+            # A delta can change package/project ACL evidence even though the
+            # global server role/group inventory remains unchanged. Re-evaluate
+            # active users promptly without forcing a server-wide admin scan.
+            self.sessions.mark_server_permission_snapshots_due(server.id)
         self._write_branch_access_manifest(
             summary,
             self.repo.list_branch_access_records(server.id, payload.project_id, payload.branch_id),
         )
         self._invalidate_ingested_branch_caches(source_user, server.id, payload.project_id, payload.branch_id)
         return summary
+
+    def tombstone_ingested_branch(self, payload: BranchTombstoneRequest) -> BranchTombstoneRecord:
+        server = self._require_server(payload.server_id, include_disabled=True)
+        summary = self.repo.get_branch_cache_summary(server.id, payload.project_id, payload.branch_id)
+        if summary is None:
+            raise KeyError(payload.branch_id)
+        if payload.expected_revision_id and payload.expected_revision_id != summary.latest_revision:
+            raise RuntimeError(
+                "The stored branch revision changed after this tombstone was prepared. Refresh branch state before retrying."
+            )
+        record = self.repo.tombstone_branch_cache(
+            BranchTombstoneRecord(
+                server_id=server.id,
+                project_id=payload.project_id,
+                branch_id=payload.branch_id,
+                project_name=summary.project_name,
+                branch_name=summary.branch_name,
+                latest_revision=summary.latest_revision,
+                source_user=payload.source_user,
+                reason=payload.reason,
+            )
+        )
+        manifest_root = (
+            self.settings.resolved_data_dir / "access-manifests" / server.id / payload.project_id
+        ).resolve()
+        manifest_path = self._branch_access_manifest_file_path(
+            server.id,
+            payload.project_id,
+            payload.branch_id,
+        ).resolve()
+        if manifest_path.parent == manifest_root:
+            manifest_path.unlink(missing_ok=True)
+        self.sessions.mark_server_permission_snapshots_due(server.id)
+        self._invalidate_shared_branch_caches(server.id, payload.project_id, payload.branch_id)
+        remaining_project_branches = [
+            item
+            for item in self.repo.list_branch_cache_summaries(server.id)
+            if item.project_id == payload.project_id
+        ]
+        if not remaining_project_branches:
+            self.repo.mark_server_permission_inventory_dirty(server.id)
+            if self._permission_inventory_dirty_notifier is not None:
+                self._permission_inventory_dirty_notifier()
+        return record
+
+    def list_branch_tombstones(
+        self,
+        session: SessionData,
+        *,
+        project_id: str | None = None,
+        limit: int = 100,
+    ) -> list[BranchTombstoneRecord]:
+        return self.repo.list_branch_tombstones(session.server.id, project_id=project_id, limit=limit)
+
+    def tombstone_ingested_project(self, payload: ProjectTombstoneRequest) -> ProjectTombstoneRecord:
+        server = self._require_server(payload.server_id, include_disabled=True)
+        summaries = [
+            item
+            for item in self.repo.list_branch_cache_summaries(server.id)
+            if item.project_id == payload.project_id
+        ]
+        if not summaries:
+            raise KeyError(payload.project_id)
+        record = self.repo.tombstone_project_cache(
+            ProjectTombstoneRecord(
+                server_id=server.id,
+                project_id=payload.project_id,
+                project_name=summaries[0].project_name,
+                source_user=payload.source_user,
+                reason=payload.reason,
+            ),
+            expected_branch_ids=payload.expected_branch_ids,
+        )
+        for branch_id in record.branch_ids:
+            manifest_path = self._branch_access_manifest_file_path(server.id, payload.project_id, branch_id)
+            manifest_path.unlink(missing_ok=True)
+            self._invalidate_shared_branch_caches(server.id, payload.project_id, branch_id)
+        self.sessions.mark_server_permission_snapshots_due(server.id)
+        self.repo.mark_server_permission_inventory_dirty(server.id)
+        if self._permission_inventory_dirty_notifier is not None:
+            self._permission_inventory_dirty_notifier()
+        return record
+
+    def list_project_tombstones(
+        self,
+        session: SessionData,
+        *,
+        limit: int = 100,
+    ) -> list[ProjectTombstoneRecord]:
+        return self.repo.list_project_tombstones(session.server.id, limit=limit)
 
     def _store_ingested_branch_snapshot(
         self,
@@ -4779,6 +4907,351 @@ class PlatformService:
     ) -> list[PermissionRefreshAuditRecord]:
         return self.repo.list_permission_refresh_audit(session.server.id, user_id, limit=limit)
 
+    def permission_inventory_status(self, session: SessionData) -> ServerPermissionInventoryStatus:
+        inventory = self.repo.get_server_permission_inventory(session.server.id)
+        audits = self.repo.list_server_permission_inventory_audit(session.server.id, limit=10)
+        audit_counts = self.repo.server_permission_inventory_audit_counts(session.server.id)
+        active_server_administrators = [
+            item
+            for item in self.sessions.list_active_sessions()
+            if item.server.id == session.server.id and self._is_twc_server_administrator(item)
+        ]
+        jobs = [
+            job
+            for job in self.repo.list_jobs()
+            if job.server_id == session.server.id and job.job_type == JobType.PERMISSION_INVENTORY_REFRESH
+        ]
+        latest_job = jobs[0] if jobs else None
+        running = bool(latest_job and latest_job.status in {JobStatus.PENDING, JobStatus.RUNNING})
+        due_at = (
+            inventory.captured_at + timedelta(hours=self.settings.permission_inventory_refresh_hours)
+            if inventory
+            else None
+        )
+        if running:
+            state = "refreshing"
+        elif latest_job and latest_job.status == JobStatus.FAILED and self._server_permission_inventory_due(session.server.id):
+            state = "failed"
+        elif inventory is None:
+            state = "missing"
+        elif inventory.dirty:
+            state = "dirty"
+        else:
+            state = "clean"
+        messages = {
+            "missing": "No complete server role/group inventory has been captured yet.",
+            "clean": "The shared server role/group inventory is current.",
+            "dirty": "A full upload changed the project registry. A background administrator refresh is due.",
+            "refreshing": "The server role/group inventory is refreshing in the background.",
+            "failed": "The last background inventory refresh failed; the prior complete inventory remains available.",
+        }
+        warning = None
+        if self._server_permission_inventory_due(session.server.id) and not active_server_administrators:
+            warning = "Inventory refresh is due, but no active TWC Server Administrator session is available."
+        consecutive_failures = 0
+        for audit in audits:
+            if audit.status == "succeeded":
+                break
+            if audit.status == "failed":
+                consecutive_failures += 1
+        return ServerPermissionInventoryStatus(
+            server_id=session.server.id,
+            state=state,
+            dirty=bool(inventory and inventory.dirty),
+            role_count=len(inventory.roles) if inventory else 0,
+            group_count=len(inventory.groups) if inventory else 0,
+            captured_at=inventory.captured_at if inventory else None,
+            refresh_due_at=due_at,
+            current_user_can_refresh=self._is_twc_server_administrator(session),
+            last_job_id=latest_job.id if latest_job else None,
+            last_job_status=latest_job.status if latest_job else None,
+            last_attempt_at=(latest_job.started_at or latest_job.created_at) if latest_job else None,
+            last_triggered_by=latest_job.owner if latest_job else None,
+            last_failure=(latest_job.message if latest_job and latest_job.status == JobStatus.FAILED else None),
+            active_server_administrator_count=len(active_server_administrators),
+            inventory_age_seconds=(max(0, int((utcnow() - inventory.captured_at).total_seconds())) if inventory else None),
+            successful_refresh_count=audit_counts.get("succeeded", 0),
+            failed_refresh_count=audit_counts.get("failed", 0),
+            consecutive_failure_count=consecutive_failures,
+            alert_forwarding_configured=bool(getattr(self.settings, "permission_alert_webhook_url", None)),
+            last_duration_ms=(audits[0].duration_ms if audits else None),
+            last_affected_user_count=(audits[0].affected_user_count if audits else 0),
+            audit_count=sum(audit_counts.values()),
+            warning=warning,
+            recent_audits=audits[:10],
+            message=messages[state],
+        )
+
+    def list_server_permission_inventory_audit(
+        self,
+        session: SessionData,
+        *,
+        limit: int = 100,
+    ) -> list[ServerPermissionInventoryAuditRecord]:
+        return self.repo.list_server_permission_inventory_audit(session.server.id, limit=limit)
+
+    @staticmethod
+    def _server_permission_inventory_hash(inventory: ServerPermissionInventory | None) -> str:
+        if inventory is None:
+            return ""
+        encoded = json.dumps(
+            {"roles": inventory.roles, "groups": inventory.groups},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    async def _forward_permission_inventory_failure_alert(
+        self,
+        *,
+        server_id: str,
+        job_id: str,
+        triggered_by: str,
+        reason: str,
+        error: str,
+    ) -> None:
+        webhook_url = self.settings.permission_alert_webhook_url
+        if not webhook_url:
+            return
+        audits = self.repo.list_server_permission_inventory_audit(server_id, limit=100)
+        consecutive_failures = 0
+        for audit in audits:
+            if audit.status == "succeeded":
+                break
+            if audit.status == "failed":
+                consecutive_failures += 1
+        threshold = self.settings.permission_refresh_warning_failures
+        if consecutive_failures < threshold or consecutive_failures % threshold != 0:
+            return
+        payload = {
+            "event": "twc_permission_inventory_refresh_repeated_failure",
+            "server_id": server_id,
+            "job_id": job_id,
+            "triggered_by": triggered_by,
+            "reason": reason,
+            "consecutive_failures": consecutive_failures,
+            "error": error,
+            "occurred_at": utcnow().isoformat(),
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(webhook_url, json=payload)
+                response.raise_for_status()
+            logger.info(
+                "twc-server-permission-inventory-alert-forwarded",
+                server_id=server_id,
+                job_id=job_id,
+                consecutive_failures=consecutive_failures,
+            )
+        except Exception as alert_exc:
+            logger.warning(
+                "twc-server-permission-inventory-alert-forward-failed",
+                server_id=server_id,
+                job_id=job_id,
+                detail=self._permission_error_text(alert_exc),
+            )
+
+    def _server_permission_inventory_due(self, server_id: str) -> bool:
+        inventory = self.repo.get_server_permission_inventory(server_id)
+        return bool(
+            inventory is None
+            or inventory.dirty
+            or inventory.captured_at + timedelta(hours=self.settings.permission_inventory_refresh_hours) <= utcnow()
+        )
+
+    def _submit_server_permission_inventory_refresh(
+        self,
+        session: SessionData,
+        *,
+        reason: str,
+        force: bool = False,
+    ) -> JobRecord | None:
+        if not self._is_twc_server_administrator(session) or (not force and not self._server_permission_inventory_due(session.server.id)):
+            return None
+        existing_job = next(
+            (
+                job
+                for job in self.repo.list_jobs()
+                if job.server_id == session.server.id
+                and job.job_type == JobType.PERMISSION_INVENTORY_REFRESH
+                and job.status in {JobStatus.PENDING, JobStatus.RUNNING}
+                and job.updated_at >= utcnow() - timedelta(minutes=5)
+            ),
+            None,
+        )
+        if existing_job is not None:
+            return existing_job
+        job = self.jobs.create_job(
+            job_type=JobType.PERMISSION_INVENTORY_REFRESH,
+            title="Refresh Teamwork Cloud server roles and groups",
+            owner=session.user.preferred_username,
+            server_id=session.server.id,
+            payload={"reason": reason},
+        )
+
+        async def handler(context) -> dict[str, Any]:
+            started_at = utcnow()
+            await context.report(10, "Loading Teamwork Cloud server roles and groups")
+            live_session = self.sessions.get_session(session.session_id)
+            if live_session is None:
+                raise RuntimeError("The Server Administrator session ended before the inventory refresh started.")
+            live_session = await self._refresh_session_credentials_if_needed(live_session)
+            lease_key = f"permission-inventory:{live_session.server.id}"
+            lease_owner = f"{self._permission_refresh_instance_id}:{job.id}"
+            acquired = self.repo.acquire_permission_refresh_lease(
+                lease_key,
+                lease_owner,
+                ttl_seconds=self.settings.permission_refresh_lease_seconds,
+            )
+            if not acquired:
+                current = self.repo.get_server_permission_inventory(live_session.server.id)
+                self.repo.append_server_permission_inventory_audit(
+                    ServerPermissionInventoryAuditRecord(
+                        server_id=live_session.server.id,
+                        job_id=job.id,
+                        triggered_by=live_session.user.preferred_username,
+                        reason=reason,
+                        status="coalesced",
+                        previous_hash=self._server_permission_inventory_hash(current),
+                        current_hash=self._server_permission_inventory_hash(current),
+                        previous_role_count=len(current.roles) if current else 0,
+                        current_role_count=len(current.roles) if current else 0,
+                        previous_group_count=len(current.groups) if current else 0,
+                        current_group_count=len(current.groups) if current else 0,
+                        duration_ms=max(0, int((utcnow() - started_at).total_seconds() * 1000)),
+                    )
+                )
+                return {"coalesced": True, "server_id": live_session.server.id}
+            previous = self.repo.get_server_permission_inventory(live_session.server.id)
+
+            async def renew_inventory_lease() -> None:
+                interval = max(self.settings.permission_refresh_lease_seconds // 3, 20)
+                while True:
+                    await asyncio.sleep(interval)
+                    if not self.repo.renew_permission_refresh_lease(
+                        lease_key,
+                        lease_owner,
+                        ttl_seconds=self.settings.permission_refresh_lease_seconds,
+                    ):
+                        logger.warning(
+                            "twc-server-permission-inventory-lease-lost",
+                            server_id=live_session.server.id,
+                            job_id=job.id,
+                        )
+                        return
+
+            lease_heartbeat = asyncio.create_task(
+                renew_inventory_lease(),
+                name=f"twc-permission-inventory-lease-{live_session.server.id}",
+            )
+            try:
+                inventory = await self._server_permission_inventory(
+                    self._adapter_for_session(live_session),
+                    live_session.server.id,
+                    allow_refresh=True,
+                    force_refresh=force,
+                )
+                if (
+                    inventory is None
+                    or inventory.dirty
+                    or inventory.captured_at + timedelta(hours=self.settings.permission_inventory_refresh_hours) <= utcnow()
+                ):
+                    raise RuntimeError("Teamwork Cloud did not return a complete current server role/group inventory.")
+                self.repo.append_server_permission_inventory_audit(
+                    ServerPermissionInventoryAuditRecord(
+                        server_id=live_session.server.id,
+                        job_id=job.id,
+                        triggered_by=live_session.user.preferred_username,
+                        reason=reason,
+                        status="succeeded",
+                        previous_hash=self._server_permission_inventory_hash(previous),
+                        current_hash=self._server_permission_inventory_hash(inventory),
+                        previous_role_count=len(previous.roles) if previous else 0,
+                        current_role_count=len(inventory.roles),
+                        previous_group_count=len(previous.groups) if previous else 0,
+                        current_group_count=len(inventory.groups),
+                        affected_user_count=len({
+                            self._user_key(item.user.preferred_username)
+                            for item in self.sessions.list_active_sessions()
+                            if item.server.id == live_session.server.id
+                        }),
+                        duration_ms=max(0, int((utcnow() - started_at).total_seconds() * 1000)),
+                    )
+                )
+                await context.report(95, "Server role/group inventory replaced; user permission snapshots marked due")
+                return {
+                    "server_id": live_session.server.id,
+                    "captured_at": inventory.captured_at.isoformat(),
+                    "role_count": len(inventory.roles),
+                    "group_count": len(inventory.groups),
+                    "affected_user_count": len({
+                        self._user_key(item.user.preferred_username)
+                        for item in self.sessions.list_active_sessions()
+                        if item.server.id == live_session.server.id
+                    }),
+                    "reason": reason,
+                }
+            except Exception as exc:
+                current = self.repo.get_server_permission_inventory(live_session.server.id)
+                safe_error = self._permission_error_text(exc)
+                self.repo.append_server_permission_inventory_audit(
+                    ServerPermissionInventoryAuditRecord(
+                        server_id=live_session.server.id,
+                        job_id=job.id,
+                        triggered_by=live_session.user.preferred_username,
+                        reason=reason,
+                        status="failed",
+                        previous_hash=self._server_permission_inventory_hash(previous),
+                        current_hash=self._server_permission_inventory_hash(current),
+                        previous_role_count=len(previous.roles) if previous else 0,
+                        current_role_count=len(current.roles) if current else 0,
+                        previous_group_count=len(previous.groups) if previous else 0,
+                        current_group_count=len(current.groups) if current else 0,
+                        duration_ms=max(0, int((utcnow() - started_at).total_seconds() * 1000)),
+                        error=safe_error,
+                    )
+                )
+                await self._forward_permission_inventory_failure_alert(
+                    server_id=live_session.server.id,
+                    job_id=job.id,
+                    triggered_by=live_session.user.preferred_username,
+                    reason=reason,
+                    error=safe_error,
+                )
+                raise
+            finally:
+                lease_heartbeat.cancel()
+                with suppress(asyncio.CancelledError):
+                    await lease_heartbeat
+                self.repo.release_permission_refresh_lease(lease_key, lease_owner)
+
+        return self.jobs.submit(job, handler)
+
+    def retry_server_permission_inventory(self, session: SessionData) -> JobRecord:
+        if not self._is_twc_server_administrator(session):
+            raise PermissionError("A current TWC Server Administrator session is required.")
+        job = self._submit_server_permission_inventory_refresh(
+            session,
+            reason="administrator-manual-retry",
+            force=True,
+        )
+        if job is None:
+            raise RuntimeError("The inventory refresh could not be queued.")
+        return job
+
+    async def refresh_due_server_permission_inventories(self) -> None:
+        sessions_by_server: dict[str, list[SessionData]] = {}
+        for session in self.sessions.list_active_sessions():
+            if self._is_twc_server_administrator(session):
+                sessions_by_server.setdefault(session.server.id, []).append(session)
+        for sessions in sessions_by_server.values():
+            representative = max(sessions, key=lambda item: item.expires_at)
+            self._submit_server_permission_inventory_refresh(
+                representative,
+                reason="active-administrator-dirty-inventory",
+            )
+
     def current_permission_status(
         self,
         session: SessionData,
@@ -5146,13 +5619,13 @@ class PlatformService:
             session,
             self.repo.get_server_permission_inventory(server.id),
         )
-        refresh_shared_inventory = self._is_twc_server_administrator(session)
+        is_twc_server_administrator = self._is_twc_server_administrator(session)
         self._update_user_server_state(user.preferred_username, server.id, session.created_at)
         try:
             await self._refresh_permission_snapshot_guarded(
                 session,
                 reason="login",
-                refresh_shared_inventory=refresh_shared_inventory,
+                refresh_shared_inventory=False,
             )
         except Exception as exc:
             self.sessions.destroy_session(session.session_id)
@@ -5165,6 +5638,22 @@ class PlatformService:
             raise PermissionError(
                 "Workbench could not establish a complete permission snapshot for this login. No session was created."
             ) from exc
+        if is_twc_server_administrator:
+            try:
+                self._submit_server_permission_inventory_refresh(
+                    session,
+                    reason="server-administrator-login",
+                )
+            except Exception as exc:
+                # Inventory submission is deliberately outside the login
+                # critical path. The application loop retries while this
+                # administrator session remains active.
+                logger.exception(
+                    "twc-server-permission-inventory-submit-deferred",
+                    user=user.preferred_username,
+                    server_id=server.id,
+                    detail=str(exc),
+                )
         logger.info(log_event, user=user.preferred_username, server_id=server.id)
         return session
 
@@ -5247,6 +5736,9 @@ class PlatformService:
         project_id: str,
         branch_id: str,
     ) -> Path:
+        for label, value in (("server", server_id), ("project", project_id), ("branch", branch_id)):
+            if not value or value in {".", ".."} or "/" in value or "\\" in value:
+                raise ValueError(f"Invalid {label} identifier for an access-manifest path.")
         return (
             self.settings.resolved_data_dir
             / "access-manifests"
@@ -5568,18 +6060,19 @@ class PlatformService:
         server_id: str,
         *,
         allow_refresh: bool = True,
+        force_refresh: bool = False,
     ) -> ServerPermissionInventory | None:
         refresh_after = timedelta(hours=self.settings.permission_inventory_refresh_hours)
         existing = self.repo.get_server_permission_inventory(server_id)
         if not allow_refresh:
             return existing
-        if existing and not existing.dirty and existing.captured_at + refresh_after > utcnow():
+        if not force_refresh and existing and not existing.dirty and existing.captured_at + refresh_after > utcnow():
             return existing
 
         lock = self._permission_inventory_locks.setdefault(server_id, asyncio.Lock())
         async with lock:
             existing = self.repo.get_server_permission_inventory(server_id)
-            if existing and not existing.dirty and existing.captured_at + refresh_after > utcnow():
+            if not force_refresh and existing and not existing.dirty and existing.captured_at + refresh_after > utcnow():
                 return existing
             try:
                 roles, groups = await asyncio.gather(
@@ -7348,6 +7841,8 @@ class PlatformService:
                 "PATCH /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}",
                 "POST /api/cache-ingest/branch-snapshots",
                 "POST /api/cache-ingest/branch-deltas",
+                "POST /api/cache-ingest/branch-tombstones",
+                "POST /api/cache-ingest/project-tombstones",
             ],
         )
 
@@ -7532,23 +8027,57 @@ class ApplicationContainer:
             publisher=self.publisher,
         )
         self._permission_refresh_task: asyncio.Task[None] | None = None
+        self._permission_refresh_wakeup = asyncio.Event()
+        self._permission_refresh_loop_handle: asyncio.AbstractEventLoop | None = None
+        self._last_job_cleanup_at: datetime | None = None
 
     async def start(self) -> None:
         if self._permission_refresh_task is None:
+            self._permission_refresh_loop_handle = asyncio.get_running_loop()
+            self.platform._permission_inventory_dirty_notifier = self.notify_permission_inventory_dirty
+            # Do not interfere with jobs owned by another live backend worker.
+            # Only jobs stale beyond two lease windows are treated as abandoned.
+            recovered = self.jobs.recover_interrupted_jobs(
+                stale_before=utcnow() - timedelta(seconds=self.settings.permission_refresh_lease_seconds * 2)
+            )
+            for job in recovered:
+                if job.job_type == JobType.PERMISSION_INVENTORY_REFRESH:
+                    self.repo.mark_server_permission_inventory_dirty(job.server_id)
+            self._cleanup_old_jobs()
             self._permission_refresh_task = asyncio.create_task(
                 self._permission_refresh_loop(),
                 name="twc-permission-snapshot-refresh",
             )
 
+    def notify_permission_inventory_dirty(self) -> None:
+        loop = self._permission_refresh_loop_handle
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self._permission_refresh_wakeup.set)
+
+    def _cleanup_old_jobs(self) -> None:
+        now = utcnow()
+        if self._last_job_cleanup_at and self._last_job_cleanup_at + timedelta(hours=24) > now:
+            return
+        deleted = self.repo.delete_completed_jobs_before(now - timedelta(days=self.settings.job_retention_days))
+        self._last_job_cleanup_at = now
+        if deleted:
+            logger.info("twc-job-retention-cleanup", deleted_count=deleted, retention_days=self.settings.job_retention_days)
+
     async def _permission_refresh_loop(self) -> None:
         while True:
             try:
+                await self.platform.refresh_due_server_permission_inventories()
                 await self.platform.refresh_due_permission_snapshots()
+                self._cleanup_old_jobs()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.exception("twc-permission-refresh-loop-failed", detail=str(exc))
-            await asyncio.sleep(60)
+            try:
+                await asyncio.wait_for(self._permission_refresh_wakeup.wait(), timeout=60)
+                self._permission_refresh_wakeup.clear()
+            except TimeoutError:
+                pass
 
     async def close(self) -> None:
         if self._permission_refresh_task is None:
@@ -7557,3 +8086,5 @@ class ApplicationContainer:
         with suppress(asyncio.CancelledError):
             await self._permission_refresh_task
         self._permission_refresh_task = None
+        self.platform._permission_inventory_dirty_notifier = None
+        self._permission_refresh_loop_handle = None

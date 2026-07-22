@@ -161,6 +161,8 @@ Files:
 - `30_workbench_cache_api_tree_children.py`
 - `31_workbench_cache_api_native_specifications.py`
 - `32_permission_refresh_job.py` (session-authenticated background refresh and status polling)
+- `33_workbench_cache_api_tombstone_branch.py` (revision-guarded stored-branch removal; requires explicit confirmation)
+- `34_workbench_cache_api_tombstone_project.py` (atomic all-branch project removal; requires explicit confirmation)
 
 They read from:
 
@@ -183,6 +185,10 @@ python .\29_workbench_cache_api_element_graph.py
 python .\30_workbench_cache_api_tree_children.py
 python .\31_workbench_cache_api_native_specifications.py
 python .\32_permission_refresh_job.py
+# Destructive: configure expected_revision_id and confirm_tombstone=true first.
+python .\33_workbench_cache_api_tombstone_branch.py
+# More destructive: removes every stored branch in the configured project.
+python .\34_workbench_cache_api_tombstone_project.py
 ```
 
 More background is in:

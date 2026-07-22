@@ -47,6 +47,7 @@ import SettingsDialog from "../components/SettingsDialog";
 import WorkbenchBrandMark from "../components/WorkbenchBrandMark";
 import {
   BranchAccessManifestStatus,
+  BranchTombstoneRecord,
   CacheElementSearchResponse,
   CacheApiKeyScope,
   CacheApiKeySummary,
@@ -58,7 +59,9 @@ import {
   JobRecord,
   OSLCExecuteResponse,
   ProjectSummary,
+  ProjectTombstoneRecord,
   ProjectUsageResponse,
+  ServerPermissionInventoryStatus,
   SessionPreferences,
   StereotypeElementSearchResponse,
   SwaggerContractManifest,
@@ -1853,6 +1856,30 @@ export default function WorkspacePage() {
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
   });
+  const permissionInventoryStatusQuery = useQuery({
+    queryKey: ["workspace-permission-inventory-status", ...sessionCacheKey],
+    queryFn: api.getPermissionInventoryStatus,
+    enabled: Boolean(session?.server?.id) && isAdmin,
+    staleTime: 5_000,
+    gcTime: cacheTimeMs,
+    refetchInterval: (query) =>
+      query.state.data?.state === "refreshing" ? 5_000 : 30_000,
+    refetchOnWindowFocus: true,
+  });
+  const branchTombstonesQuery = useQuery({
+    queryKey: ["workspace-branch-tombstones", ...sessionCacheKey],
+    queryFn: api.listBranchTombstones,
+    enabled: Boolean(session?.server?.id) && isAdmin,
+    staleTime: 30_000,
+    gcTime: cacheTimeMs,
+  });
+  const projectTombstonesQuery = useQuery({
+    queryKey: ["workspace-project-tombstones", ...sessionCacheKey],
+    queryFn: api.listProjectTombstones,
+    enabled: Boolean(session?.server?.id) && isAdmin,
+    staleTime: 30_000,
+    gcTime: cacheTimeMs,
+  });
   const cacheApiKeysQuery = useQuery({
     queryKey: ["workspace-cache-api-keys", ...sessionCacheKey],
     queryFn: api.listCacheApiKeys,
@@ -2979,6 +3006,15 @@ export default function WorkspacePage() {
       setManualCacheIngestToken(result.token);
       await queryClient.invalidateQueries({ queryKey: ["workspace-cache-ingest-token", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "A new plugin ingest token was generated and stored inside Workbench." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const retryPermissionInventoryMutation = useMutation({
+    mutationFn: () => api.retryPermissionInventory(csrfToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["workspace-permission-inventory-status", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "The TWC permission inventory refresh was queued in the background." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -5519,8 +5555,157 @@ export default function WorkspacePage() {
     );
   };
 
+  const renderPermissionInventoryStatus = () => {
+    const status = permissionInventoryStatusQuery.data;
+    const colorByState: Record<ServerPermissionInventoryStatus["state"], "success" | "warning" | "info" | "error" | "default"> = {
+      clean: "success",
+      dirty: "warning",
+      refreshing: "info",
+      failed: "error",
+      missing: "default",
+    };
+    return (
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+            <Box>
+              <Typography variant="h5">TWC Permission Inventory</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Server-wide roles and group scopes are refreshed by a background job. Administrator login and uploads do not wait for this scan.
+              </Typography>
+            </Box>
+            {status ? <Chip label={status.state.toUpperCase()} color={colorByState[status.state]} /> : null}
+          </Stack>
+          {permissionInventoryStatusQuery.error ? <Alert severity="error">{errorMessage(permissionInventoryStatusQuery.error)}</Alert> : null}
+          {status ? (
+            <>
+              <Alert severity={status.state === "failed" ? "error" : status.state === "dirty" || status.state === "missing" ? "warning" : "info"}>
+                {status.message}
+              </Alert>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <Chip label={`${status.role_count} roles`} variant="outlined" />
+                <Chip label={`${status.group_count} groups`} variant="outlined" />
+                <Chip label={`${status.active_server_administrator_count} active server admins`} variant="outlined" />
+                <Chip label={`${status.successful_refresh_count} successful refreshes`} color="success" variant="outlined" />
+                <Chip label={`${status.failed_refresh_count} failed refreshes`} color={status.failed_refresh_count ? "error" : "default"} variant="outlined" />
+                <Chip label={`${status.consecutive_failure_count} consecutive failures`} color={status.consecutive_failure_count ? "error" : "default"} variant="outlined" />
+                <Chip label={status.alert_forwarding_configured ? "Failure alerts configured" : "Failure alerts not configured"} color={status.alert_forwarding_configured ? "success" : "default"} variant="outlined" />
+                <Chip label={`${status.last_affected_user_count} user snapshots queued`} variant="outlined" />
+                <Chip label={status.current_user_can_refresh ? "TWC Server Administrator" : "App administrator only"} variant="outlined" />
+              </Stack>
+              {status.warning ? <Alert severity="warning">{status.warning}</Alert> : null}
+              <Typography variant="body2" color="text.secondary">
+                Captured: {status.captured_at ? new Date(status.captured_at).toLocaleString() : "never"}
+                {status.refresh_due_at ? ` · Refresh due: ${new Date(status.refresh_due_at).toLocaleString()}` : ""}
+                {status.inventory_age_seconds !== null ? ` · Inventory age: ${Math.floor(status.inventory_age_seconds / 60)} minutes` : ""}
+                {status.last_duration_ms !== null ? ` · Last duration: ${(status.last_duration_ms / 1000).toFixed(1)} seconds` : ""}
+              </Typography>
+              {status.last_job_id ? (
+                <Typography variant="body2" color="text.secondary">
+                  Last job: {status.last_job_id} ({status.last_job_status ?? "unknown"})
+                  {status.last_attempt_at ? ` · Attempted ${new Date(status.last_attempt_at).toLocaleString()}` : ""}
+                  {status.last_triggered_by ? ` · Triggered by ${status.last_triggered_by}` : ""}
+                </Typography>
+              ) : null}
+              {status.last_failure ? <Alert severity="error">{status.last_failure}</Alert> : null}
+              {status.recent_audits.length ? (
+                <Box>
+                  <Typography variant="subtitle2" gutterBottom>Recent inventory audit</Typography>
+                  <Stack spacing={0.75}>
+                    {status.recent_audits.slice(0, 5).map((audit) => (
+                      <Typography key={audit.id} variant="caption" color={audit.status === "failed" ? "error" : "text.secondary"}>
+                        {new Date(audit.created_at).toLocaleString()} · {audit.status} · {audit.reason} · {audit.triggered_by} · {audit.duration_ms} ms · roles {audit.previous_role_count}→{audit.current_role_count} · groups {audit.previous_group_count}→{audit.current_group_count} · users queued {audit.affected_user_count}
+                        {audit.error ? ` · ${audit.error}` : ""}
+                      </Typography>
+                    ))}
+                  </Stack>
+                </Box>
+              ) : null}
+            </>
+          ) : permissionInventoryStatusQuery.isLoading ? <CircularProgress size={24} /> : null}
+          <Box>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              disabled={permissionInventoryStatusQuery.isFetching}
+              onClick={() => void permissionInventoryStatusQuery.refetch()}
+            >
+              Refresh Status
+            </Button>
+            <Button
+              sx={{ ml: 1 }}
+              variant="contained"
+              startIcon={<RefreshRoundedIcon />}
+              disabled={!csrfToken || !status?.current_user_can_refresh || status?.state === "refreshing" || retryPermissionInventoryMutation.isPending}
+              onClick={() => retryPermissionInventoryMutation.mutate()}
+            >
+              Retry Now
+            </Button>
+            {retryPermissionInventoryMutation.isPending ? <CircularProgress size={22} sx={{ ml: 1 }} /> : null}
+          </Box>
+        </Stack>
+      </Paper>
+    );
+  };
+
+  const renderTombstoneAudit = () => {
+    const records: Array<
+      | { kind: "Branch"; created_at: string; record: BranchTombstoneRecord }
+      | { kind: "Project"; created_at: string; record: ProjectTombstoneRecord }
+    > = [
+      ...(branchTombstonesQuery.data ?? []).map((record) => ({ kind: "Branch" as const, created_at: record.created_at, record })),
+      ...(projectTombstonesQuery.data ?? []).map((record) => ({ kind: "Project" as const, created_at: record.created_at, record })),
+    ].sort((left, right) => right.created_at.localeCompare(left.created_at));
+    return (
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+            <Box>
+              <Typography variant="h5">Stored Project Removal Audit</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Revision-guarded tombstones remove cached branches and their stored grants atomically. These audit records remain after removal.
+              </Typography>
+            </Box>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              disabled={branchTombstonesQuery.isFetching || projectTombstonesQuery.isFetching}
+              onClick={() => {
+                void branchTombstonesQuery.refetch();
+                void projectTombstonesQuery.refetch();
+              }}
+            >
+              Refresh Audit
+            </Button>
+          </Stack>
+          {branchTombstonesQuery.error ? <Alert severity="error">{errorMessage(branchTombstonesQuery.error)}</Alert> : null}
+          {projectTombstonesQuery.error ? <Alert severity="error">{errorMessage(projectTombstonesQuery.error)}</Alert> : null}
+          {records.length ? (
+            <Stack spacing={1}>
+              {records.slice(0, 10).map((item) => (
+                <Paper key={`${item.kind}-${item.record.id}`} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                  <Typography variant="subtitle2">
+                    {item.kind}: {item.record.project_name || item.record.project_id}
+                    {item.kind === "Branch" ? ` / ${item.record.branch_name || item.record.branch_id}` : ` / ${item.record.branch_ids.length} branches`}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {new Date(item.created_at).toLocaleString()} · {item.record.source_user} · {item.record.reason}
+                  </Typography>
+                </Paper>
+              ))}
+            </Stack>
+          ) : branchTombstonesQuery.isLoading || projectTombstonesQuery.isLoading ? <CircularProgress size={24} /> : (
+            <Typography variant="body2" color="text.secondary">No stored project or branch removals have been recorded.</Typography>
+          )}
+        </Stack>
+      </Paper>
+    );
+  };
+
   const renderAdminSettings = () => (
     <Stack spacing={2}>
+      {renderPermissionInventoryStatus()}
+      {renderTombstoneAudit()}
       {renderCacheIngestToken()}
       {renderOslc()}
     </Stack>

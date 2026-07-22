@@ -10,6 +10,7 @@ import {
   CacheServerEntry,
   CacheIngestTokenRequest,
   BranchSummary,
+  BranchTombstoneRecord,
   CacheIngestTokenRotateResponse,
   CacheIngestTokenStatus,
   CapabilitySummary,
@@ -27,8 +28,10 @@ import {
   OSLCExecuteRequest,
   OSLCExecuteResponse,
   ProjectSummary,
+  ProjectTombstoneRecord,
   ProjectUsageResponse,
   ServerHealth,
+  ServerPermissionInventoryStatus,
   ServerProfile,
   ServerProfileInput,
   SessionPreferences,
@@ -175,6 +178,21 @@ export const api = {
   },
   getCacheIngestTokenStatus() {
     return request<CacheIngestTokenStatus>("/workspace/cache-ingest-token");
+  },
+  getPermissionInventoryStatus() {
+    return request<ServerPermissionInventoryStatus>("/workspace/permission-inventory/status");
+  },
+  retryPermissionInventory(csrfToken: string) {
+    return request<JobRecord>("/workspace/permission-inventory/retry", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
+  listBranchTombstones() {
+    return request<BranchTombstoneRecord[]>("/workspace/branch-tombstones?limit=20");
+  },
+  listProjectTombstones() {
+    return request<ProjectTombstoneRecord[]>("/workspace/project-tombstones?limit=20");
   },
   listCacheApiKeys() {
     return request<CacheApiKeySummary[]>("/workspace/cache-api-keys");

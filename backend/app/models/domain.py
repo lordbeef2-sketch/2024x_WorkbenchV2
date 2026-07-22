@@ -32,6 +32,7 @@ class JobType(str, Enum):
     MODEL_CACHE = "model_cache"
     AGENT_KNOWLEDGE = "agent_knowledge"
     PERMISSION_REFRESH = "permission_refresh"
+    PERMISSION_INVENTORY_REFRESH = "permission_inventory_refresh"
 
 
 class JobStatus(str, Enum):
@@ -687,6 +688,53 @@ class ServerPermissionInventory(BaseModel):
     dirty: bool = False
 
 
+class ServerPermissionInventoryAuditRecord(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    server_id: str
+    job_id: str
+    triggered_by: str
+    reason: str
+    status: Literal["succeeded", "failed", "coalesced"]
+    previous_hash: str = ""
+    current_hash: str = ""
+    previous_role_count: int = 0
+    current_role_count: int = 0
+    previous_group_count: int = 0
+    current_group_count: int = 0
+    affected_user_count: int = 0
+    duration_ms: int = 0
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class ServerPermissionInventoryStatus(BaseModel):
+    server_id: str
+    state: Literal["missing", "clean", "dirty", "refreshing", "failed"]
+    dirty: bool = False
+    role_count: int = 0
+    group_count: int = 0
+    captured_at: datetime | None = None
+    refresh_due_at: datetime | None = None
+    current_user_can_refresh: bool = False
+    last_job_id: str | None = None
+    last_job_status: JobStatus | None = None
+    last_attempt_at: datetime | None = None
+    last_triggered_by: str | None = None
+    last_failure: str | None = None
+    active_server_administrator_count: int = 0
+    inventory_age_seconds: int | None = None
+    successful_refresh_count: int = 0
+    failed_refresh_count: int = 0
+    consecutive_failure_count: int = 0
+    alert_forwarding_configured: bool = False
+    last_duration_ms: int | None = None
+    last_affected_user_count: int = 0
+    audit_count: int = 0
+    warning: str | None = None
+    recent_audits: list[ServerPermissionInventoryAuditRecord] = Field(default_factory=list)
+    message: str = ""
+
+
 class PermissionRefreshAuditRecord(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     user_id: str
@@ -986,6 +1034,53 @@ class BranchDeltaIngestRequest(BaseModel):
     added_elements: list[IngestElementRecord] = Field(default_factory=list, alias="addedElements")
     updated_elements: list[IngestElementRecord] = Field(default_factory=list, alias="updatedElements")
     removed_element_ids: list[str] = Field(default_factory=list, alias="removedElementIds")
+
+
+class BranchTombstoneRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    server_id: str = Field(alias="serverId")
+    project_id: str = Field(alias="projectId")
+    branch_id: str = Field(alias="branchId")
+    expected_revision_id: str | None = Field(default=None, alias="expectedRevisionId")
+    source_user: str = Field(alias="sourceUser")
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class BranchTombstoneRecord(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    server_id: str
+    project_id: str
+    branch_id: str
+    project_name: str = ""
+    branch_name: str = ""
+    latest_revision: str | None = None
+    source_user: str
+    reason: str
+    deleted_counts: dict[str, int] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class ProjectTombstoneRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    server_id: str = Field(alias="serverId")
+    project_id: str = Field(alias="projectId")
+    expected_branch_ids: list[str] = Field(default_factory=list, alias="expectedBranchIds")
+    source_user: str = Field(alias="sourceUser")
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ProjectTombstoneRecord(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    server_id: str
+    project_id: str
+    project_name: str = ""
+    branch_ids: list[str] = Field(default_factory=list)
+    source_user: str
+    reason: str
+    deleted_counts: dict[str, int] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class CacheProjectBranchEntry(BaseModel):

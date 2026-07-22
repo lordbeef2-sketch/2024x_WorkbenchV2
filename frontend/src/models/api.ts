@@ -3,7 +3,7 @@ export type ThemeMode = "light" | "dark" | "system";
 export type ItemDetailViewMode = "standard" | "expert" | "all";
 export type CapabilityState = "ready" | "restricted" | "not_available" | "unknown";
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
-export type JobType = "simulation" | "publish" | "export" | "model_cache" | "agent_knowledge" | "permission_refresh";
+export type JobType = "simulation" | "publish" | "export" | "model_cache" | "agent_knowledge" | "permission_refresh" | "permission_inventory_refresh";
 export type ExportFormat = "json" | "csv" | "markdown" | "html" | "pdf";
 export type CacheApiKeyScope = "read" | "write" | "edit";
 
@@ -410,6 +410,79 @@ export interface JobRecord {
   started_at: string | null;
   finished_at: string | null;
   cancel_requested: boolean;
+}
+
+export interface ServerPermissionInventoryStatus {
+  server_id: string;
+  state: "missing" | "clean" | "dirty" | "refreshing" | "failed";
+  dirty: boolean;
+  role_count: number;
+  group_count: number;
+  captured_at: string | null;
+  refresh_due_at: string | null;
+  current_user_can_refresh: boolean;
+  last_job_id: string | null;
+  last_job_status: JobStatus | null;
+  last_attempt_at: string | null;
+  last_triggered_by: string | null;
+  last_failure: string | null;
+  active_server_administrator_count: number;
+  inventory_age_seconds: number | null;
+  successful_refresh_count: number;
+  failed_refresh_count: number;
+  consecutive_failure_count: number;
+  alert_forwarding_configured: boolean;
+  last_duration_ms: number | null;
+  last_affected_user_count: number;
+  audit_count: number;
+  warning: string | null;
+  recent_audits: ServerPermissionInventoryAuditRecord[];
+  message: string;
+}
+
+export interface ServerPermissionInventoryAuditRecord {
+  id: string;
+  server_id: string;
+  job_id: string;
+  triggered_by: string;
+  reason: string;
+  status: "succeeded" | "failed" | "coalesced";
+  previous_hash: string;
+  current_hash: string;
+  previous_role_count: number;
+  current_role_count: number;
+  previous_group_count: number;
+  current_group_count: number;
+  affected_user_count: number;
+  duration_ms: number;
+  error: string | null;
+  created_at: string;
+}
+
+export interface BranchTombstoneRecord {
+  id: string;
+  server_id: string;
+  project_id: string;
+  branch_id: string;
+  project_name: string;
+  branch_name: string;
+  latest_revision: string | null;
+  source_user: string;
+  reason: string;
+  deleted_counts: Record<string, number>;
+  created_at: string;
+}
+
+export interface ProjectTombstoneRecord {
+  id: string;
+  server_id: string;
+  project_id: string;
+  project_name: string;
+  branch_ids: string[];
+  source_user: string;
+  reason: string;
+  deleted_counts: Record<string, number>;
+  created_at: string;
 }
 
 export interface DashboardPayload {

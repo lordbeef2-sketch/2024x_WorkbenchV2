@@ -101,9 +101,11 @@ Important settings:
 - `TWC_PLUGIN_ONLY_CACHE_TARGETS`: optional JSON object keyed by Workbench server id that forces listed project ids or project/branch pairs to use plugin-backed cache only and refuse live `/osmc` fallback until a plugin snapshot exists.
 - `PERMISSION_SNAPSHOT_REFRESH_MINUTES`: active-user effective permissions are atomically replaced on this interval; defaults to `30`.
 - `PERMISSION_INVENTORY_REFRESH_HOURS`: refresh interval for the shared role/group catalog; defaults to `6`.
+- `JOB_RETENTION_DAYS`: automatic retention period for completed, failed, and cancelled job records; defaults to `30`.
 - `PERMISSION_SNAPSHOT_MAX_PARALLEL_PROBES`: bounded per-user branch probe concurrency; defaults to `4`.
 - `PERMISSION_REFRESH_LEASE_SECONDS`: renewable database lease used to prevent duplicate cross-worker refreshes; defaults to `900`.
 - `PERMISSION_REFRESH_WARNING_FAILURES`: consecutive indeterminate attempts before a persistent warning; defaults to `3`.
+- `PERMISSION_ALERT_WEBHOOK_URL`: optional endpoint for sanitized repeated inventory-refresh failure alerts.
 - `PERMISSION_SNAPSHOT_STALE_WARNING_MINUTES`: age of the last valid snapshot before a persistent warning; defaults to `120`.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
 Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through `TWC_PRESET_SERVERS`, not through `HOST`.
@@ -149,15 +151,27 @@ external integrations.
   survive. Temporary TWC failures retain the last valid snapshot and retry;
   they are not treated as proof that access was revoked.
 - The shared six-hour role/group inventory produces a revision-bound project
-  ACL that is reused across users. Only a Server Administrator login replaces
-  a missing, dirty, or expired global inventory; regular users never scan the
-  global administration endpoints. Refreshes keep the open model mounted and
-  only close it after an authoritative result removes that user's access.
+  ACL that is reused across users. A Server Administrator login or an upload
+  observed while an administrator session is active queues a deduplicated
+  background inventory job when the inventory is missing, dirty, or expired;
+  neither request waits for the scan. Uploads wake the background scheduler
+  immediately, and interrupted inventory jobs are safely made retryable after
+  a Workbench restart. Regular users never scan the global administration
+  endpoints. Settings shows the local inventory/job status, metrics, recent
+  append-only audit events, no-active-admin warnings, and a non-blocking retry,
+  and user refreshes keep the open model mounted until an authoritative result
+  removes that user's access.
 - Every Cameo snapshot/delta upload carries a permission manifest alongside the
   branch revision. Workbench retains package ACL evidence from Cameo, merges in
   the current TWC resource-role map when that endpoint is available, and records
   the comparison with each user's effective snapshot. The attachment is audit
   evidence only: current authenticated TWC REST results always decide access.
+- ACL-changing deltas make active user snapshots due immediately. Revision-
+  guarded branch tombstones atomically remove deleted branches and their stored
+  grants while retaining an append-only deletion record.
+
+Operational multi-worker restart checks, verified SQLite backups, and a real
+Workbench-to-TWC smoke runner are provided under `backend/ops`.
 
 See:
 

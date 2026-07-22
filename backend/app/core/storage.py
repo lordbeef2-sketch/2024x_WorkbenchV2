@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable, TypeVar
 from app.models.domain import (
     BranchAccessRecord,
     BranchPermissionAttachment,
+    BranchTombstoneRecord,
     BranchWebhookRegistration,
     BranchCacheSummary,
     CacheApiKeyRecord,
@@ -18,10 +19,13 @@ from app.models.domain import (
     CachedElementRecord,
     CachedModelRecord,
     JobRecord,
+    JobStatus,
     ModelPermissionSnapshot,
     PermissionRefreshAuditRecord,
+    ProjectTombstoneRecord,
     PresetServerDefinition,
     ServerPermissionInventory,
+    ServerPermissionInventoryAuditRecord,
     ServerProfile,
     UserServerState,
     utcnow,
@@ -261,6 +265,41 @@ class SqliteRepository:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS twc_branch_tombstones (
+                    id TEXT PRIMARY KEY,
+                    server_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    branch_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_twc_branch_tombstones_branch
+                ON twc_branch_tombstones (server_id, project_id, branch_id, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS twc_project_tombstones (
+                    id TEXT PRIMARY KEY,
+                    server_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_twc_project_tombstones_project
+                ON twc_project_tombstones (server_id, project_id, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS twc_branch_permission_attachments (
                     server_id TEXT NOT NULL,
                     project_id TEXT NOT NULL,
@@ -302,6 +341,24 @@ class SqliteRepository:
                     status TEXT NOT NULL,
                     payload TEXT NOT NULL
                 )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS twc_server_permission_inventory_audit (
+                    id TEXT PRIMARY KEY,
+                    server_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_twc_server_permission_inventory_audit
+                ON twc_server_permission_inventory_audit (server_id, created_at DESC)
                 """
             )
             connection.execute(
@@ -968,6 +1025,139 @@ class SqliteRepository:
             )
             connection.commit()
 
+    def tombstone_branch_cache(self, record: BranchTombstoneRecord) -> BranchTombstoneRecord:
+        tables = (
+            "twc_branch_cache",
+            "twc_webhook_registrations",
+            "twc_cached_models",
+            "twc_cached_model_permissions",
+            "twc_branch_access_records",
+            "twc_branch_permission_attachments",
+            "twc_cached_elements",
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT payload FROM twc_branch_cache
+                WHERE server_id = ? AND project_id = ? AND branch_id = ?
+                """,
+                (record.server_id, record.project_id, record.branch_id),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise KeyError(record.branch_id)
+            current = BranchCacheSummary.model_validate_json(row["payload"])
+            if current.latest_revision != record.latest_revision:
+                connection.rollback()
+                raise RuntimeError("The stored branch changed while its tombstone was being applied.")
+            deleted_counts: dict[str, int] = {}
+            for table in tables:
+                cursor = connection.execute(
+                    f"DELETE FROM {table} WHERE server_id = ? AND project_id = ? AND branch_id = ?",
+                    (record.server_id, record.project_id, record.branch_id),
+                )
+                deleted_counts[table] = cursor.rowcount
+            stored = record.model_copy(update={"deleted_counts": deleted_counts})
+            connection.execute(
+                """
+                INSERT INTO twc_branch_tombstones (id, server_id, project_id, branch_id, created_at, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored.id,
+                    stored.server_id,
+                    stored.project_id,
+                    stored.branch_id,
+                    stored.created_at.isoformat(),
+                    stored.model_dump_json(),
+                ),
+            )
+            connection.commit()
+        return stored
+
+    def list_branch_tombstones(
+        self,
+        server_id: str,
+        *,
+        project_id: str | None = None,
+        limit: int = 100,
+    ) -> list[BranchTombstoneRecord]:
+        query = "SELECT payload FROM twc_branch_tombstones WHERE server_id = ?"
+        params: list[object] = [server_id]
+        if project_id is not None:
+            query += " AND project_id = ?"
+            params.append(project_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 1000)))
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [BranchTombstoneRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def tombstone_project_cache(
+        self,
+        record: ProjectTombstoneRecord,
+        *,
+        expected_branch_ids: list[str],
+    ) -> ProjectTombstoneRecord:
+        tables = (
+            "twc_branch_cache",
+            "twc_webhook_registrations",
+            "twc_cached_models",
+            "twc_cached_model_permissions",
+            "twc_branch_access_records",
+            "twc_branch_permission_attachments",
+            "twc_cached_elements",
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT payload FROM twc_branch_cache WHERE server_id = ? AND project_id = ?",
+                (record.server_id, record.project_id),
+            ).fetchall()
+            summaries = [BranchCacheSummary.model_validate_json(row["payload"]) for row in rows]
+            branch_ids = sorted(item.branch_id for item in summaries)
+            if not branch_ids:
+                connection.rollback()
+                raise KeyError(record.project_id)
+            if expected_branch_ids and sorted(set(expected_branch_ids)) != branch_ids:
+                connection.rollback()
+                raise RuntimeError("The stored project branch set changed while its tombstone was being applied.")
+            deleted_counts: dict[str, int] = {}
+            for table in tables:
+                cursor = connection.execute(
+                    f"DELETE FROM {table} WHERE server_id = ? AND project_id = ?",
+                    (record.server_id, record.project_id),
+                )
+                deleted_counts[table] = cursor.rowcount
+            stored = record.model_copy(update={"branch_ids": branch_ids, "deleted_counts": deleted_counts})
+            connection.execute(
+                """
+                INSERT INTO twc_project_tombstones (id, server_id, project_id, created_at, payload)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    stored.id,
+                    stored.server_id,
+                    stored.project_id,
+                    stored.created_at.isoformat(),
+                    stored.model_dump_json(),
+                ),
+            )
+            connection.commit()
+        return stored
+
+    def list_project_tombstones(self, server_id: str, *, limit: int = 100) -> list[ProjectTombstoneRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload FROM twc_project_tombstones
+                WHERE server_id = ? ORDER BY created_at DESC LIMIT ?
+                """,
+                (server_id, max(1, min(limit, 1000))),
+            ).fetchall()
+        return [ProjectTombstoneRecord.model_validate_json(row["payload"]) for row in rows]
+
     def delete_server_permission_inventory(self, server_id: str) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(
@@ -1149,6 +1339,55 @@ class SqliteRepository:
         with self._lock, self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return [PermissionRefreshAuditRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def append_server_permission_inventory_audit(self, record: ServerPermissionInventoryAuditRecord) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO twc_server_permission_inventory_audit (id, server_id, job_id, created_at, status, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.server_id,
+                    record.job_id,
+                    record.created_at.isoformat(),
+                    record.status,
+                    record.model_dump_json(),
+                ),
+            )
+            connection.commit()
+
+    def list_server_permission_inventory_audit(
+        self,
+        server_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[ServerPermissionInventoryAuditRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload FROM twc_server_permission_inventory_audit
+                WHERE server_id = ? ORDER BY created_at DESC LIMIT ?
+                """,
+                (server_id, max(1, min(limit, 1000))),
+            ).fetchall()
+        return [ServerPermissionInventoryAuditRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def server_permission_inventory_audit_counts(self, server_id: str) -> dict[str, int]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS item_count
+                FROM twc_server_permission_inventory_audit
+                WHERE server_id = ? GROUP BY status
+                """,
+                (server_id,),
+            ).fetchall()
+        counts = {"succeeded": 0, "failed": 0, "coalesced": 0}
+        for row in rows:
+            counts[str(row["status"])] = int(row["item_count"])
+        return counts
 
     def list_model_permissions(
         self,
@@ -1955,6 +2194,8 @@ class SqliteRepository:
         placeholders = ", ".join("?" for _ in valid_server_ids)
         for table in (
             "twc_branch_cache",
+            "twc_branch_tombstones",
+            "twc_project_tombstones",
             "twc_branch_access_records",
             "twc_branch_permission_attachments",
             "twc_server_permission_inventory",
@@ -1963,6 +2204,7 @@ class SqliteRepository:
             "twc_cached_elements",
             "twc_webhook_registrations",
             "twc_permission_refresh_audit",
+            "twc_server_permission_inventory_audit",
         ):
             connection.execute(
                 f"DELETE FROM {table} WHERE server_id NOT IN ({placeholders})",
@@ -1972,6 +2214,8 @@ class SqliteRepository:
     def _delete_materialized_cache_for_server(self, connection: sqlite3.Connection, server_id: str) -> None:
         for table in (
             "twc_branch_cache",
+            "twc_branch_tombstones",
+            "twc_project_tombstones",
             "twc_branch_access_records",
             "twc_branch_permission_attachments",
             "twc_server_permission_inventory",
@@ -1980,6 +2224,7 @@ class SqliteRepository:
             "twc_cached_elements",
             "twc_webhook_registrations",
             "twc_permission_refresh_audit",
+            "twc_server_permission_inventory_audit",
         ):
             connection.execute(f"DELETE FROM {table} WHERE server_id = ?", (server_id,))
         connection.execute(
@@ -1990,6 +2235,8 @@ class SqliteRepository:
     def _delete_materialized_cache_for_all_servers(self, connection: sqlite3.Connection) -> None:
         for table in (
             "twc_branch_cache",
+            "twc_branch_tombstones",
+            "twc_project_tombstones",
             "twc_branch_access_records",
             "twc_branch_permission_attachments",
             "twc_server_permission_inventory",
@@ -1998,6 +2245,7 @@ class SqliteRepository:
             "twc_cached_elements",
             "twc_webhook_registrations",
             "twc_permission_refresh_audit",
+            "twc_server_permission_inventory_audit",
         ):
             connection.execute(f"DELETE FROM {table}")
         connection.execute("DELETE FROM twc_permission_refresh_leases")
@@ -2027,6 +2275,19 @@ class SqliteRepository:
         if not row:
             return None
         return JobRecord.model_validate_json(row["payload"])
+
+    def delete_completed_jobs_before(self, cutoff: datetime) -> int:
+        terminal_statuses = (JobStatus.SUCCEEDED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value)
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM jobs
+                WHERE status IN (?, ?, ?) AND updated_at < ?
+                """,
+                (*terminal_statuses, cutoff.isoformat()),
+            )
+            connection.commit()
+        return cursor.rowcount
 
     def upsert_job(self, job: JobRecord) -> JobRecord:
         payload = job.model_dump_json()

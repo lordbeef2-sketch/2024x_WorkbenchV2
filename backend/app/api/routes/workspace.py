@@ -409,6 +409,55 @@ def permission_refresh_audit(
     return container.platform.list_permission_refresh_audit(session, userId, limit=limit)
 
 
+@router.get("/permission-inventory/status")
+def permission_inventory_status(
+    session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.permission_inventory_status(session)
+
+
+@router.get("/permission-inventory/audit")
+def permission_inventory_audit(
+    limit: int = Query(default=100, ge=1, le=1000),
+    session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.list_server_permission_inventory_audit(session, limit=limit)
+
+
+@router.get("/branch-tombstones")
+def branch_tombstones(
+    projectId: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.list_branch_tombstones(session, project_id=projectId, limit=limit)
+
+
+@router.get("/project-tombstones")
+def project_tombstones(
+    limit: int = Query(default=100, ge=1, le=1000),
+    session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.list_project_tombstones(session, limit=limit)
+
+
+@router.post("/permission-inventory/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_permission_inventory(
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.retry_server_permission_inventory(session)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.get("/permissions/current")
 def current_permission_status(
     projectId: str = Query(...),

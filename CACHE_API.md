@@ -102,11 +102,22 @@ scoped to that user's cached visibility.
 
 - `POST /api/cache-ingest/branch-snapshots`
 - `POST /api/cache-ingest/branch-deltas`
+- `POST /api/cache-ingest/branch-tombstones`
+- `POST /api/cache-ingest/project-tombstones`
 
 Both payloads accept `permissionManifest`. The attachment is stored with the
 branch revision and can contain Cameo package ACL entries plus TWC resource-role
 entries. It is never treated as a grant: login and the 30-minute active-session
 refresh replace each user's effective access from the current TWC REST result.
+ACL-changing deltas mark active permission snapshots due immediately. Use the
+tombstone route when a branch is deleted or intentionally removed from
+Workbench. Include `serverId`, `projectId`, `branchId`, `sourceUser`, `reason`,
+and preferably `expectedRevisionId`; a revision mismatch returns `409` instead
+of deleting a newer upload. Tombstoning removes cached content and every stored
+grant for that branch atomically while retaining an administrator-readable
+audit record.
+Project tombstones accept `expectedBranchIds` as an optional concurrency guard
+and remove all stored branches for that project in one database transaction.
 
 ### Cache edit endpoint
 

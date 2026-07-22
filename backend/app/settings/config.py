@@ -181,9 +181,11 @@ class Settings(BaseSettings):
     session_ttl_minutes: int = 480
     permission_snapshot_refresh_minutes: int = Field(default=30, ge=1)
     permission_inventory_refresh_hours: int = Field(default=6, ge=1)
+    job_retention_days: int = Field(default=30, ge=1, le=3650)
     permission_snapshot_max_parallel_probes: int = Field(default=4, ge=1, le=16)
     permission_refresh_lease_seconds: int = Field(default=900, ge=60, le=7200)
     permission_refresh_warning_failures: int = Field(default=3, ge=1)
+    permission_alert_webhook_url: str | None = None
     permission_snapshot_stale_warning_minutes: int = Field(default=120, ge=30)
     secure_cookies: bool = False
     csrf_header_name: str = "X-CSRF-Token"
@@ -251,6 +253,7 @@ class Settings(BaseSettings):
         "twc_oslc_consumer_key",
         "twc_oslc_consumer_secret",
         "twc_oslc_callback_path",
+        "permission_alert_webhook_url",
         mode="before",
     )
     @classmethod
