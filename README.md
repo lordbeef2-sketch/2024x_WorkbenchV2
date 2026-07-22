@@ -241,6 +241,14 @@ python -m pip install -e backend
 cp backend/.env.example backend/.env
 ```
 
+### Offline installation
+
+For disconnected Windows environments, use the two-script workflow under
+[`offline`](offline/README.md). Run `Offline-Prep.ps1` on a connected machine to
+build and hash a platform-matched ZIP, then run `Offline-Installer.ps1` from the
+extracted bundle on the offline host. The offline host needs the matching Python
+3.11+ line but does not need Node.js or internet access.
+
 ### Frontend
 
 1. Install Node.js 20+.
