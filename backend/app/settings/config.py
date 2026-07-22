@@ -185,7 +185,6 @@ class Settings(BaseSettings):
     permission_refresh_lease_seconds: int = Field(default=900, ge=60, le=7200)
     permission_refresh_warning_failures: int = Field(default=3, ge=1)
     permission_snapshot_stale_warning_minutes: int = Field(default=120, ge=30)
-    twc_permission_inventory_service_tokens: dict[str, str] = Field(default_factory=dict)
     secure_cookies: bool = False
     csrf_header_name: str = "X-CSRF-Token"
     upstream_auth_cookie_names: list[str] = Field(default_factory=list)

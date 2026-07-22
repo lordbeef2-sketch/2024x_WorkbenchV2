@@ -2970,7 +2970,11 @@ class TeamworkAdapter:
             ["/osmc/admin/roles"],
             timeout=30.0,
         )
-        if not payload or (isinstance(payload, dict) and payload.get("restricted")):
+        if isinstance(payload, dict) and payload.get("restricted"):
+            raise PermissionError("The active Teamwork Cloud session cannot enumerate server user groups.")
+        if payload is None:
+            raise RuntimeError("Teamwork Cloud did not return the server user-group inventory.")
+        if not payload:
             return []
         items = extract_resource_list(payload)
         if items is None:
@@ -3222,7 +3226,11 @@ class TeamworkAdapter:
                     )
                 self._readonly_branch_probe_supported = False
             return []
-        if not payload or (isinstance(payload, dict) and payload.get("restricted")):
+        if isinstance(payload, dict) and payload.get("restricted"):
+            raise PermissionError("The active Teamwork Cloud session cannot enumerate server roles.")
+        if payload is None:
+            raise RuntimeError("Teamwork Cloud did not return the server role inventory.")
+        if not payload:
             return []
         self._readonly_branch_probe_supported = True
         return [str(item).strip() for item in _as_list(payload) if str(item).strip()]

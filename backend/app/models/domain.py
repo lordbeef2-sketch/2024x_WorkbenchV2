@@ -684,6 +684,7 @@ class ServerPermissionInventory(BaseModel):
     roles: list[dict[str, Any]] = Field(default_factory=list)
     groups: list[dict[str, Any]] = Field(default_factory=list)
     captured_at: datetime = Field(default_factory=utcnow)
+    dirty: bool = False
 
 
 class PermissionRefreshAuditRecord(BaseModel):

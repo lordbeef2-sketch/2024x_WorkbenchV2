@@ -105,7 +105,6 @@ Important settings:
 - `PERMISSION_REFRESH_LEASE_SECONDS`: renewable database lease used to prevent duplicate cross-worker refreshes; defaults to `900`.
 - `PERMISSION_REFRESH_WARNING_FAILURES`: consecutive indeterminate attempts before a persistent warning; defaults to `3`.
 - `PERMISSION_SNAPSHOT_STALE_WARNING_MINUTES`: age of the last valid snapshot before a persistent warning; defaults to `120`.
-- `TWC_PERMISSION_INVENTORY_SERVICE_TOKENS`: optional JSON map of server ids to dedicated least-privilege TWC inventory tokens.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
 Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through `TWC_PRESET_SERVERS`, not through `HOST`.
 
@@ -150,7 +149,9 @@ external integrations.
   survive. Temporary TWC failures retain the last valid snapshot and retry;
   they are not treated as proof that access was revoked.
 - The shared six-hour role/group inventory produces a revision-bound project
-  ACL that is reused across users. Refreshes keep the open model mounted and
+  ACL that is reused across users. Only a Server Administrator login replaces
+  a missing, dirty, or expired global inventory; regular users never scan the
+  global administration endpoints. Refreshes keep the open model mounted and
   only close it after an authoritative result removes that user's access.
 - Every Cameo snapshot/delta upload carries a permission manifest alongside the
   branch revision. Workbench retains package ACL evidence from Cameo, merges in

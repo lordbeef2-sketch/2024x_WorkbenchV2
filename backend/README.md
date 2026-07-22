@@ -85,8 +85,10 @@ valid snapshot and retries later. Database transactions remain all-or-nothing,
 so readers never receive a partially refreshed permission set.
 The server-wide inventory of every role, group, nested membership, and scoped
 role assignment is stored separately and refreshed every six hours by default
-(`PERMISSION_INVENTORY_REFRESH_HOURS`). A new full branch upload invalidates
-that inventory and makes active sessions due for the next background refresh.
+(`PERMISSION_INVENTORY_REFRESH_HOURS`). A new full branch upload marks that
+inventory dirty without discarding its last complete role-ID map and makes
+active sessions due for the next background user-permission refresh. The next
+Server Administrator login replaces the dirty inventory.
 The inventory supports discovery and comparison only; fresh current-user
 effective permissions and direct branch access remain the 30-minute security
 authority, so a stale inventory cannot preserve a revoked grant.
@@ -94,10 +96,11 @@ Each revision-bound TWC role manifest is also reused as a derived project ACL
 until either the server inventory or branch revision changes. This avoids
 rescanning every group and role for every logged-in user while leaving fresh
 current-user claims and direct probes authoritative.
-The global inventory can use a dedicated least-privilege TWC identity through
-the `TWC_PERMISSION_INVENTORY_SERVICE_TOKENS` JSON map (`server-id` to token),
-so inventory health does not depend on whichever interactive user happens to
-trigger the six-hour pass. These tokens are never included in logs or audits.
+On every Server Administrator login, Workbench checks whether the shared
+inventory is missing, marked dirty by a full upload, or older than six hours.
+Only that administrator's current TWC session performs the global roles/groups
+scan. Regular-user logins and scheduled user refreshes reuse the last complete
+inventory and never call the global administration endpoints.
 The UI's Refresh Capabilities action does not run that server-wide inventory
 scan. It immediately queues a `permission_refresh` job, refreshes the signed-in
 user's effective permission claims, filters

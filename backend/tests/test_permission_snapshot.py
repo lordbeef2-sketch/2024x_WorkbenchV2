@@ -211,7 +211,7 @@ class PermissionSnapshotReplacementTests(unittest.TestCase):
             self.assertEqual(stored.latest_revision, "42")
             self.assertEqual(stored.manifest.entries[0].principal_name, "engineering")
 
-    def test_server_permission_inventory_is_persisted_and_invalidated(self) -> None:
+    def test_server_permission_inventory_is_persisted_and_marked_dirty(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             repo = SqliteRepository(Path(directory) / "workbench.db")
             inventory = ServerPermissionInventory(
@@ -224,8 +224,10 @@ class PermissionSnapshotReplacementTests(unittest.TestCase):
             stored = repo.get_server_permission_inventory("server")
             self.assertIsNotNone(stored)
             self.assertEqual(stored.roles[0]["name"], "Resource Manager")
-            repo.delete_server_permission_inventory("server")
-            self.assertIsNone(repo.get_server_permission_inventory("server"))
+            repo.mark_server_permission_inventory_dirty("server")
+            dirty = repo.get_server_permission_inventory("server")
+            self.assertTrue(dirty.dirty)
+            self.assertEqual(dirty.roles[0]["name"], "Resource Manager")
 
 
 class PermissionAttachmentComparisonTests(unittest.TestCase):
@@ -277,6 +279,13 @@ class PermissionAttachmentComparisonTests(unittest.TestCase):
         self.assertEqual(access.roles, ["Resource Manager"])
         self.assertEqual(access.via_groups, ["Engineering"])
         self.assertEqual(access.payload["readonly_branch_ids"], ["release"])
+        self.assertFalse(
+            service._attached_rest_manifest_is_current(
+                summary,
+                attachment,
+                inventory.model_copy(update={"dirty": True}),
+            )
+        )
 
     def test_stale_attached_grant_never_overrides_live_denial(self) -> None:
         service = object.__new__(PlatformService)
@@ -508,6 +517,25 @@ class ManualCapabilityRefreshTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ServerPermissionInventoryCadenceTests(unittest.IsolatedAsyncioTestCase):
+    def test_only_twc_server_administrator_role_enables_global_inventory_refresh(self) -> None:
+        service = object.__new__(PlatformService)
+        server_admin = SimpleNamespace(
+            authorization_context=SimpleNamespace(roles=["Server Administrator"], permissions=[]),
+        )
+        app_admin_only = SimpleNamespace(
+            authorization_context=SimpleNamespace(roles=["Application Administrator"], permissions=[]),
+        )
+        uuid_role_with_server_permission = SimpleNamespace(
+            authorization_context=SimpleNamespace(
+                roles=[],
+                permissions=[SimpleNamespace(name="Configure Server", operation_name="", display_name="")],
+            ),
+        )
+
+        self.assertTrue(service._is_twc_server_administrator(server_admin))
+        self.assertFalse(service._is_twc_server_administrator(app_admin_only))
+        self.assertTrue(service._is_twc_server_administrator(uuid_role_with_server_permission))
+
     async def test_fresh_inventory_is_reused_for_six_hours(self) -> None:
         inventory = ServerPermissionInventory(
             server_id="server",
@@ -554,6 +582,57 @@ class ServerPermissionInventoryCadenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.roles, [{"ID": "new-role"}])
         self.assertEqual(result.groups, [{"ID": "new-group"}])
         self.assertEqual(stored, [result])
+
+    async def test_dirty_inventory_is_replaced_even_inside_six_hour_window(self) -> None:
+        dirty = ServerPermissionInventory(
+            server_id="server",
+            roles=[{"ID": "old-role"}],
+            captured_at=datetime.now(UTC),
+            dirty=True,
+        )
+        stored: list[ServerPermissionInventory] = []
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_inventory_refresh_hours=6)
+        service._permission_inventory_locks = {}
+        service.repo = SimpleNamespace(
+            get_server_permission_inventory=lambda server_id: stored[-1] if stored else dirty,
+            upsert_server_permission_inventory=lambda inventory: stored.append(inventory),
+        )
+        adapter = SimpleNamespace(
+            _admin_roles=AsyncMock(return_value=[{"ID": "new-role"}]),
+            _admin_usergroups=AsyncMock(return_value=[{"ID": "new-group"}]),
+        )
+
+        result = await service._server_permission_inventory(adapter, "server", allow_refresh=True)
+
+        self.assertFalse(result.dirty)
+        self.assertEqual(result.roles, [{"ID": "new-role"}])
+        adapter._admin_roles.assert_awaited_once()
+        adapter._admin_usergroups.assert_awaited_once()
+
+    async def test_admin_inventory_failure_retains_dirty_complete_inventory(self) -> None:
+        dirty = ServerPermissionInventory(
+            server_id="server",
+            roles=[{"ID": "server-admin", "name": "Server Administrator"}],
+            groups=[{"ID": "engineering", "name": "Engineering"}],
+            captured_at=datetime.now(UTC),
+            dirty=True,
+        )
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_inventory_refresh_hours=6)
+        service._permission_inventory_locks = {}
+        service.repo = SimpleNamespace(get_server_permission_inventory=lambda server_id: dirty)
+        service._permission_error_text = lambda exc: str(exc)
+        adapter = SimpleNamespace(
+            _admin_roles=AsyncMock(side_effect=RuntimeError("temporary gateway failure")),
+            _admin_usergroups=AsyncMock(return_value=[]),
+        )
+
+        result = await service._server_permission_inventory(adapter, "server", allow_refresh=True)
+
+        self.assertIs(result, dirty)
+        self.assertTrue(result.dirty)
+        self.assertEqual(result.groups[0]["name"], "Engineering")
 
     async def test_manual_user_refresh_reuses_stale_inventory_without_global_api_calls(self) -> None:
         inventory = ServerPermissionInventory(

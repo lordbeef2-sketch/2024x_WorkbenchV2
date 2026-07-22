@@ -129,6 +129,7 @@ logger = structlog.get_logger(__name__)
 
 
 SERVER_ADMIN_ROLE_NAMES = {"server administrator", "configure server"}
+TWC_SERVER_ADMIN_ROLE_NAME = "server administrator"
 PROJECT_LIST_CACHE_KEY = "projects"
 BRANCH_REVISION_PROBE_TTL_SECONDS = 20
 FAILED_BRANCH_CACHE_RETRY_SECONDS = 300
@@ -1470,10 +1471,10 @@ class PlatformService:
             )
         )
         # A new uploaded branch changes the project set against which the
-        # shared role/group inventory must be evaluated. Invalidate that
-        # six-hour inventory and make active sessions due for the next
-        # background permission pass.
-        self.repo.delete_server_permission_inventory(server.id)
+        # shared role/group inventory must be evaluated. Preserve the last
+        # complete role-ID map, mark it dirty, and let the next Server
+        # Administrator login replace it.
+        self.repo.mark_server_permission_inventory_dirty(server.id)
         self.sessions.mark_server_permission_snapshots_due(server.id)
         self._write_branch_access_manifest(
             summary,
@@ -5141,9 +5142,18 @@ class PlatformService:
             upstream_groups=upstream_groups,
         )
         session = self.sessions.create_session(server, user, authorization_context, credentials, capabilities)
+        session = self._attach_inventory_role_names(
+            session,
+            self.repo.get_server_permission_inventory(server.id),
+        )
+        refresh_shared_inventory = self._is_twc_server_administrator(session)
         self._update_user_server_state(user.preferred_username, server.id, session.created_at)
         try:
-            await self._refresh_permission_snapshot_guarded(session, reason="login")
+            await self._refresh_permission_snapshot_guarded(
+                session,
+                reason="login",
+                refresh_shared_inventory=refresh_shared_inventory,
+            )
         except Exception as exc:
             self.sessions.destroy_session(session.session_id)
             logger.exception(
@@ -5321,7 +5331,7 @@ class PlatformService:
         session: SessionData,
         *,
         reason: str,
-        refresh_shared_inventory: bool = True,
+        refresh_shared_inventory: bool = False,
         priority_project_id: str | None = None,
         priority_branch_id: str | None = None,
     ) -> datetime:
@@ -5467,7 +5477,7 @@ class PlatformService:
         session: SessionData,
         *,
         reason: str,
-        refresh_shared_inventory: bool = True,
+        refresh_shared_inventory: bool = False,
         priority_project_id: str | None = None,
         priority_branch_id: str | None = None,
     ) -> tuple[datetime, dict[str, Any]]:
@@ -5563,19 +5573,27 @@ class PlatformService:
         existing = self.repo.get_server_permission_inventory(server_id)
         if not allow_refresh:
             return existing
-        if existing and existing.captured_at + refresh_after > utcnow():
+        if existing and not existing.dirty and existing.captured_at + refresh_after > utcnow():
             return existing
 
         lock = self._permission_inventory_locks.setdefault(server_id, asyncio.Lock())
         async with lock:
             existing = self.repo.get_server_permission_inventory(server_id)
-            if existing and existing.captured_at + refresh_after > utcnow():
+            if existing and not existing.dirty and existing.captured_at + refresh_after > utcnow():
                 return existing
-            inventory_adapter = self._permission_inventory_adapter(server_id) or adapter
-            roles, groups = await asyncio.gather(
-                inventory_adapter._admin_roles(),
-                inventory_adapter._admin_usergroups(),
-            )
+            try:
+                roles, groups = await asyncio.gather(
+                    adapter._admin_roles(),
+                    adapter._admin_usergroups(),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "twc-server-permission-inventory-refresh-deferred",
+                    server_id=server_id,
+                    retained_previous_inventory=existing is not None,
+                    detail=self._permission_error_text(exc),
+                )
+                return existing
             # A session without admin inventory rights must not erase a
             # complete inventory captured by a more privileged session.
             if not roles and existing is not None:
@@ -5589,6 +5607,8 @@ class PlatformService:
                 captured_at=utcnow(),
             )
             self.repo.upsert_server_permission_inventory(inventory)
+            if sessions := getattr(self, "sessions", None):
+                sessions.mark_server_permission_snapshots_due(server_id)
             logger.info(
                 "twc-server-permission-inventory-refreshed",
                 server_id=server_id,
@@ -5597,14 +5617,6 @@ class PlatformService:
                 refresh_hours=self.settings.permission_inventory_refresh_hours,
             )
             return inventory
-
-    def _permission_inventory_adapter(self, server_id: str) -> TeamworkAdapter | None:
-        token_map = getattr(self.settings, "twc_permission_inventory_service_tokens", {})
-        token = token_map.get(server_id, "").strip()
-        if not token:
-            return None
-        server = self._require_server(server_id)
-        return self._adapter_for_credentials(server, TokenBundle(access_token=token))
 
     def _permission_candidate_summaries(
         self,
@@ -5687,6 +5699,7 @@ class PlatformService:
                     refreshed_at, _ = await self._refresh_permission_snapshot_guarded(
                         live_session,
                         reason="scheduled-permission-refresh",
+                        refresh_shared_inventory=False,
                     )
                 except Exception as exc:
                     for item in group:
@@ -6075,6 +6088,8 @@ class PlatformService:
         if "twc-rest-role-manifest" not in attachment.manifest.source:
             return False
         if attachment.latest_revision != summary.latest_revision:
+            return False
+        if inventory is not None and inventory.dirty:
             return False
         freshness_floor = (
             inventory.captured_at
@@ -7447,6 +7462,25 @@ class PlatformService:
             if role.strip()
         }
         return bool(normalized_roles & SERVER_ADMIN_ROLE_NAMES)
+
+    def _is_twc_server_administrator(self, session: SessionData) -> bool:
+        normalized_roles = {
+            re.sub(r"[^a-z0-9]+", " ", role.lower()).strip()
+            for role in session.authorization_context.roles
+            if role.strip()
+        }
+        if TWC_SERVER_ADMIN_ROLE_NAME in normalized_roles:
+            return True
+        for claim in session.authorization_context.permissions:
+            terms = " ".join(
+                value
+                for value in (claim.name, claim.operation_name, claim.display_name)
+                if value
+            )
+            normalized = re.sub(r"[^a-z0-9]+", " ", terms.lower()).strip()
+            if "configure server" in normalized:
+                return True
+        return False
 
     def _merge_claims(self, *values: str) -> list[str]:
         merged: list[str] = []

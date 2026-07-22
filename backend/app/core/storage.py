@@ -976,6 +976,12 @@ class SqliteRepository:
             )
             connection.commit()
 
+    def mark_server_permission_inventory_dirty(self, server_id: str) -> None:
+        inventory = self.get_server_permission_inventory(server_id)
+        if inventory is None or inventory.dirty:
+            return
+        self.upsert_server_permission_inventory(inventory.model_copy(update={"dirty": True}))
+
     def upsert_branch_permission_attachment(
         self,
         attachment: BranchPermissionAttachment,
