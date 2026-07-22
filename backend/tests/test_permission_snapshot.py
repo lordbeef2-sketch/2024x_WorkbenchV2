@@ -15,6 +15,7 @@ from app.models.domain import (
     BranchSnapshotIngestRequest,
     BranchTombstoneRequest,
     CapabilitySummary,
+    CachedModelRecord,
     JobRecord,
     JobStatus,
     JobType,
@@ -35,6 +36,78 @@ from app.services.platform import PermissionSnapshotIndeterminateError, Platform
 
 
 class PermissionSnapshotReplacementTests(unittest.TestCase):
+    def test_current_permission_status_uses_plugin_publisher_fallback_used_by_branch_listing(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            repo.upsert_branch_cache_summary(
+                BranchCacheSummary(
+                    server_id="server",
+                    project_id="project",
+                    branch_id="trunk",
+                    source_kind="cameo-plugin",
+                    source_user="Alice",
+                )
+            )
+            repo.upsert_cached_models([
+                CachedModelRecord(
+                    server_id="server",
+                    project_id="project",
+                    branch_id="trunk",
+                    model_id="model",
+                )
+            ])
+            service = object.__new__(PlatformService)
+            service.repo = repo
+            session = SimpleNamespace(
+                server=SimpleNamespace(id="server"),
+                user=SimpleNamespace(preferred_username="Alice"),
+            )
+
+            status = service.current_permission_status(session, "project", "trunk", "model")
+
+            self.assertTrue(status.project_accessible)
+            self.assertTrue(status.branch_accessible)
+            self.assertTrue(status.branch_editable)
+            self.assertTrue(status.model_accessible)
+            self.assertTrue(status.model_editable)
+
+    def test_current_permission_status_uses_rest_model_visibility_when_branch_row_is_absent(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            repo.upsert_branch_cache_summary(
+                BranchCacheSummary(
+                    server_id="server",
+                    project_id="project",
+                    branch_id="trunk",
+                    source_kind="twc-rest",
+                )
+            )
+            repo.upsert_model_permissions([
+                ModelPermissionSnapshot(
+                    user_id="alice",
+                    server_id="server",
+                    project_id="project",
+                    branch_id="trunk",
+                    model_id="model",
+                    accessible=True,
+                    editable=False,
+                )
+            ])
+            service = object.__new__(PlatformService)
+            service.repo = repo
+            session = SimpleNamespace(
+                server=SimpleNamespace(id="server"),
+                user=SimpleNamespace(preferred_username="Alice"),
+            )
+
+            status = service.current_permission_status(session, "project", "trunk", "model")
+
+            self.assertTrue(status.project_accessible)
+            self.assertTrue(status.branch_accessible)
+            self.assertFalse(status.branch_editable)
+            self.assertTrue(status.model_accessible)
+            self.assertFalse(status.model_editable)
+
     def test_current_permission_status_tracks_branch_and_model_revocation(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             repo = SqliteRepository(Path(directory) / "workbench.db")

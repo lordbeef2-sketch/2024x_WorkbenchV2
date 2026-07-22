@@ -2572,10 +2572,26 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     const status = currentPermissionStatusQuery.data;
-    if (!status) {
+    if (
+      !status ||
+      status.project_id !== selectedProjectId ||
+      status.branch_id !== selectedBranchId ||
+      (status.model_id ?? "") !== selectedPermissionModelId
+    ) {
       return;
     }
     if (!status.branch_accessible) {
+      const branchQueryKey = [
+        "workspace-branches",
+        session?.user?.preferred_username ?? "anonymous",
+        session?.server?.id ?? "no-server",
+        selectedProjectId,
+        selectedProject?.workspace_id,
+      ];
+      queryClient.setQueryData<ProjectSummary["branches"]>(branchQueryKey, (current) =>
+        current?.filter((branch) => branch.id !== selectedBranchId),
+      );
+      void queryClient.invalidateQueries({ queryKey: branchQueryKey });
       setSelectedBranchId("");
       setSelectedItemId("");
       setItemDraft(null);
@@ -2587,7 +2603,16 @@ export default function WorkspacePage() {
       setItemDraft(null);
       setNotice({ severity: "warning", message: "The selected model is no longer accessible and was closed. The permitted remainder of the branch stays open." });
     }
-  }, [currentPermissionStatusQuery.data, selectedPermissionModelId]);
+  }, [
+    currentPermissionStatusQuery.data,
+    queryClient,
+    selectedBranchId,
+    selectedPermissionModelId,
+    selectedProject?.workspace_id,
+    selectedProjectId,
+    session?.server?.id,
+    session?.user?.preferred_username,
+  ]);
   const selectedContainmentPath = selectedWorkspaceItemPath || (selectedTreeNode ? friendlyPath(selectedTreeNode.path, referenceNameById) : "");
   const selectedContainmentSegments = selectedContainmentPath
     .split(" / ")

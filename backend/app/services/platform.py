@@ -5470,10 +5470,49 @@ class PlatformService:
         model_id: str | None = None,
     ) -> CurrentPermissionStatus:
         user_id = self._user_key(session.user.preferred_username)
-        branch = self.repo.get_branch_access_record(user_id, session.server.id, project_id, branch_id)
-        branch_accessible = bool(branch and branch.accessible)
-        model = (
-            self.repo.get_model_permission(user_id, session.server.id, project_id, branch_id, model_id)
+        server_id = session.server.id
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        plugin_managed = self._is_plugin_managed_summary(summary)
+        branch = (
+            self._plugin_branch_access_or_source_fallback(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                summary,
+            )
+            if plugin_managed
+            else self.repo.get_branch_access_record(user_id, server_id, project_id, branch_id)
+        )
+        model_permissions = self._permissions_by_model_for_user(user_id, server_id, project_id, branch_id)
+        visible_permissions = [
+            permission
+            for permission in model_permissions.values()
+            if permission.accessible and not permission.restricted
+        ]
+        branch_accessible = (
+            bool(branch and branch.accessible)
+            if plugin_managed
+            else bool(visible_permissions)
+        )
+        branch_editable = (
+            bool(branch_accessible and branch and branch.editable)
+            if plugin_managed
+            else bool(branch_accessible and any(permission.editable for permission in visible_permissions))
+        )
+        model = model_permissions.get(model_id) if model_id else None
+        cached_model = self.repo.get_cached_model(server_id, project_id, branch_id, model_id) if model_id else None
+        model_accessible = (
+            bool(branch_accessible and cached_model)
+            if plugin_managed and model_id
+            else bool(branch_accessible and model and model.accessible and not model.restricted)
+            if model_id
+            else None
+        )
+        model_editable = (
+            bool(model_accessible and branch_editable)
+            if plugin_managed and model_id
+            else bool(model_accessible and model and model.editable)
             if model_id
             else None
         )
@@ -5481,20 +5520,16 @@ class PlatformService:
             project_id=project_id,
             branch_id=branch_id,
             model_id=model_id,
-            project_accessible=any(
+            project_accessible=branch_accessible or any(
                 record.accessible and record.project_id == project_id
-                for record in self.repo.list_user_branch_access_records(user_id, session.server.id)
+                for record in self.repo.list_user_branch_access_records(user_id, server_id)
             ),
             branch_accessible=branch_accessible,
-            branch_editable=bool(branch_accessible and branch and branch.editable),
+            branch_editable=branch_editable,
             branch_admin_access=bool(branch_accessible and branch and branch.admin_access),
-            model_accessible=(
-                bool(branch_accessible and model and model.accessible and not model.restricted)
-                if model_id
-                else None
-            ),
-            model_editable=(bool(branch_accessible and model and model.editable) if model_id else None),
-            snapshot_updated_at=branch.updated_at if branch else None,
+            model_accessible=model_accessible,
+            model_editable=model_editable,
+            snapshot_updated_at=(branch.updated_at if branch else summary.updated_at if summary else None),
         )
 
     def submit_export(self, session: SessionData, request: ExportRequest) -> JobRecord:
