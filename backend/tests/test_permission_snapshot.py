@@ -781,6 +781,20 @@ class ScheduledPermissionRefreshTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ManualCapabilityRefreshTests(unittest.IsolatedAsyncioTestCase):
+    def test_snapshot_capability_summary_builds_without_remote_probe(self) -> None:
+        service = object.__new__(PlatformService)
+        server = ServerProfile(
+            id="server",
+            name="Server",
+            base_url="https://twc.example",
+        )
+
+        capabilities = service._snapshot_capabilities(server)
+
+        self.assertEqual(capabilities.detected_version, "2024x")
+        self.assertEqual(capabilities.reachable_endpoints, {"permissions": True})
+        self.assertEqual(capabilities.capabilities["models"].source, "workbench-snapshot")
+
     async def test_refresh_capabilities_queues_permission_refresh_without_blocking(self) -> None:
         capabilities = CapabilitySummary(detected_version="2024x")
         session = SimpleNamespace(

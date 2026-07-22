@@ -56,6 +56,7 @@ from app.models.domain import (
     CacheProjectBranchEntry,
     CacheProjectEntry,
     Capability,
+    CapabilitySummary,
     CapabilityState,
     CachedElementQueryResponse,
     CachedElementRecord,
