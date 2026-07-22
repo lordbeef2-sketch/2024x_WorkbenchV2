@@ -12,6 +12,7 @@ from io import StringIO
 from pathlib import Path
 import re
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import httpx
 import structlog
@@ -68,6 +69,8 @@ from app.models.domain import (
     ElementDiscoveryEntry,
     ElementDiscoveryResult,
     ExportRequest,
+    FallbackCacheRefreshRequest,
+    FallbackCacheRefreshStatus,
     ItemDetails,
     ItemReference,
     JobRecord,
@@ -764,13 +767,13 @@ class PlatformService:
             ProjectSummary(
                 id=project.project_id,
                 name=project.project_name,
-                description="Stored live model snapshot published from Cameo into Workbench",
+                description="Stored Workbench model cache with TWC-scoped user access",
                 favorite=False,
                 branches=[
                     BranchSummary(
                         id=branch.branch_id,
                         name=branch.branch_name,
-                        description=f"Stored branch snapshot ({branch.status.value})",
+                        description=f"Stored branch model cache ({branch.status.value})",
                     )
                     for branch in sorted(project.branches, key=lambda item: ((item.branch_name or item.branch_id).lower(), item.branch_id))
                 ],
@@ -789,7 +792,7 @@ class PlatformService:
                 BranchSummary(
                     id=branch.branch_id,
                     name=branch.branch_name,
-                    description=f"Stored branch snapshot ({branch.status.value})",
+                    description=f"Stored branch model cache ({branch.status.value})",
                 )
                 for branch in sorted(project.branches, key=lambda item: ((item.branch_name or item.branch_id).lower(), item.branch_id))
             ]
@@ -814,7 +817,7 @@ class PlatformService:
                 return cached_tree
 
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
-        if self._is_plugin_managed_summary(summary):
+        if summary is not None:
             await self._ensure_plugin_branch_permissions(
                 session,
                 project_id,
@@ -826,7 +829,7 @@ class PlatformService:
             materialized_tree = self._materialized_model_tree(session, project_id, branch_id, depth=depth)
             return materialized_tree or []
 
-        raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
+        raise RuntimeError(self._fallback_cache_missing_message(project_id, branch_id))
 
     async def get_project_usages(
         self,
@@ -837,8 +840,8 @@ class PlatformService:
         refresh: bool = False,
     ) -> ProjectUsageResponse:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
-        if not self._is_plugin_managed_summary(summary):
-            raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
+        if summary is None:
+            raise RuntimeError(self._fallback_cache_missing_message(project_id, branch_id))
         await self._ensure_plugin_branch_permissions(
             session,
             project_id,
@@ -894,7 +897,7 @@ class PlatformService:
         refresh: bool = False,
     ) -> list[TreeNode]:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
-        if self._is_plugin_managed_summary(summary):
+        if summary is not None:
             if refresh or not self._plugin_branch_permissions_known_for_user(
                 session,
                 project_id,
@@ -919,7 +922,7 @@ class PlatformService:
             )
             return response.items
 
-        raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
+        raise RuntimeError(self._fallback_cache_missing_message(project_id, branch_id))
 
     async def discover_elements(
         self,
@@ -932,7 +935,7 @@ class PlatformService:
         cache_key = self._element_discovery_cache_key(project_id, branch_id)
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         resolved_workspace_id = workspace_id or (summary.workspace_id if summary is not None else None)
-        if self._is_plugin_managed_summary(summary):
+        if summary is not None:
             if refresh or not self._plugin_branch_permissions_known_for_user(
                 session,
                 project_id,
@@ -973,7 +976,7 @@ class PlatformService:
                 batch_size=0,
                 cache_status="cache-hit",
                 warnings=[
-                    "This branch is served from the Cameo plugin cache.",
+                    "This branch is served from the stored Workbench model cache.",
                     "No accessible cached elements are available for the active TWC session on this branch.",
                     *([summary.message] if summary and summary.message else []),
                 ],
@@ -986,18 +989,19 @@ class PlatformService:
             )
             return result
 
-        raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
+        raise RuntimeError(self._fallback_cache_missing_message(project_id, branch_id))
 
     async def submit_branch_cache_sync(self, session: SessionData, request: BranchCacheSyncRequest) -> JobRecord:
-        raise RuntimeError(
-            "Live Teamwork Cloud branch cache sync is disabled. Publish a Cameo plugin snapshot to Workbench for this project branch instead."
-        )
+        if not self._is_twc_server_administrator(session):
+            raise PermissionError("A current TWC Server Administrator session is required for a manual fallback cache refresh.")
         resolved_workspace_id = request.workspace_id or await self._workspace_id_for_project(session, request.project_id)
         active_job = self._active_branch_cache_job(session, request.project_id, request.branch_id)
         if active_job is not None:
             return active_job
 
         existing_summary = self.repo.get_branch_cache_summary(session.server.id, request.project_id, request.branch_id)
+        if self._is_plugin_managed_summary(existing_summary):
+            raise RuntimeError("This branch is plugin-backed and cannot be overwritten by a TWC fallback refresh.")
         job = self.jobs.create_job(
             job_type=JobType.MODEL_CACHE,
             title=f"Model cache: {request.project_id}/{request.branch_id}",
@@ -1010,23 +1014,11 @@ class PlatformService:
                 "force_full_refresh": request.force_full_refresh,
             },
         )
-        self.repo.upsert_branch_cache_summary(
-            self._branch_cache_summary(
-                session,
-                request.project_id,
-                request.branch_id,
-                workspace_id=resolved_workspace_id,
-                latest_revision=existing_summary.latest_revision if existing_summary else None,
-                status=MaterializedCacheStatus.SYNCING,
-                message="Queued materialized branch cache sync for the actively viewed project branch. Model cache jobs are serialized per server.",
-                model_count=existing_summary.model_count if existing_summary else 0,
-                element_count=existing_summary.element_count if existing_summary else 0,
-                last_job_id=job.id,
-            )
-        )
-        adapter = self._adapter_for_session(session)
-
         async def handler(context):
+            live_session = self.sessions.get_session(session.session_id)
+            if live_session is None:
+                raise RuntimeError("The TWC Server Administrator session ended before fallback refresh started.")
+            live_session = await self._refresh_session_credentials_if_needed(live_session)
             server_lock = self._model_cache_server_lock(session.server.id)
             if server_lock.locked():
                 await context.report(
@@ -1044,8 +1036,8 @@ class PlatformService:
                     start_message,
                 )
                 return await self._run_branch_cache_sync(
-                    session,
-                    adapter,
+                    live_session,
+                    self._adapter_for_session(live_session),
                     request.project_id,
                     request.branch_id,
                     resolved_workspace_id,
@@ -2855,9 +2847,21 @@ class PlatformService:
         report,
         cancel_requested,
         job_id: str,
+        project_name: str = "",
+        branch_name: str = "",
     ) -> dict[str, Any]:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if self._is_plugin_managed_summary(summary):
+            return {
+                "cancelled": False,
+                "superseded_by_plugin": True,
+                "project_id": project_id,
+                "branch_id": branch_id,
+            }
         synced_model_ids: list[str] = []
+        synced_models: list[CachedModelRecord] = []
+        synced_permissions: list[ModelPermissionSnapshot] = []
+        elements_by_model: dict[str, list[CachedElementRecord]] = {}
         total_elements = 0
         latest_revision: str | None = summary.latest_revision if summary else None
         warnings: list[str] = []
@@ -2871,35 +2875,11 @@ class PlatformService:
                 request_pacer=request_pacer,
             )
             if not models and warnings:
-                failure_summary = self._branch_cache_summary(
-                    session,
-                    project_id,
-                    branch_id,
-                    workspace_id=workspace_id,
-                    latest_revision=latest_revision,
-                    status=MaterializedCacheStatus.FAILED,
-                    message=warnings[-1],
-                    last_job_id=job_id,
-                )
-                self.repo.upsert_branch_cache_summary(failure_summary)
                 raise RuntimeError(warnings[-1])
 
             total_models = max(1, len(models))
             for index, (model_id, model_payload) in enumerate(models, start=1):
                 if cancel_requested():
-                    cancelled_summary = self._branch_cache_summary(
-                        session,
-                        project_id,
-                        branch_id,
-                        workspace_id=workspace_id,
-                        latest_revision=latest_revision,
-                        status=MaterializedCacheStatus.FAILED,
-                        message="Materialized branch cache sync was cancelled before completion.",
-                        model_count=len(synced_model_ids),
-                        element_count=total_elements,
-                        last_job_id=job_id,
-                    )
-                    self.repo.upsert_branch_cache_summary(cancelled_summary)
                     return {
                         "cancelled": True,
                         "project_id": project_id,
@@ -2923,50 +2903,45 @@ class PlatformService:
                     request_pacer=request_pacer,
                 )
                 synced_model_ids.append(model_id)
+                synced_models.append(model_record)
+                synced_permissions.append(permission)
+                elements_by_model[model_id] = element_records
                 total_elements += len(element_records)
                 warnings.extend(model_warnings[-10:])
-                self.repo.upsert_cached_models([model_record])
-                self.repo.upsert_model_permissions([permission])
-                self.repo.replace_cached_elements(
-                    session.server.id,
-                    project_id,
-                    branch_id,
-                    model_id,
-                    element_records,
-                )
-                self.repo.upsert_branch_cache_summary(
-                    self._branch_cache_summary(
-                        session,
-                        project_id,
-                        branch_id,
-                        workspace_id=workspace_id,
-                        latest_revision=latest_revision,
-                        status=MaterializedCacheStatus.SYNCING,
-                        message=f"Synced model {index}/{len(models)}: {model_record.name or model_id}",
-                        model_count=len(synced_model_ids),
-                        element_count=total_elements,
-                        last_job_id=job_id,
-                    )
-                )
 
-            self.repo.delete_branch_models_except(session.server.id, project_id, branch_id, synced_model_ids)
             final_message = f"Materialized {len(synced_model_ids)} models and {total_elements} elements into the local branch cache."
             if warnings:
                 final_message = f"{final_message} Last warning: {warnings[-1]}"
-            self.repo.upsert_branch_cache_summary(
-                self._branch_cache_summary(
-                    session,
-                    project_id,
-                    branch_id,
-                    workspace_id=workspace_id,
-                    latest_revision=latest_revision,
-                    status=MaterializedCacheStatus.READY,
-                    message=final_message,
-                    model_count=len(synced_model_ids),
-                    element_count=total_elements,
-                    last_job_id=job_id,
-                )
+            final_summary = self._branch_cache_summary(
+                session,
+                project_id,
+                branch_id,
+                workspace_id=workspace_id,
+                project_name=project_name,
+                branch_name=branch_name,
+                latest_revision=latest_revision,
+                status=MaterializedCacheStatus.READY,
+                message=final_message,
+                model_count=len(synced_model_ids),
+                element_count=total_elements,
+                last_job_id=job_id,
             )
+            stored = self.repo.replace_fallback_branch_snapshot_if_not_plugin(
+                final_summary,
+                synced_models,
+                synced_permissions,
+                elements_by_model,
+                permission_user_id=self._user_key(session.user.preferred_username),
+            )
+            if not stored:
+                await report(100, "Skipped fallback write because a Cameo plugin snapshot arrived during refresh.")
+                return {
+                    "cancelled": False,
+                    "superseded_by_plugin": True,
+                    "project_id": project_id,
+                    "branch_id": branch_id,
+                }
+            self.sessions.mark_server_permission_snapshots_due(session.server.id)
             self._remember_branch_revision(session.server.id, project_id, branch_id, latest_revision)
             await report(100, final_message)
             return {
@@ -2978,21 +2953,9 @@ class PlatformService:
                 "latest_revision": latest_revision,
                 "warnings": warnings[-25:],
             }
-        except Exception as exc:
-            self.repo.upsert_branch_cache_summary(
-                self._branch_cache_summary(
-                    session,
-                    project_id,
-                    branch_id,
-                    workspace_id=workspace_id,
-                    latest_revision=latest_revision,
-                    status=MaterializedCacheStatus.FAILED,
-                    message=str(exc),
-                    model_count=len(synced_model_ids),
-                    element_count=total_elements,
-                    last_job_id=job_id,
-                )
-            )
+        except Exception:
+            # Keep the last complete fallback intact. Job state records the
+            # failure, and a plugin snapshot must never lose a race to REST.
             raise
 
     def _active_branch_cache_job(self, session: SessionData, project_id: str, branch_id: str) -> JobRecord | None:
@@ -4264,7 +4227,7 @@ class PlatformService:
         payload: BranchUpdateRequest,
     ):
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
-        if self._is_plugin_managed_summary(summary):
+        if summary is not None:
             await self._ensure_plugin_branch_permissions(session, project_id, branch_id, summary=summary)
             self._require_effective_branch_access(session, project_id, branch_id, require_branch_admin=True)
         return await self._adapter_for_session(session).update_branch(project_id, branch_id, payload.model_dump(exclude_none=True))
@@ -4287,7 +4250,7 @@ class PlatformService:
 
         if project_id and branch_id:
             summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
-            if self._is_plugin_managed_summary(summary):
+            if summary is not None:
                 if refresh or not self._plugin_branch_permissions_known_for_user(
                     session,
                     project_id,
@@ -4317,9 +4280,7 @@ class PlatformService:
                     ),
                 )
                 return materialized_item
-            raise RuntimeError(self._plugin_only_cache_message(project_id, branch_id))
-
-        raise RuntimeError("Select a cached project branch that has been published into Workbench before opening item details.")
+        raise RuntimeError(self._fallback_cache_missing_message(project_id or "", branch_id or ""))
 
     async def update_item(
         self,
@@ -4331,7 +4292,7 @@ class PlatformService:
     ) -> ItemDetails:
         if project_id and branch_id:
             summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
-            if self._is_plugin_managed_summary(summary):
+            if summary is not None:
                 await self._ensure_plugin_branch_permissions(session, project_id, branch_id, summary=summary)
                 self._require_effective_branch_access(session, project_id, branch_id, require_edit=True)
         item = await self._adapter_for_session(session).update_item(item_id, payload, project_id, branch_id)
@@ -5240,6 +5201,245 @@ class PlatformService:
             raise RuntimeError("The inventory refresh could not be queued.")
         return job
 
+    def _fallback_cache_window(self, now: datetime | None = None) -> tuple[bool, str | None, datetime]:
+        timezone = ZoneInfo(self.settings.fallback_cache_sync_timezone)
+        local_now = (now or utcnow()).astimezone(timezone)
+        hour, minute = (int(part) for part in self.settings.fallback_cache_sync_time.split(":", 1))
+        today_start = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        starts = (today_start - timedelta(days=1), today_start)
+        for start in starts:
+            if start <= local_now < start + timedelta(minutes=self.settings.fallback_cache_sync_window_minutes):
+                return True, start.date().isoformat(), local_now
+        return False, None, local_now
+
+    def fallback_cache_refresh_status(self, session: SessionData) -> FallbackCacheRefreshStatus:
+        window_open, _, local_now = self._fallback_cache_window()
+        summaries = self.repo.list_branch_cache_summaries(session.server.id)
+        jobs = [
+            job
+            for job in self.repo.list_jobs()
+            if job.server_id == session.server.id and job.job_type == JobType.FALLBACK_CACHE_REFRESH
+        ]
+        latest_job = jobs[0] if jobs else None
+        active_admins = [
+            item
+            for item in self.sessions.list_active_sessions()
+            if item.server.id == session.server.id and self._is_twc_server_administrator(item)
+        ]
+        running = bool(latest_job and latest_job.status in {JobStatus.PENDING, JobStatus.RUNNING})
+        if running:
+            message = "A TWC REST fallback refresh is running in the background."
+        elif window_open:
+            message = "The nightly fallback refresh window is open."
+        else:
+            message = "Fallback caches refresh during the nightly window or when a TWC Server Administrator starts one manually."
+        return FallbackCacheRefreshStatus(
+            server_id=session.server.id,
+            schedule_time=self.settings.fallback_cache_sync_time,
+            schedule_timezone=self.settings.fallback_cache_sync_timezone,
+            schedule_window_minutes=self.settings.fallback_cache_sync_window_minutes,
+            current_local_time=local_now,
+            current_user_can_refresh=self._is_twc_server_administrator(session),
+            active_server_administrator_count=len(active_admins),
+            fallback_branch_count=sum(not self._is_plugin_managed_summary(item) for item in summaries),
+            plugin_branch_count=sum(self._is_plugin_managed_summary(item) for item in summaries),
+            last_job_id=latest_job.id if latest_job else None,
+            last_job_status=latest_job.status if latest_job else None,
+            last_job_message=latest_job.message if latest_job else None,
+            last_triggered_by=latest_job.owner if latest_job else None,
+            last_trigger_reason=str(latest_job.payload.get("reason") or "") if latest_job else None,
+            last_started_at=latest_job.started_at if latest_job else None,
+            last_finished_at=latest_job.finished_at if latest_job else None,
+            nightly_window_open=window_open,
+            message=message,
+        )
+
+    def _submit_fallback_cache_refresh(
+        self,
+        session: SessionData,
+        request: FallbackCacheRefreshRequest,
+        *,
+        reason: str,
+        schedule_date: str | None = None,
+    ) -> JobRecord:
+        if not self._is_twc_server_administrator(session):
+            raise PermissionError("A current TWC Server Administrator session is required.")
+        if request.branch_id and not request.project_id:
+            raise ValueError("project_id is required when branch_id is supplied.")
+        active = next(
+            (
+                job
+                for job in self.repo.list_jobs()
+                if job.server_id == session.server.id
+                and job.job_type == JobType.FALLBACK_CACHE_REFRESH
+                and job.status in {JobStatus.PENDING, JobStatus.RUNNING}
+            ),
+            None,
+        )
+        if active is not None:
+            return active
+        payload: dict[str, Any] = {
+            "reason": reason,
+            "project_id": request.project_id,
+            "branch_id": request.branch_id,
+        }
+        if schedule_date:
+            payload["schedule_date"] = schedule_date
+        job = self.jobs.create_job(
+            job_type=JobType.FALLBACK_CACHE_REFRESH,
+            title="Refresh TWC REST fallback model caches",
+            owner=session.user.preferred_username,
+            server_id=session.server.id,
+            payload=payload,
+        )
+
+        async def handler(context) -> dict[str, Any]:
+            live_session = self.sessions.get_session(session.session_id)
+            if live_session is None:
+                raise RuntimeError("The TWC Server Administrator session ended before fallback refresh started.")
+            live_session = await self._refresh_session_credentials_if_needed(live_session)
+            lease_key = f"fallback-cache:{live_session.server.id}"
+            lease_owner = f"{self._permission_refresh_instance_id}:{job.id}"
+            if not self.repo.acquire_permission_refresh_lease(
+                lease_key,
+                lease_owner,
+                ttl_seconds=self.settings.permission_refresh_lease_seconds,
+            ):
+                return {"coalesced": True, "server_id": live_session.server.id}
+
+            async def renew_lease() -> None:
+                interval = max(self.settings.permission_refresh_lease_seconds // 3, 20)
+                while True:
+                    await asyncio.sleep(interval)
+                    if not self.repo.renew_permission_refresh_lease(
+                        lease_key,
+                        lease_owner,
+                        ttl_seconds=self.settings.permission_refresh_lease_seconds,
+                    ):
+                        return
+
+            heartbeat = asyncio.create_task(renew_lease(), name=f"twc-fallback-cache-lease-{live_session.server.id}")
+            try:
+                await context.report(2, "Discovering TWC projects and branches")
+                adapter = self._adapter_for_session(live_session)
+                projects = await adapter.list_projects(include_branches=True)
+                if request.project_id:
+                    projects = [item for item in projects if item.id == request.project_id]
+                    if not projects:
+                        raise RuntimeError(f"Project {request.project_id} was not returned by TWC.")
+
+                targets: list[tuple[ProjectSummary, BranchSummary]] = []
+                for project in projects:
+                    branches = project.branches
+                    if not branches:
+                        branches = await adapter.list_project_branches(project.id, project.workspace_id)
+                    if request.branch_id:
+                        branches = [item for item in branches if item.id == request.branch_id]
+                    targets.extend((project, branch) for branch in branches)
+                if request.branch_id and not targets:
+                    raise RuntimeError(f"Branch {request.branch_id} was not returned by TWC.")
+
+                eligible = [
+                    (project, branch)
+                    for project, branch in targets
+                    if not self._is_plugin_managed_summary(
+                        self.repo.get_branch_cache_summary(live_session.server.id, project.id, branch.id)
+                    )
+                ]
+                skipped_plugin = len(targets) - len(eligible)
+                refreshed = 0
+                superseded = 0
+                failures: list[dict[str, str]] = []
+                server_lock = self._model_cache_server_lock(live_session.server.id)
+                async with server_lock:
+                    for index, (project, branch) in enumerate(eligible, start=1):
+                        if context.cancel_requested():
+                            break
+
+                        async def branch_report(percent: int, message: str, *, position: int = index) -> None:
+                            overall = 5 + int(((position - 1) + percent / 100) * 90 / max(1, len(eligible)))
+                            await context.report(min(95, overall), f"{project.name} / {branch.name}: {message}")
+
+                        try:
+                            result = await self._run_branch_cache_sync(
+                                live_session,
+                                adapter,
+                                project.id,
+                                branch.id,
+                                project.workspace_id,
+                                branch_report,
+                                context.cancel_requested,
+                                job.id,
+                                project_name=project.name,
+                                branch_name=branch.name,
+                            )
+                            if result.get("superseded_by_plugin"):
+                                superseded += 1
+                            elif not result.get("cancelled"):
+                                refreshed += 1
+                        except Exception as exc:
+                            failures.append({
+                                "project_id": project.id,
+                                "branch_id": branch.id,
+                                "error": self._permission_error_text(exc),
+                            })
+                if eligible and refreshed == 0 and superseded == 0 and failures:
+                    raise RuntimeError(f"Every eligible fallback branch failed; first error: {failures[0]['error']}")
+                await context.report(98, "Fallback refresh complete; user permission snapshots are queued for background replacement")
+                self.sessions.mark_server_permission_snapshots_due(live_session.server.id)
+                return {
+                    "server_id": live_session.server.id,
+                    "reason": reason,
+                    "schedule_date": schedule_date,
+                    "discovered_branch_count": len(targets),
+                    "refreshed_branch_count": refreshed,
+                    "plugin_branch_count": skipped_plugin,
+                    "superseded_by_plugin_count": superseded,
+                    "failed_branch_count": len(failures),
+                    "failures": failures[:100],
+                    "cancelled": context.cancel_requested(),
+                }
+            finally:
+                heartbeat.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat
+                self.repo.release_permission_refresh_lease(lease_key, lease_owner)
+
+        return self.jobs.submit(job, handler)
+
+    def trigger_fallback_cache_refresh(
+        self,
+        session: SessionData,
+        request: FallbackCacheRefreshRequest,
+    ) -> JobRecord:
+        return self._submit_fallback_cache_refresh(session, request, reason="server-administrator-manual-trigger")
+
+    async def refresh_due_fallback_caches(self) -> None:
+        window_open, schedule_date, _ = self._fallback_cache_window()
+        if not window_open or not schedule_date:
+            return
+        sessions_by_server: dict[str, list[SessionData]] = {}
+        for session in self.sessions.list_active_sessions():
+            if self._is_twc_server_administrator(session):
+                sessions_by_server.setdefault(session.server.id, []).append(session)
+        for server_id, sessions in sessions_by_server.items():
+            already_attempted = any(
+                job.server_id == server_id
+                and job.job_type == JobType.FALLBACK_CACHE_REFRESH
+                and job.payload.get("reason") == "nightly-fallback-window"
+                and job.payload.get("schedule_date") == schedule_date
+                for job in self.repo.list_jobs()
+            )
+            if already_attempted:
+                continue
+            representative = max(sessions, key=lambda item: item.expires_at)
+            self._submit_fallback_cache_refresh(
+                representative,
+                FallbackCacheRefreshRequest(),
+                reason="nightly-fallback-window",
+                schedule_date=schedule_date,
+            )
+
     async def refresh_due_server_permission_inventories(self) -> None:
         sessions_by_server: dict[str, list[SessionData]] = {}
         for session in self.sessions.list_active_sessions():
@@ -5693,19 +5893,10 @@ class PlatformService:
     def _is_plugin_managed_summary(self, summary: BranchCacheSummary | None) -> bool:
         return bool(summary is not None and summary.source_kind == PLUGIN_CACHE_SOURCE_KIND)
 
-    def _is_plugin_only_target(self, server_id: str, project_id: str, branch_id: str) -> bool:
-        rule = self.settings.plugin_only_cache_rule_for_server(server_id)
-        if rule is None:
-            return False
-        if project_id in set(rule.project_ids):
-            return True
-        branch_ids = rule.branch_ids.get(project_id) or []
-        return branch_id in set(branch_ids)
-
-    def _plugin_only_cache_message(self, project_id: str, branch_id: str) -> str:
+    def _fallback_cache_missing_message(self, project_id: str, branch_id: str) -> str:
         return (
-            f"Project {project_id} / branch {branch_id} is snapshot-only in TWC Workbench. "
-            "Publish a Cameo plugin snapshot to Workbench before opening this branch here."
+            f"Project {project_id} / branch {branch_id} has no stored model cache yet. "
+            "A nightly TWC fallback refresh or a Cameo plugin snapshot must populate it first."
         )
 
     def _tree_cache_key(self, project_id: str | None, branch_id: str | None) -> str | None:
@@ -5810,6 +6001,8 @@ class PlatformService:
         branch_id: str,
         *,
         workspace_id: str | None = None,
+        project_name: str = "",
+        branch_name: str = "",
         summary: BranchCacheSummary | None = None,
         force: bool = False,
         prefer_manifest: bool = True,
@@ -5850,11 +6043,7 @@ class PlatformService:
                 allow_refresh=refresh_shared_inventory,
             )
             session = self._attach_inventory_role_names(session, permission_inventory)
-            registered_summaries = [
-                summary
-                for summary in self.repo.list_branch_cache_summaries(session.server.id)
-                if self._is_plugin_managed_summary(summary)
-            ]
+            registered_summaries = self.repo.list_branch_cache_summaries(session.server.id)
             summaries = self._permission_candidate_summaries(session, registered_summaries)
             summaries.sort(
                 key=lambda summary: (
@@ -7077,6 +7266,8 @@ class PlatformService:
             model_id=resolved_model_id,
             element_id=element.element_id,
             workspace_id=workspace_id,
+            project_name=project_name,
+            branch_name=branch_name,
             latest_revision=latest_revision,
             name=display_name,
             item_type=item_type,
@@ -8066,6 +8257,7 @@ class ApplicationContainer:
     async def _permission_refresh_loop(self) -> None:
         while True:
             try:
+                await self.platform.refresh_due_fallback_caches()
                 await self.platform.refresh_due_server_permission_inventories()
                 await self.platform.refresh_due_permission_snapshots()
                 self._cleanup_old_jobs()

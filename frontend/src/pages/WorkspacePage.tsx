@@ -52,6 +52,7 @@ import {
   CacheApiKeyScope,
   CacheApiKeySummary,
   CachedElementRecord,
+  FallbackCacheRefreshStatus,
   ItemDetailViewMode,
   ItemReference,
   OpenWebUIModelEntry,
@@ -1866,6 +1867,16 @@ export default function WorkspacePage() {
       query.state.data?.state === "refreshing" ? 5_000 : 30_000,
     refetchOnWindowFocus: true,
   });
+  const fallbackCacheStatusQuery = useQuery({
+    queryKey: ["workspace-fallback-cache-status", ...sessionCacheKey],
+    queryFn: api.getFallbackCacheRefreshStatus,
+    enabled: Boolean(session?.server?.id) && isAdmin,
+    staleTime: 5_000,
+    gcTime: cacheTimeMs,
+    refetchInterval: (query) =>
+      ["pending", "running"].includes(query.state.data?.last_job_status ?? "") ? 5_000 : 30_000,
+    refetchOnWindowFocus: true,
+  });
   const branchTombstonesQuery = useQuery({
     queryKey: ["workspace-branch-tombstones", ...sessionCacheKey],
     queryFn: api.listBranchTombstones,
@@ -3015,6 +3026,15 @@ export default function WorkspacePage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["workspace-permission-inventory-status", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "The TWC permission inventory refresh was queued in the background." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const triggerFallbackCacheRefreshMutation = useMutation({
+    mutationFn: () => api.triggerFallbackCacheRefresh(csrfToken),
+    onSuccess: async () => {
+      await fallbackCacheStatusQuery.refetch();
+      setNotice({ severity: "success", message: "The TWC REST fallback refresh was queued in the background." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -5648,6 +5668,71 @@ export default function WorkspacePage() {
     );
   };
 
+  const renderFallbackCacheStatus = () => {
+    const status = fallbackCacheStatusQuery.data;
+    const running = status?.last_job_status === "pending" || status?.last_job_status === "running";
+    return (
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+            <Box>
+              <Typography variant="h5">TWC REST Fallback Model Cache</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Workbench fills branches from TWC REST at night until a Cameo plugin snapshot exists. A plugin snapshot always wins and REST can never overwrite it.
+              </Typography>
+            </Box>
+            {status ? <Chip label={running ? "REFRESHING" : status.nightly_window_open ? "NIGHT WINDOW" : "IDLE"} color={running ? "info" : status.nightly_window_open ? "success" : "default"} /> : null}
+          </Stack>
+          {fallbackCacheStatusQuery.error ? <Alert severity="error">{errorMessage(fallbackCacheStatusQuery.error)}</Alert> : null}
+          {status ? (
+            <>
+              <Alert severity={running ? "info" : "success"}>{status.message}</Alert>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <Chip label={`${status.fallback_branch_count} REST fallback branches`} variant="outlined" />
+                <Chip label={`${status.plugin_branch_count} protected plugin branches`} color="success" variant="outlined" />
+                <Chip label={`${status.active_server_administrator_count} active server admins`} variant="outlined" />
+                <Chip label={status.current_user_can_refresh ? "Manual trigger allowed" : "TWC Server Administrator required"} variant="outlined" />
+              </Stack>
+              <Typography variant="body2" color="text.secondary">
+                Nightly schedule: {status.schedule_time} {status.schedule_timezone} · window {status.schedule_window_minutes} minutes
+              </Typography>
+              {status.last_job_id ? (
+                <Typography variant="body2" color="text.secondary">
+                  Last job: {status.last_job_id} ({status.last_job_status ?? "unknown"})
+                  {status.last_trigger_reason ? ` · ${status.last_trigger_reason}` : ""}
+                  {status.last_triggered_by ? ` · Triggered by ${status.last_triggered_by}` : ""}
+                  {status.last_started_at ? ` · Started ${new Date(status.last_started_at).toLocaleString()}` : ""}
+                  {status.last_finished_at ? ` · Finished ${new Date(status.last_finished_at).toLocaleString()}` : ""}
+                </Typography>
+              ) : null}
+              {status.last_job_status === "failed" && status.last_job_message ? <Alert severity="error">{status.last_job_message}</Alert> : null}
+            </>
+          ) : fallbackCacheStatusQuery.isLoading ? <CircularProgress size={24} /> : null}
+          <Box>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              disabled={fallbackCacheStatusQuery.isFetching}
+              onClick={() => void fallbackCacheStatusQuery.refetch()}
+            >
+              Refresh Status
+            </Button>
+            <Button
+              sx={{ ml: 1 }}
+              variant="contained"
+              startIcon={<RefreshRoundedIcon />}
+              disabled={!csrfToken || !status?.current_user_can_refresh || running || triggerFallbackCacheRefreshMutation.isPending}
+              onClick={() => triggerFallbackCacheRefreshMutation.mutate()}
+            >
+              Run Fallback Refresh Now
+            </Button>
+            {triggerFallbackCacheRefreshMutation.isPending ? <CircularProgress size={22} sx={{ ml: 1 }} /> : null}
+          </Box>
+        </Stack>
+      </Paper>
+    );
+  };
+
   const renderTombstoneAudit = () => {
     const records: Array<
       | { kind: "Branch"; created_at: string; record: BranchTombstoneRecord }
@@ -5704,6 +5789,7 @@ export default function WorkspacePage() {
 
   const renderAdminSettings = () => (
     <Stack spacing={2}>
+      {renderFallbackCacheStatus()}
       {renderPermissionInventoryStatus()}
       {renderTombstoneAudit()}
       {renderCacheIngestToken()}
@@ -5720,7 +5806,7 @@ export default function WorkspacePage() {
             Workbench exposes a stored-model API for scripts, notebooks, AI agents, and integration services. Use a personal API key from this page or from Settings, then call the cache manifest first to discover the available route set.
           </Typography>
           <Alert severity="info">
-            Plugin-backed branches are the preferred source for designated cache targets. For those branches, Workbench serves the shared cached model data and checks your per-user TWC visibility overlay instead of duplicating the model itself per user.
+            Cameo plugin snapshots are the preferred full-fidelity source. Until one exists, Workbench can serve the nightly TWC REST fallback cache with the same per-user permission filtering; REST never overwrites a plugin snapshot.
           </Alert>
           <Typography variant="caption" color="text.secondary">
             These are full standalone Python scripts, not snippets. The current Workbench host and selected project context are prefilled when available. The matching repository files live under the examples folder too.

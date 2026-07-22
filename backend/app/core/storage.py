@@ -850,6 +850,61 @@ class SqliteRepository:
             managed_connection.commit()
         return summary
 
+    def replace_fallback_branch_snapshot_if_not_plugin(
+        self,
+        summary: BranchCacheSummary,
+        models: Iterable[CachedModelRecord],
+        permissions: Iterable[ModelPermissionSnapshot],
+        elements_by_model: dict[str, list[CachedElementRecord]],
+        *,
+        permission_user_id: str,
+    ) -> bool:
+        model_items = list(models)
+        permission_items = list(permissions)
+
+        def replace(connection: sqlite3.Connection) -> bool:
+            row = connection.execute(
+                """
+                SELECT payload FROM twc_branch_cache
+                WHERE server_id = ? AND project_id = ? AND branch_id = ?
+                """,
+                (summary.server_id, summary.project_id, summary.branch_id),
+            ).fetchone()
+            if row is not None:
+                current = BranchCacheSummary.model_validate_json(row["payload"])
+                if current.source_kind == "cameo-plugin":
+                    return False
+            model_ids = [item.model_id for item in model_items]
+            self.delete_branch_models_except(
+                summary.server_id,
+                summary.project_id,
+                summary.branch_id,
+                model_ids,
+                connection=connection,
+            )
+            self.upsert_cached_models(model_items, connection=connection)
+            self.replace_model_permissions_for_user_branch(
+                permission_user_id,
+                summary.server_id,
+                summary.project_id,
+                summary.branch_id,
+                permission_items,
+                connection=connection,
+            )
+            for model_id in model_ids:
+                self.replace_cached_elements(
+                    summary.server_id,
+                    summary.project_id,
+                    summary.branch_id,
+                    model_id,
+                    elements_by_model.get(model_id, []),
+                    connection=connection,
+                )
+            self.upsert_branch_cache_summary(summary, connection=connection)
+            return True
+
+        return self.run_in_transaction(replace)
+
     def delete_branch_cache(self, server_id: str, project_id: str, branch_id: str) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(

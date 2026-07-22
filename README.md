@@ -98,9 +98,11 @@ Important settings:
 - `TWC_OSLC_CALLBACK_PATH`: optional browser-visible callback path for the OSLC OAuth redirect.
 - `CACHE_INGEST_TOKENS`: optional legacy fallback list for plugin write tokens. The preferred path is to manage the plugin ingest token from Workbench admin Settings.
 - `CACHE_API_TOKENS`: optional legacy fallback map of bearer token to Workbench username for cache-read API access. The preferred path is to let users create their own API keys from Workbench Settings.
-- `TWC_PLUGIN_ONLY_CACHE_TARGETS`: optional JSON object keyed by Workbench server id that forces listed project ids or project/branch pairs to use plugin-backed cache only and refuse live `/osmc` fallback until a plugin snapshot exists.
 - `PERMISSION_SNAPSHOT_REFRESH_MINUTES`: active-user effective permissions are atomically replaced on this interval; defaults to `30`.
 - `PERMISSION_INVENTORY_REFRESH_HOURS`: refresh interval for the shared role/group catalog; defaults to `6`.
+- `FALLBACK_CACHE_SYNC_TIME`: nightly TWC REST fallback start time in 24-hour `HH:MM` format; defaults to `00:00`.
+- `FALLBACK_CACHE_SYNC_TIMEZONE`: IANA timezone for the nightly fallback window; defaults to `America/New_York`.
+- `FALLBACK_CACHE_SYNC_WINDOW_MINUTES`: scheduler window after the configured start; defaults to `60`.
 - `JOB_RETENTION_DAYS`: automatic retention period for completed, failed, and cancelled job records; defaults to `30`.
 - `PERMISSION_SNAPSHOT_MAX_PARALLEL_PROBES`: bounded per-user branch probe concurrency; defaults to `4`.
 - `PERMISSION_REFRESH_LEASE_SECONDS`: renewable database lease used to prevent duplicate cross-worker refreshes; defaults to `900`.
@@ -123,8 +125,10 @@ external integrations.
 - The shared model cache is stored once per branch, while Workbench maintains a
   per-user visibility and editability overlay so TWC access stays user-scoped
   without caching the same model N times.
-- Plugin-backed branches can be forced to use plugin cache only through
-  `TWC_PLUGIN_ONLY_CACHE_TARGETS`.
+- Workbench discovers and materializes TWC REST fallback branches only during
+  the nightly window, or from a manual TWC Server Administrator trigger.
+- A Cameo plugin snapshot atomically replaces a REST fallback. REST refreshes
+  skip plugin-backed branches and recheck that invariant at commit time.
 - Cached project discovery probes missing branch-access records with the
   signed-in user's own TWC session, allowing authorized users to discover
   projects published or committed by someone else without exposing them to

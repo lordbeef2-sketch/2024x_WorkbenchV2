@@ -3,7 +3,7 @@ export type ThemeMode = "light" | "dark" | "system";
 export type ItemDetailViewMode = "standard" | "expert" | "all";
 export type CapabilityState = "ready" | "restricted" | "not_available" | "unknown";
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
-export type JobType = "simulation" | "publish" | "export" | "model_cache" | "agent_knowledge" | "permission_refresh" | "permission_inventory_refresh";
+export type JobType = "simulation" | "publish" | "export" | "model_cache" | "agent_knowledge" | "permission_refresh" | "permission_inventory_refresh" | "fallback_cache_refresh";
 export type ExportFormat = "json" | "csv" | "markdown" | "html" | "pdf";
 export type CacheApiKeyScope = "read" | "write" | "edit";
 
@@ -437,6 +437,27 @@ export interface ServerPermissionInventoryStatus {
   audit_count: number;
   warning: string | null;
   recent_audits: ServerPermissionInventoryAuditRecord[];
+  message: string;
+}
+
+export interface FallbackCacheRefreshStatus {
+  server_id: string;
+  schedule_time: string;
+  schedule_timezone: string;
+  schedule_window_minutes: number;
+  current_local_time: string;
+  current_user_can_refresh: boolean;
+  active_server_administrator_count: number;
+  fallback_branch_count: number;
+  plugin_branch_count: number;
+  last_job_id: string | null;
+  last_job_status: JobStatus | null;
+  last_job_message: string | null;
+  last_triggered_by: string | null;
+  last_trigger_reason: string | null;
+  last_started_at: string | null;
+  last_finished_at: string | null;
+  nightly_window_open: boolean;
   message: string;
 }
 

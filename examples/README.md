@@ -163,6 +163,7 @@ Files:
 - `32_permission_refresh_job.py` (session-authenticated background refresh and status polling)
 - `33_workbench_cache_api_tombstone_branch.py` (revision-guarded stored-branch removal; requires explicit confirmation)
 - `34_workbench_cache_api_tombstone_project.py` (atomic all-branch project removal; requires explicit confirmation)
+- `35_fallback_cache_refresh.py` (TWC Server Administrator manual trigger and background job status)
 
 They read from:
 
@@ -189,6 +190,7 @@ python .\32_permission_refresh_job.py
 python .\33_workbench_cache_api_tombstone_branch.py
 # More destructive: removes every stored branch in the configured project.
 python .\34_workbench_cache_api_tombstone_project.py
+python .\35_fallback_cache_refresh.py
 ```
 
 More background is in:

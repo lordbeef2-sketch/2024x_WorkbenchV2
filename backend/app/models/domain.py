@@ -33,6 +33,7 @@ class JobType(str, Enum):
     AGENT_KNOWLEDGE = "agent_knowledge"
     PERMISSION_REFRESH = "permission_refresh"
     PERMISSION_INVENTORY_REFRESH = "permission_inventory_refresh"
+    FALLBACK_CACHE_REFRESH = "fallback_cache_refresh"
 
 
 class JobStatus(str, Enum):
@@ -598,6 +599,32 @@ class BranchCacheSyncRequest(BaseModel):
     branch_id: str
     workspace_id: str | None = None
     force_full_refresh: bool = False
+
+
+class FallbackCacheRefreshRequest(BaseModel):
+    project_id: str | None = None
+    branch_id: str | None = None
+
+
+class FallbackCacheRefreshStatus(BaseModel):
+    server_id: str
+    schedule_time: str
+    schedule_timezone: str
+    schedule_window_minutes: int
+    current_local_time: datetime
+    current_user_can_refresh: bool = False
+    active_server_administrator_count: int = 0
+    fallback_branch_count: int = 0
+    plugin_branch_count: int = 0
+    last_job_id: str | None = None
+    last_job_status: JobStatus | None = None
+    last_job_message: str | None = None
+    last_triggered_by: str | None = None
+    last_trigger_reason: str | None = None
+    last_started_at: datetime | None = None
+    last_finished_at: datetime | None = None
+    nightly_window_open: bool = False
+    message: str = ""
 
 
 class BranchCacheSummary(BaseModel):

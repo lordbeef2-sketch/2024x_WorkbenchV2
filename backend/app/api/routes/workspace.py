@@ -11,6 +11,7 @@ from app.models.domain import (
     CacheApiKeyCreateRequest,
     CacheIngestTokenRequest,
     CacheElementSearchResponse,
+    FallbackCacheRefreshRequest,
     OSLCExecuteRequest,
     OSLCGenerateConsumerRequest,
     OSLCSharedConsumerRequest,
@@ -458,6 +459,30 @@ async def retry_permission_inventory(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.get("/fallback-cache/status")
+def fallback_cache_status(
+    session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.fallback_cache_refresh_status(session)
+
+
+@router.post("/fallback-cache/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh_fallback_cache(
+    payload: FallbackCacheRefreshRequest,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.trigger_fallback_cache_refresh(session, payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.get("/permissions/current")
 def current_permission_status(
     projectId: str = Query(...),
@@ -477,6 +502,8 @@ async def start_model_cache_sync(
 ):
     try:
         return await container.platform.submit_branch_cache_sync(session, payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 

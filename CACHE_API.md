@@ -33,11 +33,14 @@ Workbench can serve cached data from two places:
    The Cameo plugin publishes a full recursive semantic model snapshot to
    Workbench and later publishes deltas.
 
-2. **Workbench direct branch cache**  
-   Legacy live `/osmc` traversal can still build a branch cache for branches
-   that are not configured as plugin-only.
+2. **Workbench TWC REST fallback cache**
+   A nightly background job materializes the model data TWC REST exposes until
+   a Cameo snapshot is available. A TWC Server Administrator can also start the
+   background job manually from Workbench Settings.
 
-For plugin-backed branches, the plugin export is the primary model source.
+For plugin-backed branches, the plugin export is authoritative. REST refreshes
+skip those branches and cannot overwrite them, including when a snapshot arrives
+while a REST refresh is running.
 
 ## API key scopes
 
@@ -123,22 +126,12 @@ and remove all stored branches for that project in one database transaction.
 
 - `PATCH /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
 
-## Plugin-only targets
+## Hybrid refresh policy
 
-When you want specific branches to refuse live `/osmc` fallback and require a
-plugin snapshot first, configure:
-
-```env
-TWC_PLUGIN_ONLY_CACHE_TARGETS={"twc-2022x":{"project_ids":["project-a"],"branch_ids":{"project-b":["master","feature-1"]}}}
-```
-
-For those targets:
-
-- tree loading
-- element discovery
-- item details
-
-will refuse live fallback until a plugin snapshot is present.
+The REST fallback runs only in the configured nightly window. The manual
+Workbench trigger is the explicit exception and requires a current TWC Server
+Administrator session. Both paths are background jobs and preserve the last
+complete fallback if an upstream branch traversal fails.
 
 ## Example flows
 

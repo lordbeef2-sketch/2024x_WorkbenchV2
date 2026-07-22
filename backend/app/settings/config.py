@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -117,27 +118,6 @@ class TWCAuthServerOverride(BaseModel):
         return value
 
 
-class PluginOnlyCacheTargetRule(BaseModel):
-    project_ids: list[str] = Field(default_factory=list)
-    branch_ids: dict[str, list[str]] = Field(default_factory=dict)
-
-    @field_validator("project_ids", mode="before")
-    @classmethod
-    def normalize_project_ids(cls, value: object) -> object:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return value
-
-    @field_validator("branch_ids", mode="before")
-    @classmethod
-    def normalize_branch_ids(cls, value: object) -> object:
-        if value is None:
-            return {}
-        return value
-
-
 class Settings(BaseSettings):
     app_name: str = "TWC Workbench"
     environment: str = "development"
@@ -182,6 +162,9 @@ class Settings(BaseSettings):
     permission_snapshot_refresh_minutes: int = Field(default=30, ge=1)
     permission_inventory_refresh_hours: int = Field(default=6, ge=1)
     job_retention_days: int = Field(default=30, ge=1, le=3650)
+    fallback_cache_sync_time: str = "00:00"
+    fallback_cache_sync_timezone: str = "America/New_York"
+    fallback_cache_sync_window_minutes: int = Field(default=60, ge=1, le=720)
     permission_snapshot_max_parallel_probes: int = Field(default=4, ge=1, le=16)
     permission_refresh_lease_seconds: int = Field(default=900, ge=60, le=7200)
     permission_refresh_warning_failures: int = Field(default=3, ge=1)
@@ -229,7 +212,6 @@ class Settings(BaseSettings):
     publisher_webhook_url: str | None = None
     cache_ingest_tokens: list[str] = Field(default_factory=list)
     cache_api_tokens: dict[str, str] = Field(default_factory=dict)
-    twc_plugin_only_cache_targets: dict[str, PluginOnlyCacheTargetRule] = Field(default_factory=dict)
     three_ds_kb_path: Path | None = None
     three_ds_kb_max_chunks: int = Field(default=1200, ge=0, le=10000)
     root_path: str = ""
@@ -270,6 +252,30 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.strip().lower() in LEGACY_TWC_AUTH_PATHS:
             return "/authentication/authorize"
         return value
+
+    @field_validator("fallback_cache_sync_time")
+    @classmethod
+    def validate_fallback_cache_sync_time(cls, value: str) -> str:
+        candidate = value.strip()
+        try:
+            hour_text, minute_text = candidate.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("FALLBACK_CACHE_SYNC_TIME must use HH:MM 24-hour format") from exc
+        if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+            raise ValueError("FALLBACK_CACHE_SYNC_TIME must use HH:MM 24-hour format")
+        return f"{hour:02d}:{minute:02d}"
+
+    @field_validator("fallback_cache_sync_timezone")
+    @classmethod
+    def validate_fallback_cache_sync_timezone(cls, value: str) -> str:
+        candidate = value.strip()
+        try:
+            ZoneInfo(candidate)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("FALLBACK_CACHE_SYNC_TIMEZONE must be a valid IANA timezone") from exc
+        return candidate
 
     @field_validator("twc_auth_scope", mode="before")
     @classmethod
@@ -400,24 +406,6 @@ class Settings(BaseSettings):
             return payload
         return value
 
-    @field_validator("twc_plugin_only_cache_targets", mode="before")
-    @classmethod
-    def parse_twc_plugin_only_cache_targets(cls, value: object) -> object:
-        if value is None:
-            return {}
-        if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return {}
-            try:
-                payload = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ValueError("TWC_PLUGIN_ONLY_CACHE_TARGETS must be a JSON object keyed by server id") from exc
-            if not isinstance(payload, dict):
-                raise ValueError("TWC_PLUGIN_ONLY_CACHE_TARGETS must be a JSON object keyed by server id")
-            return payload
-        return value
-
     @field_validator("twc_preset_servers")
     @classmethod
     def validate_unique_twc_preset_server_ids(
@@ -506,9 +494,6 @@ class Settings(BaseSettings):
 
     def twc_auth_override_for_server(self, server_id: str) -> TWCAuthServerOverride | None:
         return self.twc_auth_server_overrides.get(server_id) or self.twc_auth_server_overrides.get("*")
-
-    def plugin_only_cache_rule_for_server(self, server_id: str) -> PluginOnlyCacheTargetRule | None:
-        return self.twc_plugin_only_cache_targets.get(server_id) or self.twc_plugin_only_cache_targets.get("*")
 
     def extract_upstream_auth_cookies(self, cookies: Mapping[str, str]) -> dict[str, str]:
         allowed = {name.strip() for name in self.upstream_auth_cookie_names if name.strip()}

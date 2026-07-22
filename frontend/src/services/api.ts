@@ -17,6 +17,7 @@ import {
   CompareResult,
   CurrentPermissionStatus,
   DashboardPayload,
+  FallbackCacheRefreshStatus,
   ItemDetails,
   JobRecord,
   OSLCAuthorizationStatus,
@@ -186,6 +187,16 @@ export const api = {
     return request<JobRecord>("/workspace/permission-inventory/retry", {
       method: "POST",
       headers: jsonHeaders(csrfToken),
+    });
+  },
+  getFallbackCacheRefreshStatus() {
+    return request<FallbackCacheRefreshStatus>("/workspace/fallback-cache/status");
+  },
+  triggerFallbackCacheRefresh(csrfToken: string) {
+    return request<JobRecord>("/workspace/fallback-cache/refresh", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify({}),
     });
   },
   listBranchTombstones() {

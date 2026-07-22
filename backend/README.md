@@ -40,7 +40,20 @@ Use `Authorization: Bearer <api-key>` on those requests. The API key identity ma
 Stereotype search accepts either a stereotype id or a stereotype name fragment and can return either lightweight cached element records or full cached item details with `includeDetails=true`.
 Key labels, creation time, and last-used time are stored for light auditability, while the full secret is only shown once at creation time.
 
-Use `TWC_PLUGIN_ONLY_CACHE_TARGETS` when you want specific server/project/branch combinations to refuse live `/osmc` fallback and require a Cameo plugin snapshot first.
+Workbench uses a hybrid cache by default. A background TWC REST refresh fills
+branches that do not yet have a Cameo snapshot. It runs at `00:00`
+`America/New_York` by default and is configured with
+`FALLBACK_CACHE_SYNC_TIME`, `FALLBACK_CACHE_SYNC_TIMEZONE`, and
+`FALLBACK_CACHE_SYNC_WINDOW_MINUTES`. Only an active TWC Server Administrator
+session can supply the delegated access for that job. A TWC Server
+Administrator can also queue the same server-wide job from Workbench Settings
+with `POST /api/workspace/fallback-cache/refresh`; the response is immediate and
+the work continues in the background. Status is available at
+`GET /api/workspace/fallback-cache/status`.
+
+A Cameo plugin snapshot is authoritative. The REST job skips plugin-backed
+branches and the database transaction checks the source again before replacing
+a branch, so a snapshot that arrives during a REST traversal still wins.
 
 The cache API stores the shared branch model payload once and keeps per-user
 permission overlays separately. That avoids duplicating the same branch model
