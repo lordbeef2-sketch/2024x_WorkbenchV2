@@ -14,6 +14,7 @@ import {
   CacheIngestTokenStatus,
   CapabilitySummary,
   CompareResult,
+  CurrentPermissionStatus,
   DashboardPayload,
   ItemDetails,
   JobRecord,
@@ -514,11 +515,22 @@ export const api = {
     });
     return request<CompareResult>(`/workspace/compare/branches?${params.toString()}`);
   },
-  refreshCapabilities(csrfToken: string) {
+  refreshCapabilities(
+    csrfToken: string,
+    payload?: { selected_project_id?: string; selected_branch_id?: string; selected_model_id?: string },
+  ) {
     return request<CapabilitySummary>("/workspace/capabilities/refresh", {
       method: "POST",
       headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload ?? {}),
     });
+  },
+  getCurrentPermissionStatus(projectId: string, branchId: string, modelId?: string) {
+    const params = new URLSearchParams({ projectId, branchId });
+    if (modelId) {
+      params.set("modelId", modelId);
+    }
+    return request<CurrentPermissionStatus>(`/workspace/permissions/current?${params.toString()}`);
   },
   getPreferences() {
     return request<SessionPreferences>("/workspace/preferences");

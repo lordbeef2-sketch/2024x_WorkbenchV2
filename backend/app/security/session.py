@@ -182,12 +182,26 @@ class SessionManager:
         attempted_at: datetime,
         *,
         successful: bool,
+        error: str | None = None,
     ) -> SessionData:
         session.permission_snapshot_attempted_at = attempted_at
         if successful:
             session.permission_snapshot_refreshed_at = attempted_at
+            session.permission_snapshot_failure_count = 0
+            session.permission_snapshot_last_error = None
+        else:
+            session.permission_snapshot_failure_count += 1
+            session.permission_snapshot_last_error = error
         self.store.set(session)
         return session
+
+    def mark_server_permission_snapshots_due(self, server_id: str) -> None:
+        due_at = datetime.min.replace(tzinfo=UTC)
+        for session in self.store.list_active():
+            if session.server.id != server_id:
+                continue
+            session.permission_snapshot_attempted_at = due_at
+            self.store.set(session)
 
     def get_credentials(self, session: SessionData) -> TokenBundle:
         return self.cipher.decrypt(session.encrypted_credentials)
@@ -235,6 +249,17 @@ class SessionManager:
     def snapshot(self, session: SessionData | None) -> SessionSnapshot:
         if not session:
             return SessionSnapshot(authenticated=False)
+        warning = None
+        stale_minutes = self.settings.permission_snapshot_stale_warning_minutes
+        last_valid = session.permission_snapshot_refreshed_at or session.created_at
+        if (
+            session.permission_snapshot_failure_count >= self.settings.permission_refresh_warning_failures
+            or last_valid + timedelta(minutes=stale_minutes) <= datetime.now(UTC)
+        ):
+            warning = (
+                f"Teamwork Cloud permission refresh has failed {session.permission_snapshot_failure_count} time(s). "
+                "The last valid access snapshot remains active while Workbench retries."
+            )
         return SessionSnapshot(
             authenticated=True,
             session_id=session.session_id,
@@ -247,10 +272,23 @@ class SessionManager:
             bookmarks=session.bookmarks,
             saved_searches=session.saved_searches,
             recent_items=session.recent_items,
+            permission_snapshot_attempted_at=session.permission_snapshot_attempted_at,
+            permission_snapshot_refreshed_at=session.permission_snapshot_refreshed_at,
+            permission_snapshot_failure_count=session.permission_snapshot_failure_count,
+            permission_snapshot_warning=warning,
         )
 
     def update_capabilities(self, session: SessionData, capabilities: Any) -> SessionData:
         session.capabilities = capabilities
+        self.store.set(session)
+        return session
+
+    def update_authorization_context(
+        self,
+        session: SessionData,
+        authorization_context: AuthorizationContext,
+    ) -> SessionData:
+        session.authorization_context = authorization_context
         self.store.set(session)
         return session
 

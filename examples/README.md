@@ -160,6 +160,7 @@ Files:
 - `29_workbench_cache_api_element_graph.py`
 - `30_workbench_cache_api_tree_children.py`
 - `31_workbench_cache_api_native_specifications.py`
+- `32_permission_refresh_job.py` (session-authenticated background refresh and status polling)
 
 They read from:
 
@@ -181,6 +182,7 @@ python .\28_workbench_cache_api_search_elements.py
 python .\29_workbench_cache_api_element_graph.py
 python .\30_workbench_cache_api_tree_children.py
 python .\31_workbench_cache_api_native_specifications.py
+python .\32_permission_refresh_job.py
 ```
 
 More background is in:

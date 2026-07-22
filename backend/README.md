@@ -78,11 +78,45 @@ authorization uses only that stored snapshot. A background task refreshes each
 active identity every 30 minutes (configurable with
 `PERMISSION_SNAPSHOT_REFRESH_MINUTES`) and replaces both branch and model
 permission rows in one SQLite transaction. Missing, removed, and revoked grants
-are deleted; a branch probe failure is stored as denied rather than preserving
-stale access. If the scheduled TWC credential/refresh operation fails before a
-new snapshot can be proven, Workbench replaces that identity's snapshot with
-an empty set and clears its project caches. Database transactions remain
-all-or-nothing, so readers never receive a partially refreshed permission set.
+are deleted only after a successful authoritative refresh. A gateway error,
+credential-refresh interruption, malformed response, or branch-probe failure
+is indeterminate rather than proof of revocation, so Workbench retains the last
+valid snapshot and retries later. Database transactions remain all-or-nothing,
+so readers never receive a partially refreshed permission set.
+The server-wide inventory of every role, group, nested membership, and scoped
+role assignment is stored separately and refreshed every six hours by default
+(`PERMISSION_INVENTORY_REFRESH_HOURS`). A new full branch upload invalidates
+that inventory and makes active sessions due for the next background refresh.
+The inventory supports discovery and comparison only; fresh current-user
+effective permissions and direct branch access remain the 30-minute security
+authority, so a stale inventory cannot preserve a revoked grant.
+Each revision-bound TWC role manifest is also reused as a derived project ACL
+until either the server inventory or branch revision changes. This avoids
+rescanning every group and role for every logged-in user while leaving fresh
+current-user claims and direct probes authoritative.
+The global inventory can use a dedicated least-privilege TWC identity through
+the `TWC_PERMISSION_INVENTORY_SERVICE_TOKENS` JSON map (`server-id` to token),
+so inventory health does not depend on whichever interactive user happens to
+trigger the six-hour pass. These tokens are never included in logs or audits.
+The UI's Refresh Capabilities action does not run that server-wide inventory
+scan. It immediately queues a `permission_refresh` job, refreshes the signed-in
+user's effective permission claims, filters
+the uploaded registry to matching global/workspace/project Read Resources
+scopes, and replaces permissions only for those permitted projects.
+The open model and its cached queries remain mounted during this work. The UI
+reconciles project, branch, and model access independently, closing only the
+selection whose access was authoritatively revoked.
+The UI polls `GET /api/workspace/permissions/current` against the stored
+snapshot for its selected project/branch/model; this lightweight check performs
+no upstream TWC call and also catches scheduled-refresh revocations.
+SQLite-backed renewable leases coordinate refresh ownership across backend
+workers. Probe concurrency is bounded by
+`PERMISSION_SNAPSHOT_MAX_PARALLEL_PROBES`, with the selected project/branch
+queued first. Every completed or indeterminate pass appends a sanitized audit
+record containing before/after hashes and grant/revocation deltas; administrators
+can query `GET /api/workspace/permission-refresh/audit`. Repeated failures are
+surfaced after `PERMISSION_REFRESH_WARNING_FAILURES` attempts or
+`PERMISSION_SNAPSHOT_STALE_WARNING_MINUTES` without a valid replacement.
 Workbench recognizes explicit `editable` values as well as TWC permission,
 allowed-action, and allowed-operation payloads when resolving effective edit
 rights.
@@ -93,7 +127,8 @@ role enumeration merges direct users, expanded groups, view/edit, branch-admin,
 access-admin, and read-only branch results into that attachment. Login compares
 the prior attachment with the newly proven effective access before atomically
 replacing the user's permission rows. Attached data never grants access by
-itself, and a failed current-user probe is denied.
+itself, and a failed current-user probe is treated as indeterminate while the
+last valid snapshot remains in force.
 
 See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
 

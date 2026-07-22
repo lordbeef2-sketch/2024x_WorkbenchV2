@@ -14,14 +14,89 @@ from app.models.domain import (
     ModelPermissionSnapshot,
     PermissionManifest,
     PermissionManifestEntry,
+    PermissionRefreshAuditRecord,
     ServerProfile,
+    ServerPermissionInventory,
     SessionData,
     UserContext,
 )
-from app.services.platform import PlatformService
+from app.services.platform import PermissionSnapshotIndeterminateError, PlatformService
 
 
 class PermissionSnapshotReplacementTests(unittest.TestCase):
+    def test_current_permission_status_tracks_branch_and_model_revocation(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            repo.upsert_branch_access_records([
+                BranchAccessRecord(
+                    user_id="alice",
+                    server_id="server",
+                    project_id="project",
+                    branch_id="main",
+                    accessible=True,
+                    editable=True,
+                )
+            ])
+            repo.upsert_model_permissions([
+                ModelPermissionSnapshot(
+                    user_id="alice",
+                    server_id="server",
+                    project_id="project",
+                    branch_id="main",
+                    model_id="model",
+                    accessible=True,
+                    editable=True,
+                )
+            ])
+            service = object.__new__(PlatformService)
+            service.repo = repo
+            session = SimpleNamespace(
+                server=SimpleNamespace(id="server"),
+                user=SimpleNamespace(preferred_username="Alice"),
+            )
+
+            allowed = service.current_permission_status(session, "project", "main", "model")
+            self.assertTrue(allowed.branch_accessible)
+            self.assertTrue(allowed.model_accessible)
+
+            repo.replace_user_permission_snapshot("alice", "server", [], [])
+            revoked = service.current_permission_status(session, "project", "main", "model")
+            self.assertFalse(revoked.project_accessible)
+            self.assertFalse(revoked.branch_accessible)
+            self.assertFalse(revoked.model_accessible)
+
+    def test_permission_refresh_lease_coordinates_repository_processes(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            database_path = Path(directory) / "workbench.db"
+            first = SqliteRepository(database_path)
+            second = SqliteRepository(database_path)
+
+            self.assertTrue(first.acquire_permission_refresh_lease("permission-refresh:server:alice", "worker-a", ttl_seconds=60))
+            self.assertFalse(second.acquire_permission_refresh_lease("permission-refresh:server:alice", "worker-b", ttl_seconds=60))
+            self.assertTrue(first.renew_permission_refresh_lease("permission-refresh:server:alice", "worker-a", ttl_seconds=60))
+            first.release_permission_refresh_lease("permission-refresh:server:alice", "worker-a")
+            self.assertTrue(second.acquire_permission_refresh_lease("permission-refresh:server:alice", "worker-b", ttl_seconds=60))
+
+    def test_permission_refresh_audit_is_append_only_and_queryable(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            record = PermissionRefreshAuditRecord(
+                user_id="alice",
+                server_id="server",
+                reason="scheduled-permission-refresh",
+                authoritative=True,
+                status="succeeded",
+                previous_hash="before",
+                current_hash="after",
+                revoked_branches=["project/old"],
+            )
+
+            repo.append_permission_refresh_audit(record)
+
+            stored = repo.list_permission_refresh_audit("server", "alice")
+            self.assertEqual([item.id for item in stored], [record.id])
+            self.assertEqual(stored[0].revoked_branches, ["project/old"])
+
     def test_replacement_removes_stale_grants_and_preserves_other_users(self) -> None:
         # SQLite read helpers rely on interpreter cleanup for connection close;
         # ignore Windows' transient file-lock cleanup error in this isolated DB.
@@ -136,8 +211,73 @@ class PermissionSnapshotReplacementTests(unittest.TestCase):
             self.assertEqual(stored.latest_revision, "42")
             self.assertEqual(stored.manifest.entries[0].principal_name, "engineering")
 
+    def test_server_permission_inventory_is_persisted_and_invalidated(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            inventory = ServerPermissionInventory(
+                server_id="server",
+                roles=[{"ID": "role-1", "name": "Resource Manager"}],
+                groups=[{"ID": "group-1", "name": "Managers"}],
+            )
+
+            repo.upsert_server_permission_inventory(inventory)
+            stored = repo.get_server_permission_inventory("server")
+            self.assertIsNotNone(stored)
+            self.assertEqual(stored.roles[0]["name"], "Resource Manager")
+            repo.delete_server_permission_inventory("server")
+            self.assertIsNone(repo.get_server_permission_inventory("server"))
+
 
 class PermissionAttachmentComparisonTests(unittest.TestCase):
+    def test_current_attached_rest_acl_is_reused_without_group_rescan(self) -> None:
+        service = object.__new__(PlatformService)
+        captured_at = datetime.now(UTC)
+        summary = BranchCacheSummary(
+            server_id="server",
+            project_id="project",
+            branch_id="main",
+            latest_revision="42",
+        )
+        attachment = BranchPermissionAttachment(
+            server_id="server",
+            project_id="project",
+            branch_id="main",
+            latest_revision="42",
+            attached_at=captured_at,
+            manifest=PermissionManifest(
+                source="twc-rest-role-manifest",
+                complete=True,
+                entries=[
+                    PermissionManifestEntry(
+                        scope_id="main",
+                        scope_type="project-branch",
+                        principal_name="alice",
+                        principal_type="user",
+                        role_name="Resource Manager",
+                        accessible=True,
+                        editable=True,
+                        via_groups=["Engineering"],
+                        readonly_branch_ids=["release"],
+                    )
+                ],
+            ),
+        )
+        inventory = ServerPermissionInventory(
+            server_id="server",
+            captured_at=captured_at - timedelta(minutes=1),
+        )
+        session = SimpleNamespace(
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="Alice"),
+        )
+
+        self.assertTrue(service._attached_rest_manifest_is_current(summary, attachment, inventory))
+        access = service._branch_access_from_attached_manifest(session, summary, attachment)
+        self.assertIsNotNone(access)
+        self.assertEqual(access.roles, ["Resource Manager"])
+        self.assertEqual(access.via_groups, ["Engineering"])
+        self.assertEqual(access.payload["readonly_branch_ids"], ["release"])
+
     def test_stale_attached_grant_never_overrides_live_denial(self) -> None:
         service = object.__new__(PlatformService)
         session = SimpleNamespace(
@@ -255,7 +395,7 @@ class ScheduledPermissionRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         service._refresh_session_credentials_if_needed.assert_not_awaited()
 
-    async def test_due_refresh_failure_replaces_snapshot_with_empty_permissions(self) -> None:
+    async def test_due_refresh_failure_preserves_last_valid_snapshot(self) -> None:
         now = datetime.now(UTC)
         server = ServerProfile(id="server", name="Server", base_url="https://twc.example")
         session = SessionData(
@@ -275,7 +415,7 @@ class ScheduledPermissionRefreshTests(unittest.IsolatedAsyncioTestCase):
             def list_active_sessions(self):
                 return [session]
 
-            def mark_permission_snapshot_attempt(self, item, attempted_at, *, successful):
+            def mark_permission_snapshot_attempt(self, item, attempted_at, *, successful, error=None):
                 self.marked.append((item.session_id, successful))
 
         class FakeRepository:
@@ -300,10 +440,141 @@ class ScheduledPermissionRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         await service.refresh_due_permission_snapshots()
 
-        self.assertEqual(service.repo.replacements, [("alice", "server", [], [])])
+        self.assertEqual(service.repo.replacements, [])
         self.assertEqual(service.sessions.marked, [(session.session_id, False)])
-        self.assertIn("projects", service.repo.deleted_cache_keys)
-        self.assertIn("project:", service.repo.deleted_cache_keys)
+        self.assertEqual(service.repo.deleted_cache_keys, [])
+
+    async def test_branch_probe_failure_cannot_be_converted_into_a_revocation(self) -> None:
+        now = datetime.now(UTC)
+        service = object.__new__(PlatformService)
+        service.repo = SimpleNamespace(
+            list_cached_models=lambda server_id, project_id, branch_id: [],
+            get_branch_permission_attachment=lambda server_id, project_id, branch_id: None,
+        )
+        adapter = SimpleNamespace(
+            build_plugin_branch_access_manifest=AsyncMock(return_value=[]),
+            probe_plugin_branch_permissions=AsyncMock(side_effect=RuntimeError("temporary gateway failure")),
+        )
+        session = SimpleNamespace(
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="Alice"),
+        )
+        summary = BranchCacheSummary(
+            server_id="server",
+            project_id="project",
+            branch_id="main",
+        )
+
+        with self.assertRaises(PermissionSnapshotIndeterminateError):
+            await service._resolve_user_branch_permission_snapshot(
+                session,
+                summary,
+                adapter=adapter,
+                refreshed_at=now,
+            )
+
+
+class ManualCapabilityRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_capabilities_queues_permission_refresh_without_blocking(self) -> None:
+        capabilities = CapabilitySummary(detected_version="2024x")
+        session = SimpleNamespace(
+            session_id="session",
+            server=SimpleNamespace(id="server"),
+            user=SimpleNamespace(preferred_username="Alice"),
+        )
+        adapter = SimpleNamespace(discover_capabilities=AsyncMock(return_value=capabilities))
+        submitted = []
+        fake_job = SimpleNamespace(id="permission-job")
+        service = object.__new__(PlatformService)
+        service._adapter_for_session = lambda item: adapter
+        service.sessions = SimpleNamespace(
+            update_capabilities=lambda item, value: SimpleNamespace(
+                session_id=item.session_id,
+                server=item.server,
+                user=item.user,
+                capabilities=value,
+            )
+        )
+        service.jobs = SimpleNamespace(
+            list_jobs=lambda owner: [],
+            create_job=lambda **kwargs: fake_job,
+            submit=lambda job, handler: submitted.append((job, handler)) or job,
+        )
+
+        result = await service.refresh_capabilities(session)
+
+        self.assertEqual(result.permission_refresh_job_id, "permission-job")
+        self.assertEqual(len(submitted), 1)
+
+
+class ServerPermissionInventoryCadenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fresh_inventory_is_reused_for_six_hours(self) -> None:
+        inventory = ServerPermissionInventory(
+            server_id="server",
+            roles=[{"ID": "role-1"}],
+            groups=[{"ID": "group-1"}],
+            captured_at=datetime.now(UTC),
+        )
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_inventory_refresh_hours=6)
+        service._permission_inventory_locks = {}
+        service.repo = SimpleNamespace(get_server_permission_inventory=lambda server_id: inventory)
+        adapter = SimpleNamespace(
+            _admin_roles=AsyncMock(),
+            _admin_usergroups=AsyncMock(),
+        )
+
+        result = await service._server_permission_inventory(adapter, "server")
+
+        self.assertIs(result, inventory)
+        adapter._admin_roles.assert_not_awaited()
+        adapter._admin_usergroups.assert_not_awaited()
+
+    async def test_expired_inventory_is_atomically_replaced_from_twc(self) -> None:
+        expired = ServerPermissionInventory(
+            server_id="server",
+            roles=[{"ID": "old-role"}],
+            captured_at=datetime.now(UTC) - timedelta(hours=7),
+        )
+        stored: list[ServerPermissionInventory] = []
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_inventory_refresh_hours=6)
+        service._permission_inventory_locks = {}
+        service.repo = SimpleNamespace(
+            get_server_permission_inventory=lambda server_id: stored[-1] if stored else expired,
+            upsert_server_permission_inventory=lambda inventory: stored.append(inventory),
+        )
+        adapter = SimpleNamespace(
+            _admin_roles=AsyncMock(return_value=[{"ID": "new-role"}]),
+            _admin_usergroups=AsyncMock(return_value=[{"ID": "new-group"}]),
+        )
+
+        result = await service._server_permission_inventory(adapter, "server")
+
+        self.assertEqual(result.roles, [{"ID": "new-role"}])
+        self.assertEqual(result.groups, [{"ID": "new-group"}])
+        self.assertEqual(stored, [result])
+
+    async def test_manual_user_refresh_reuses_stale_inventory_without_global_api_calls(self) -> None:
+        inventory = ServerPermissionInventory(
+            server_id="server",
+            roles=[{"ID": "role-1"}],
+            captured_at=datetime.now(UTC) - timedelta(hours=7),
+        )
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(permission_inventory_refresh_hours=6)
+        service._permission_inventory_locks = {}
+        service.repo = SimpleNamespace(get_server_permission_inventory=lambda server_id: inventory)
+        adapter = SimpleNamespace(
+            _admin_roles=AsyncMock(),
+            _admin_usergroups=AsyncMock(),
+        )
+
+        result = await service._server_permission_inventory(adapter, "server", allow_refresh=False)
+
+        self.assertIs(result, inventory)
+        adapter._admin_roles.assert_not_awaited()
+        adapter._admin_usergroups.assert_not_awaited()
 
 if __name__ == "__main__":
     unittest.main()

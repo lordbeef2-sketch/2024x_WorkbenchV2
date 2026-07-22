@@ -1800,7 +1800,7 @@ export default function WorkspacePage() {
   const treeContextRef = useRef<string>(treeContextKey);
   const treeNodesRef = useRef<TreeNode[]>([]);
   const [agentSyncKnowledgeBeforeChat, setAgentSyncKnowledgeBeforeChat] = useState(true);
-  const [notice, setNotice] = useState<{ severity: "success" | "error"; message: string } | null>(null);
+  const [notice, setNotice] = useState<{ severity: "success" | "info" | "warning" | "error"; message: string } | null>(null);
   const projectContextActive = tab === "projects" || tab === "models" || tab === "search" || tab === "diagram-viewer" || tab === "compare";
   const treeExpandedStorageKey = `${layoutStoragePrefix}:tree-expanded:${selectedProjectId || "no-project"}:${selectedBranchId || "no-branch"}`;
   const workspaceOuterPadding = compactUi ? { xs: 1.5, md: 2 } : { xs: 2, md: 3 };
@@ -1900,6 +1900,16 @@ export default function WorkspacePage() {
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
+  useEffect(() => {
+    if (!projectsQuery.isSuccess || !selectedProjectId || selectedProject) {
+      return;
+    }
+    setSelectedProjectId("");
+    setSelectedBranchId("");
+    setSelectedItemId("");
+    setItemDraft(null);
+    setNotice({ severity: "warning", message: "The selected project is no longer in your authoritative permission snapshot and was closed." });
+  }, [projectsQuery.isSuccess, selectedProject, selectedProjectId]);
   const compareLeftProject = useMemo(
     () => projects.find((project) => project.id === compareLeftProjectId) ?? null,
     [compareLeftProjectId, projects],
@@ -2494,6 +2504,52 @@ export default function WorkspacePage() {
     () => (selectedItemId ? loadedFlatNodes.find((node) => node.id === selectedItemId) ?? null : null),
     [loadedFlatNodes, selectedItemId],
   );
+  const selectedPermissionModelId = (() => {
+    const candidates = [
+      selectedTreeNode?.metadata.model_id,
+      selectedWorkspaceItem?.metadata.model_id,
+      selectedWorkspaceItem?.source_payload.model_id,
+    ];
+    return candidates.find((value): value is string => typeof value === "string" && Boolean(value.trim()))?.trim() ?? "";
+  })();
+  const currentPermissionStatusQuery = useQuery({
+    queryKey: [
+      "workspace-current-permission",
+      ...sessionCacheKey,
+      selectedProjectId,
+      selectedBranchId,
+      selectedPermissionModelId,
+    ],
+    queryFn: () => api.getCurrentPermissionStatus(
+      selectedProjectId,
+      selectedBranchId,
+      selectedPermissionModelId || undefined,
+    ),
+    enabled: Boolean(selectedProjectId && selectedBranchId),
+    staleTime: 5_000,
+    gcTime: cacheTimeMs,
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true,
+  });
+
+  useEffect(() => {
+    const status = currentPermissionStatusQuery.data;
+    if (!status) {
+      return;
+    }
+    if (!status.branch_accessible) {
+      setSelectedBranchId("");
+      setSelectedItemId("");
+      setItemDraft(null);
+      setNotice({ severity: "warning", message: "The selected branch is no longer accessible and was closed. Other permitted branches remain available." });
+      return;
+    }
+    if (selectedPermissionModelId && status.model_accessible === false) {
+      setSelectedItemId("");
+      setItemDraft(null);
+      setNotice({ severity: "warning", message: "The selected model is no longer accessible and was closed. The permitted remainder of the branch stays open." });
+    }
+  }, [currentPermissionStatusQuery.data, selectedPermissionModelId]);
   const selectedContainmentPath = selectedWorkspaceItemPath || (selectedTreeNode ? friendlyPath(selectedTreeNode.path, referenceNameById) : "");
   const selectedContainmentSegments = selectedContainmentPath
     .split(" / ")
@@ -2546,12 +2602,102 @@ export default function WorkspacePage() {
   });
 
   const capabilityMutation = useMutation({
-    mutationFn: () => api.refreshCapabilities(csrfToken),
-    onSuccess: async () => {
+    mutationFn: () => api.refreshCapabilities(csrfToken, {
+      selected_project_id: selectedProjectId || undefined,
+      selected_branch_id: selectedBranchId || undefined,
+      selected_model_id: selectedPermissionModelId || undefined,
+    }),
+    onSuccess: async (capabilities) => {
       await refreshSession();
-      setNotice({ severity: "success", message: "Capabilities refreshed from Teamwork Cloud." });
+      const jobId = capabilities.permission_refresh_job_id;
+      if (!jobId) {
+        setNotice({ severity: "warning", message: "Capabilities refreshed, but Workbench did not receive a permission refresh job identifier." });
+        return;
+      }
+      setNotice({ severity: "info", message: "Permission refresh is running in the background. You can keep working in the open model." });
+      void (async () => {
+        try {
+          let job = await api.getJob(jobId);
+          const deadline = Date.now() + 20 * 60 * 1000;
+          while (job.status === "pending" || job.status === "running") {
+            if (Date.now() >= deadline) {
+              throw new Error("The permission refresh is still running. Its status remains available in Job Center.");
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+            job = await api.getJob(jobId);
+          }
+          await refreshSession();
+          if (job.status !== "succeeded" || !job.result) {
+            setNotice({ severity: "warning", message: job.message || "Teamwork Cloud could not confirm the permission refresh. The last valid snapshot remains active." });
+            return;
+          }
+
+          const result = job.result;
+          const projects = await api.getProjects(false);
+          queryClient.setQueryData(["workspace-projects", ...sessionCacheKey], projects);
+          const projectWasRevoked = Boolean(
+            selectedProjectId && !projects.some((project) => project.id === selectedProjectId),
+          );
+          if (projectWasRevoked) {
+            setSelectedProjectId("");
+            setSelectedBranchId("");
+            setSelectedItemId("");
+            setItemDraft(null);
+            queryClient.removeQueries({ queryKey: ["workspace-branches", ...sessionCacheKey] });
+            queryClient.removeQueries({ queryKey: ["workspace-tree", ...sessionCacheKey] });
+            queryClient.removeQueries({ queryKey: ["workspace-project-usages", ...sessionCacheKey] });
+            queryClient.removeQueries({ queryKey: ["workspace-access-map", ...sessionCacheKey] });
+            queryClient.removeQueries({ queryKey: ["workspace-item", ...sessionCacheKey] });
+            setNotice({ severity: "warning", message: "Teamwork Cloud no longer grants access to the selected project, so it was closed." });
+            return;
+          }
+
+          if (selectedProjectId) {
+            const branches = await api.getProjectBranches(selectedProjectId, selectedProject?.workspace_id || undefined, false);
+            queryClient.setQueryData(
+              ["workspace-branches", ...sessionCacheKey, selectedProjectId, selectedProject?.workspace_id],
+              branches,
+            );
+            if (selectedBranchId && !branches.some((branch) => branch.id === selectedBranchId)) {
+              setSelectedBranchId("");
+              setSelectedItemId("");
+              setItemDraft(null);
+              queryClient.removeQueries({ queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId] });
+              queryClient.removeQueries({ queryKey: ["workspace-project-usages", ...sessionCacheKey, selectedProjectId, selectedBranchId] });
+              queryClient.removeQueries({ queryKey: ["workspace-access-map", ...sessionCacheKey, selectedProjectId, selectedBranchId] });
+              queryClient.removeQueries({ queryKey: ["workspace-item", ...sessionCacheKey] });
+              setNotice({ severity: "warning", message: "The selected branch is no longer accessible and was closed. Other permitted branches remain available." });
+              return;
+            }
+          }
+
+          const revokedModels = Array.isArray(result.revoked_models) ? result.revoked_models : [];
+          const selectedModelKey = selectedProjectId && selectedBranchId && selectedPermissionModelId
+            ? `${selectedProjectId}/${selectedBranchId}/${selectedPermissionModelId}`
+            : "";
+          if (selectedModelKey && revokedModels.includes(selectedModelKey)) {
+            setSelectedItemId("");
+            setItemDraft(null);
+            queryClient.removeQueries({ queryKey: ["workspace-item", ...sessionCacheKey] });
+            void queryClient.invalidateQueries({ queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId] });
+            setNotice({ severity: "warning", message: "The selected model is no longer accessible and was closed. The permitted remainder of the branch stays open." });
+            return;
+          }
+
+          void Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId] }),
+            queryClient.invalidateQueries({ queryKey: ["workspace-item", ...sessionCacheKey] }),
+            queryClient.invalidateQueries({ queryKey: ["workspace-project-usages", ...sessionCacheKey, selectedProjectId, selectedBranchId] }),
+            queryClient.invalidateQueries({ queryKey: ["workspace-access-map", ...sessionCacheKey, selectedProjectId, selectedBranchId] }),
+          ]);
+          setNotice({ severity: "success", message: "Permissions refreshed without reloading the open project, branch, or model." });
+        } catch (caught) {
+          await refreshSession();
+          setNotice({ severity: "warning", message: `${errorMessage(caught)} The last valid permission snapshot remains active.` });
+        }
+      })();
     },
-    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+    onError: () => setNotice({ severity: "warning", message: "Teamwork Cloud could not confirm the refresh. Your last valid project access remains active and the open model was not disturbed." }),
   });
 
   const settingsMutation = useMutation({
@@ -5939,7 +6085,7 @@ export default function WorkspacePage() {
             <WorkbenchBrandMark size={34} titleVariant="h6" />
           </Box>
           {session?.capabilities ? <CapabilityBadges capabilities={session.capabilities.capabilities} /> : null}
-          <Tooltip title="Refresh capabilities">
+          <Tooltip title="Refresh capabilities, projects, and permissions">
             <span>
               <IconButton onClick={() => capabilityMutation.mutate()} disabled={!csrfToken || capabilityMutation.isPending}>
                 <RefreshRoundedIcon />
@@ -6100,6 +6246,7 @@ export default function WorkspacePage() {
         />
         <Stack spacing={sectionSpacing} component="main" sx={{ minWidth: 0, pl: { xs: 0, lg: compactUi ? 1.5 : 2 } }}>
           {notice ? <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.message}</Alert> : null}
+          {session?.permission_snapshot_warning ? <Alert severity="warning">{session.permission_snapshot_warning}</Alert> : null}
           {projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
           <Paper sx={{ borderRadius: 2 }}>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ p: compactUi ? 1 : 1.25 }}>

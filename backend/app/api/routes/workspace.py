@@ -15,6 +15,7 @@ from app.models.domain import (
     OSLCGenerateConsumerRequest,
     OSLCSharedConsumerRequest,
     OSLCStoreConsumerRequest,
+    PermissionRefreshRequest,
     SessionPreferences,
     StereotypeElementSearchResponse,
     SwaggerExecuteRequest,
@@ -398,6 +399,27 @@ def cancel_job(job_id: str, session=Depends(require_csrf), container: Applicatio
     return record
 
 
+@router.get("/permission-refresh/audit")
+def permission_refresh_audit(
+    userId: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.list_permission_refresh_audit(session, userId, limit=limit)
+
+
+@router.get("/permissions/current")
+def current_permission_status(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    modelId: str | None = Query(default=None),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.current_permission_status(session, projectId, branchId, modelId)
+
+
 @router.post("/model-cache/sync")
 async def start_model_cache_sync(
     payload: BranchCacheSyncRequest,
@@ -679,8 +701,12 @@ async def compare_branches(
 
 
 @router.post("/capabilities/refresh")
-async def refresh_capabilities(session=Depends(require_csrf), container: ApplicationContainer = Depends(get_container)):
-    return await container.platform.refresh_capabilities(session)
+async def refresh_capabilities(
+    payload: PermissionRefreshRequest | None = None,
+    session=Depends(require_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return await container.platform.refresh_capabilities(session, payload)
 
 
 @router.get("/agent")

@@ -31,6 +31,7 @@ class JobType(str, Enum):
     EXPORT = "export"
     MODEL_CACHE = "model_cache"
     AGENT_KNOWLEDGE = "agent_knowledge"
+    PERMISSION_REFRESH = "permission_refresh"
 
 
 class JobStatus(str, Enum):
@@ -133,9 +134,19 @@ class UserServerState(BaseModel):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class AuthorizationPermissionClaim(BaseModel):
+    name: str = ""
+    operation_name: str = ""
+    display_name: str = ""
+    related_resources: list[str] = Field(default_factory=list)
+
+
 class AuthorizationContext(BaseModel):
     roles: list[str] = Field(default_factory=list)
+    role_ids: list[str] = Field(default_factory=list)
     groups: list[str] = Field(default_factory=list)
+    permissions: list[AuthorizationPermissionClaim] = Field(default_factory=list)
+    permissions_included: bool = False
     source: str = "authenticated-user-default"
     can_manage_server_presets: bool = False
 
@@ -168,6 +179,26 @@ class CapabilitySummary(BaseModel):
     reachable_endpoints: dict[str, bool] = Field(default_factory=dict)
     capabilities: dict[str, Capability] = Field(default_factory=dict)
     detected_at: datetime = Field(default_factory=utcnow)
+    permission_refresh_job_id: str | None = None
+
+
+class PermissionRefreshRequest(BaseModel):
+    selected_project_id: str | None = None
+    selected_branch_id: str | None = None
+    selected_model_id: str | None = None
+
+
+class CurrentPermissionStatus(BaseModel):
+    project_id: str
+    branch_id: str
+    model_id: str | None = None
+    project_accessible: bool = False
+    branch_accessible: bool = False
+    branch_editable: bool = False
+    branch_admin_access: bool = False
+    model_accessible: bool | None = None
+    model_editable: bool | None = None
+    snapshot_updated_at: datetime | None = None
 
 
 class SessionPreferences(BaseModel):
@@ -252,6 +283,8 @@ class SessionData(BaseModel):
     recent_items: list[Bookmark] = Field(default_factory=list)
     permission_snapshot_attempted_at: datetime | None = None
     permission_snapshot_refreshed_at: datetime | None = None
+    permission_snapshot_failure_count: int = 0
+    permission_snapshot_last_error: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
     expires_at: datetime = Field(default_factory=utcnow)
 
@@ -270,6 +303,10 @@ class SessionSnapshot(BaseModel):
     bookmarks: list[Bookmark] = Field(default_factory=list)
     saved_searches: list[SavedSearch] = Field(default_factory=list)
     recent_items: list[Bookmark] = Field(default_factory=list)
+    permission_snapshot_attempted_at: datetime | None = None
+    permission_snapshot_refreshed_at: datetime | None = None
+    permission_snapshot_failure_count: int = 0
+    permission_snapshot_warning: str | None = None
 
 
 class BranchSummary(BaseModel):
@@ -616,6 +653,7 @@ class PermissionManifestEntry(BaseModel):
     branch_admin_access: bool = Field(default=False, alias="branchAdminAccess")
     access_admin_access: bool = Field(default=False, alias="accessAdminAccess")
     via_groups: list[str] = Field(default_factory=list, alias="viaGroups")
+    readonly_branch_ids: list[str] = Field(default_factory=list, alias="readonlyBranchIds")
 
 
 class PermissionManifest(BaseModel):
@@ -639,6 +677,32 @@ class BranchPermissionAttachment(BaseModel):
     snapshot_hash: str | None = None
     manifest: PermissionManifest
     attached_at: datetime = Field(default_factory=utcnow)
+
+
+class ServerPermissionInventory(BaseModel):
+    server_id: str
+    roles: list[dict[str, Any]] = Field(default_factory=list)
+    groups: list[dict[str, Any]] = Field(default_factory=list)
+    captured_at: datetime = Field(default_factory=utcnow)
+
+
+class PermissionRefreshAuditRecord(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    user_id: str
+    server_id: str
+    reason: str
+    authoritative: bool
+    status: Literal["succeeded", "indeterminate"]
+    previous_hash: str = ""
+    current_hash: str = ""
+    granted_projects: list[str] = Field(default_factory=list)
+    revoked_projects: list[str] = Field(default_factory=list)
+    granted_branches: list[str] = Field(default_factory=list)
+    revoked_branches: list[str] = Field(default_factory=list)
+    granted_models: list[str] = Field(default_factory=list)
+    revoked_models: list[str] = Field(default_factory=list)
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class BranchAccessManifestStatus(BaseModel):

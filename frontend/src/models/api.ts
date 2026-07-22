@@ -3,7 +3,7 @@ export type ThemeMode = "light" | "dark" | "system";
 export type ItemDetailViewMode = "standard" | "expert" | "all";
 export type CapabilityState = "ready" | "restricted" | "not_available" | "unknown";
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
-export type JobType = "simulation" | "publish" | "export" | "model_cache" | "agent_knowledge";
+export type JobType = "simulation" | "publish" | "export" | "model_cache" | "agent_knowledge" | "permission_refresh";
 export type ExportFormat = "json" | "csv" | "markdown" | "html" | "pdf";
 export type CacheApiKeyScope = "read" | "write" | "edit";
 
@@ -66,6 +66,7 @@ export interface CapabilitySummary {
   reachable_endpoints: Record<string, boolean>;
   capabilities: Record<string, Capability>;
   detected_at: string;
+  permission_refresh_job_id?: string | null;
 }
 
 export interface SessionPreferences {
@@ -110,6 +111,23 @@ export interface SessionSnapshot {
   bookmarks: Bookmark[];
   saved_searches: SavedSearch[];
   recent_items: Bookmark[];
+  permission_snapshot_attempted_at?: string | null;
+  permission_snapshot_refreshed_at?: string | null;
+  permission_snapshot_failure_count?: number;
+  permission_snapshot_warning?: string | null;
+}
+
+export interface CurrentPermissionStatus {
+  project_id: string;
+  branch_id: string;
+  model_id: string | null;
+  project_accessible: boolean;
+  branch_accessible: boolean;
+  branch_editable: boolean;
+  branch_admin_access: boolean;
+  model_accessible: boolean | null;
+  model_editable: boolean | null;
+  snapshot_updated_at: string | null;
 }
 
 export interface BranchSummary {

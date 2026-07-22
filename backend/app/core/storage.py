@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 from contextlib import suppress
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
 
@@ -18,7 +19,9 @@ from app.models.domain import (
     CachedModelRecord,
     JobRecord,
     ModelPermissionSnapshot,
+    PermissionRefreshAuditRecord,
     PresetServerDefinition,
+    ServerPermissionInventory,
     ServerProfile,
     UserServerState,
     utcnow,
@@ -269,6 +272,42 @@ class SqliteRepository:
                     payload TEXT NOT NULL,
                     PRIMARY KEY (server_id, project_id, branch_id)
                 )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS twc_server_permission_inventory (
+                    server_id TEXT PRIMARY KEY,
+                    captured_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS twc_permission_refresh_leases (
+                    lease_key TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS twc_permission_refresh_audit (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_twc_permission_refresh_audit_identity
+                ON twc_permission_refresh_audit (server_id, user_id, created_at DESC)
                 """
             )
             connection.execute(
@@ -910,6 +949,33 @@ class SqliteRepository:
             return None
         return BranchPermissionAttachment.model_validate_json(row["payload"])
 
+    def get_server_permission_inventory(self, server_id: str) -> ServerPermissionInventory | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM twc_server_permission_inventory WHERE server_id = ?",
+                (server_id,),
+            ).fetchone()
+        return ServerPermissionInventory.model_validate_json(row["payload"]) if row else None
+
+    def upsert_server_permission_inventory(self, inventory: ServerPermissionInventory) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO twc_server_permission_inventory (server_id, captured_at, payload)
+                VALUES (?, ?, ?)
+                """,
+                (inventory.server_id, inventory.captured_at.isoformat(), inventory.model_dump_json()),
+            )
+            connection.commit()
+
+    def delete_server_permission_inventory(self, server_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM twc_server_permission_inventory WHERE server_id = ?",
+                (server_id,),
+            )
+            connection.commit()
+
     def upsert_branch_permission_attachment(
         self,
         attachment: BranchPermissionAttachment,
@@ -956,6 +1022,127 @@ class SqliteRepository:
                 (server_id, project_id, branch_id),
             ).fetchall()
         return [BranchAccessRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def list_user_branch_access_records(self, user_id: str, server_id: str) -> list[BranchAccessRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload FROM twc_branch_access_records
+                WHERE user_id = ? AND server_id = ?
+                ORDER BY project_id, branch_id
+                """,
+                (user_id, server_id),
+            ).fetchall()
+        return [BranchAccessRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def list_user_model_permissions(self, user_id: str, server_id: str) -> list[ModelPermissionSnapshot]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload FROM twc_cached_model_permissions
+                WHERE user_id = ? AND server_id = ?
+                ORDER BY project_id, branch_id, model_id
+                """,
+                (user_id, server_id),
+            ).fetchall()
+        return [ModelPermissionSnapshot.model_validate_json(row["payload"]) for row in rows]
+
+    def acquire_permission_refresh_lease(
+        self,
+        lease_key: str,
+        owner_id: str,
+        *,
+        ttl_seconds: int,
+    ) -> bool:
+        now = utcnow()
+        expires_at = now + timedelta(seconds=ttl_seconds)
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT owner_id, expires_at FROM twc_permission_refresh_leases WHERE lease_key = ?",
+                (lease_key,),
+            ).fetchone()
+            if row is not None:
+                try:
+                    current_expiry = datetime.fromisoformat(str(row["expires_at"]))
+                except ValueError:
+                    current_expiry = now
+                if current_expiry > now and str(row["owner_id"]) != owner_id:
+                    connection.rollback()
+                    return False
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO twc_permission_refresh_leases (lease_key, owner_id, expires_at)
+                VALUES (?, ?, ?)
+                """,
+                (lease_key, owner_id, expires_at.isoformat()),
+            )
+            connection.commit()
+        return True
+
+    def release_permission_refresh_lease(self, lease_key: str, owner_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM twc_permission_refresh_leases WHERE lease_key = ? AND owner_id = ?",
+                (lease_key, owner_id),
+            )
+            connection.commit()
+
+    def renew_permission_refresh_lease(
+        self,
+        lease_key: str,
+        owner_id: str,
+        *,
+        ttl_seconds: int,
+    ) -> bool:
+        expires_at = utcnow() + timedelta(seconds=ttl_seconds)
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE twc_permission_refresh_leases
+                SET expires_at = ?
+                WHERE lease_key = ? AND owner_id = ?
+                """,
+                (expires_at.isoformat(), lease_key, owner_id),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def append_permission_refresh_audit(self, record: PermissionRefreshAuditRecord) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO twc_permission_refresh_audit (id, user_id, server_id, created_at, status, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.user_id,
+                    record.server_id,
+                    record.created_at.isoformat(),
+                    record.status,
+                    record.model_dump_json(),
+                ),
+            )
+            connection.commit()
+
+    def list_permission_refresh_audit(
+        self,
+        server_id: str,
+        user_id: str | None = None,
+        *,
+        limit: int = 100,
+    ) -> list[PermissionRefreshAuditRecord]:
+        query = "SELECT payload FROM twc_permission_refresh_audit WHERE server_id = ?"
+        params: list[object] = [server_id]
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 1000)))
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [PermissionRefreshAuditRecord.model_validate_json(row["payload"]) for row in rows]
 
     def list_model_permissions(
         self,
@@ -1764,10 +1951,12 @@ class SqliteRepository:
             "twc_branch_cache",
             "twc_branch_access_records",
             "twc_branch_permission_attachments",
+            "twc_server_permission_inventory",
             "twc_cached_models",
             "twc_cached_model_permissions",
             "twc_cached_elements",
             "twc_webhook_registrations",
+            "twc_permission_refresh_audit",
         ):
             connection.execute(
                 f"DELETE FROM {table} WHERE server_id NOT IN ({placeholders})",
@@ -1779,24 +1968,33 @@ class SqliteRepository:
             "twc_branch_cache",
             "twc_branch_access_records",
             "twc_branch_permission_attachments",
+            "twc_server_permission_inventory",
             "twc_cached_models",
             "twc_cached_model_permissions",
             "twc_cached_elements",
             "twc_webhook_registrations",
+            "twc_permission_refresh_audit",
         ):
             connection.execute(f"DELETE FROM {table} WHERE server_id = ?", (server_id,))
+        connection.execute(
+            "DELETE FROM twc_permission_refresh_leases WHERE lease_key LIKE ?",
+            (f"permission-refresh:{server_id}:%",),
+        )
 
     def _delete_materialized_cache_for_all_servers(self, connection: sqlite3.Connection) -> None:
         for table in (
             "twc_branch_cache",
             "twc_branch_access_records",
             "twc_branch_permission_attachments",
+            "twc_server_permission_inventory",
             "twc_cached_models",
             "twc_cached_model_permissions",
             "twc_cached_elements",
             "twc_webhook_registrations",
+            "twc_permission_refresh_audit",
         ):
             connection.execute(f"DELETE FROM {table}")
+        connection.execute("DELETE FROM twc_permission_refresh_leases")
 
     def _oslc_shared_scope(self, server_id: str) -> str:
         return f"oslc-shared:{server_id}"

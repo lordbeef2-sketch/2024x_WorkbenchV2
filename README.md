@@ -100,6 +100,12 @@ Important settings:
 - `CACHE_API_TOKENS`: optional legacy fallback map of bearer token to Workbench username for cache-read API access. The preferred path is to let users create their own API keys from Workbench Settings.
 - `TWC_PLUGIN_ONLY_CACHE_TARGETS`: optional JSON object keyed by Workbench server id that forces listed project ids or project/branch pairs to use plugin-backed cache only and refuse live `/osmc` fallback until a plugin snapshot exists.
 - `PERMISSION_SNAPSHOT_REFRESH_MINUTES`: active-user effective permissions are atomically replaced on this interval; defaults to `30`.
+- `PERMISSION_INVENTORY_REFRESH_HOURS`: refresh interval for the shared role/group catalog; defaults to `6`.
+- `PERMISSION_SNAPSHOT_MAX_PARALLEL_PROBES`: bounded per-user branch probe concurrency; defaults to `4`.
+- `PERMISSION_REFRESH_LEASE_SECONDS`: renewable database lease used to prevent duplicate cross-worker refreshes; defaults to `900`.
+- `PERMISSION_REFRESH_WARNING_FAILURES`: consecutive indeterminate attempts before a persistent warning; defaults to `3`.
+- `PERMISSION_SNAPSHOT_STALE_WARNING_MINUTES`: age of the last valid snapshot before a persistent warning; defaults to `120`.
+- `TWC_PERMISSION_INVENTORY_SERVICE_TOKENS`: optional JSON map of server ids to dedicated least-privilege TWC inventory tokens.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
 Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through `TWC_PRESET_SERVERS`, not through `HOST`.
 
@@ -140,7 +146,12 @@ external integrations.
   authenticated user at login. Normal browsing and authorization read that
   stored snapshot without repeatedly calling TWC. Active users are refreshed
   every 30 minutes, and each refresh atomically replaces—not merges—the user's
-  prior branch and model permissions so revoked access cannot survive.
+  prior branch and model permissions so confirmed revoked access cannot
+  survive. Temporary TWC failures retain the last valid snapshot and retry;
+  they are not treated as proof that access was revoked.
+- The shared six-hour role/group inventory produces a revision-bound project
+  ACL that is reused across users. Refreshes keep the open model mounted and
+  only close it after an authoritative result removes that user's access.
 - Every Cameo snapshot/delta upload carries a permission manifest alongside the
   branch revision. Workbench retains package ACL evidence from Cameo, merges in
   the current TWC resource-role map when that endpoint is available, and records

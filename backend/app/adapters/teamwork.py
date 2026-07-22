@@ -69,7 +69,10 @@ MODEL_CACHE_SYNC_THROTTLE_SECONDS = 0.0
 class CurrentUserContext:
     preferred_username: str | None = None
     roles: list[str] = field(default_factory=list)
+    role_ids: list[str] = field(default_factory=list)
     groups: list[str] = field(default_factory=list)
+    permissions: list[dict[str, Any]] = field(default_factory=list)
+    permissions_included: bool = False
 
 
 def _first_list(payload: dict[str, Any], *keys: str) -> list[Any] | None:
@@ -530,6 +533,42 @@ def _claim_text(value: Any) -> list[str]:
     return []
 
 
+def _permission_assignment_claims(value: Any) -> list[dict[str, Any]]:
+    claims: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, tuple[str, ...]]] = set()
+    for assignment in _as_list(value):
+        if not isinstance(assignment, dict):
+            continue
+        permission = assignment.get("permissionInfo")
+        if not isinstance(permission, dict):
+            permission = assignment
+        related_resources = [
+            identifier
+            for item in _as_list(
+                assignment.get("relatedResources")
+                or assignment.get("protectedObjects")
+                or permission.get("relatedResources")
+            )
+            if (identifier := _reference_id(item))
+        ]
+        claim = {
+            "name": _first_text(permission.get("name")),
+            "operation_name": _first_text(permission.get("operationName")),
+            "display_name": _first_text(permission.get("operationDisplayName")),
+            "related_resources": list(dict.fromkeys(related_resources)),
+        }
+        key = (
+            claim["name"].lower(),
+            claim["operation_name"].lower(),
+            claim["display_name"].lower(),
+            tuple(value.lower() for value in claim["related_resources"]),
+        )
+        if any((claim["name"], claim["operation_name"], claim["display_name"])) and key not in seen:
+            seen.add(key)
+            claims.append(claim)
+    return claims
+
+
 def _humanize_type(raw_type: str) -> str:
     tail = raw_type.split(":")[-1].rsplit("/", 1)[-1]
     normalized = tail.replace("_", " ").replace("-", " ").strip().lower()
@@ -881,6 +920,8 @@ class TeamworkAdapter:
         self._detected_version: str | None = None
         self._last_project_list_issue: str | None = None
         self._readonly_branch_probe_supported: bool | None = None
+        self._admin_usergroups_task: asyncio.Task[list[dict[str, Any]]] | None = None
+        self._admin_roles_task: asyncio.Task[list[dict[str, Any]]] | None = None
         self.verify = (
             context.server.ca_bundle_path if context.server.verify_tls and context.server.ca_bundle_path else context.server.verify_tls
         )
@@ -1249,19 +1290,46 @@ class TeamworkAdapter:
             candidates.extend(item for item in payload if isinstance(item, dict))
 
         roles: list[str] = []
+        role_ids: list[str] = []
         groups: list[str] = []
+        permissions: list[dict[str, Any]] = []
+        permissions_included = False
         for candidate in candidates:
             roles.extend(_claim_text(candidate.get("roles")))
             roles.extend(_claim_text(candidate.get("authorities")))
             roles.extend(_claim_text(candidate.get("roleAssignments")))
+            for assignment in _as_list(candidate.get("roleAssignments")):
+                if not isinstance(assignment, dict):
+                    continue
+                role_id = _first_text(
+                    assignment.get("roleID"),
+                    assignment.get("roleId"),
+                    assignment.get("role_id"),
+                )
+                if role_id and role_id.lower() not in {value.lower() for value in role_ids}:
+                    role_ids.append(role_id)
             groups.extend(_claim_text(candidate.get("userGroups")))
             groups.extend(_claim_text(candidate.get("usergroups")))
             groups.extend(_claim_text(candidate.get("groups")))
+            if "permissions" in candidate:
+                permissions_included = True
+                permissions.extend(_permission_assignment_claims(candidate.get("permissions")))
 
         return CurrentUserContext(
             preferred_username=self._extract_current_username(payload),
             roles=list(dict.fromkeys(roles)),
+            role_ids=role_ids,
             groups=list(dict.fromkeys(groups)),
+            permissions=list({
+                (
+                    item["name"].lower(),
+                    item["operation_name"].lower(),
+                    item["display_name"].lower(),
+                    tuple(value.lower() for value in item["related_resources"]),
+                ): item
+                for item in permissions
+            }.values()),
+            permissions_included=permissions_included,
         )
 
     async def current_user_context(self) -> CurrentUserContext | None:
@@ -2543,12 +2611,26 @@ class TeamworkAdapter:
         *,
         latest_revision: str | None = None,
         workspace_id: str | None = None,
+        admin_roles_inventory: list[dict[str, Any]] | None = None,
+        usergroups_inventory: list[dict[str, Any]] | None = None,
     ) -> list[BranchAccessRecord]:
-        roles = await self._project_roles(project_id, workspace_id)
-        if roles is None:
+        project_roles = await self._project_roles(project_id, workspace_id)
+        admin_roles = admin_roles_inventory if admin_roles_inventory is not None else await self._admin_roles()
+        roles_by_id: dict[str, dict[str, Any]] = {}
+        for role in [*(project_roles or []), *admin_roles]:
+            if not isinstance(role, dict):
+                continue
+            role_id = _first_text(role.get("ID"), role.get("id"))
+            if role_id:
+                lookup_id = role_id.lower()
+                existing_role = roles_by_id.get(lookup_id)
+                if existing_role is None or (not existing_role.get("permissions") and role.get("permissions")):
+                    roles_by_id[lookup_id] = role
+        roles = list(roles_by_id.values())
+        if not roles:
             raise PermissionError("The active Teamwork Cloud session is not allowed to read project roles for this branch.")
 
-        usergroups = await self._admin_usergroups()
+        usergroups = usergroups_inventory if usergroups_inventory is not None else await self._admin_usergroups()
         usergroups_by_lookup: dict[str, dict[str, Any]] = {}
         resolved_usergroups: dict[str, dict[str, Any]] = {}
         for group in usergroups:
@@ -2592,6 +2674,61 @@ class TeamworkAdapter:
                     usergroups_by_lookup=usergroups_by_lookup,
                     resolved_usergroups=resolved_usergroups,
                 )
+                for username in usernames:
+                    self._merge_branch_access_user(
+                        aggregated,
+                        username,
+                        role_name=role_name,
+                        via_group=group_name,
+                        can_edit=can_edit,
+                        can_branch_admin=can_branch_admin,
+                        can_access_admin=can_access_admin,
+                        role_description=role_description,
+                    )
+
+        # Project-role endpoints do not consistently return groups whose role
+        # is assigned at global/category scope. Enumerate the entire TWC group
+        # inventory and evaluate each role assignment's protected-object scope
+        # against this saved project. Nested group members are expanded below.
+        for group_reference in usergroups:
+            group = await self._resolve_usergroup_reference(
+                group_reference,
+                usergroups_by_lookup=usergroups_by_lookup,
+                resolved_usergroups=resolved_usergroups,
+            )
+            if not isinstance(group, dict):
+                continue
+            applicable_roles: list[dict[str, Any]] = []
+            for assignment in _as_list(group.get("roleAssignments")):
+                if not isinstance(assignment, dict) or not self._role_assignment_applies_to_project(
+                    assignment,
+                    project_id,
+                    workspace_id,
+                ):
+                    continue
+                role_id = _first_text(
+                    assignment.get("roleID"),
+                    assignment.get("roleId"),
+                    assignment.get("role_id"),
+                )
+                role = roles_by_id.get(role_id.lower()) if role_id else None
+                if isinstance(role, dict) and role not in applicable_roles:
+                    applicable_roles.append(role)
+            if not applicable_roles:
+                continue
+
+            group_name, usernames = await self._expand_usergroup_members(
+                group,
+                usergroups_by_lookup=usergroups_by_lookup,
+                resolved_usergroups=resolved_usergroups,
+            )
+            for role in applicable_roles:
+                role_id = _first_text(role.get("ID"), role.get("id"))
+                role_name = _first_text(role.get("name"), role_id)
+                role_description = _first_text(role.get("description"))
+                can_view, can_edit, can_branch_admin, can_access_admin = self._role_access_flags(role)
+                if not can_view:
+                    continue
                 for username in usernames:
                     self._merge_branch_access_user(
                         aggregated,
@@ -2797,9 +2934,40 @@ class TeamworkAdapter:
         return resolved
 
     async def _admin_usergroups(self) -> list[dict[str, Any]]:
+        if self._admin_usergroups_task is None:
+            self._admin_usergroups_task = asyncio.create_task(self._load_admin_usergroups())
+        try:
+            return list(await self._admin_usergroups_task)
+        except Exception:
+            self._admin_usergroups_task = None
+            raise
+
+    async def _load_admin_usergroups(self) -> list[dict[str, Any]]:
         payload = await self._request_candidates_paged(
             "GET",
-            ["/osmc/admin/usergroups"],
+            ["/osmc/admin/usergroups?includeBody=true", "/osmc/admin/usergroups"],
+            timeout=30.0,
+        )
+        if not payload or (isinstance(payload, dict) and payload.get("restricted")):
+            return []
+        items = extract_resource_list(payload)
+        if items is None:
+            items = payload if isinstance(payload, list) else [payload]
+        return [item for item in items if isinstance(item, dict)]
+
+    async def _admin_roles(self) -> list[dict[str, Any]]:
+        if self._admin_roles_task is None:
+            self._admin_roles_task = asyncio.create_task(self._load_admin_roles())
+        try:
+            return list(await self._admin_roles_task)
+        except Exception:
+            self._admin_roles_task = None
+            raise
+
+    async def _load_admin_roles(self) -> list[dict[str, Any]]:
+        payload = await self._request_candidates_paged(
+            "GET",
+            ["/osmc/admin/roles"],
             timeout=30.0,
         )
         if not payload or (isinstance(payload, dict) and payload.get("restricted")):
@@ -2819,6 +2987,43 @@ class TeamworkAdapter:
             return None
         entity = _payload_entity(payload)
         return entity if isinstance(entity, dict) else None
+
+    def _role_assignment_applies_to_project(
+        self,
+        assignment: dict[str, Any],
+        project_id: str,
+        workspace_id: str | None,
+    ) -> bool:
+        protected_objects = [
+            item
+            for item in _as_list(assignment.get("protectedObjects"))
+            if isinstance(item, dict)
+        ]
+        # No protected objects is the REST representation of a global-scope
+        # assignment. Its permissions apply to every project, but only the
+        # role's actual permissions are honored (Configure Server still does
+        # not become Read Resources).
+        if not protected_objects:
+            return True
+
+        target_ids = {
+            value.strip().lower()
+            for value in (project_id, workspace_id or "")
+            if value and value.strip()
+        }
+        for protected_object in protected_objects:
+            object_id = _first_text(protected_object.get("ID"), protected_object.get("id")).strip().lower()
+            if object_id and object_id in target_ids:
+                return True
+            # containerId identifies the object's parent, not an additional
+            # grant scope. Only use it for older responses that omit ID.
+            container_id = _first_text(
+                protected_object.get("containerId"),
+                protected_object.get("containerID"),
+            ).strip().lower()
+            if not object_id and container_id and container_id in target_ids:
+                return True
+        return False
 
     def _index_usergroup_record(self, lookup: dict[str, dict[str, Any]], group: dict[str, Any]) -> None:
         for alias in self._usergroup_aliases(group):
@@ -2929,8 +3134,11 @@ class TeamworkAdapter:
 
         needs_detail = not isinstance(group, dict) or (
             isinstance(group, dict)
-            and not self._usergroup_usernames(group)
             and detail_id
+            and (
+                not self._usergroup_usernames(group)
+                or "roleAssignments" not in group
+            )
         )
 
         if needs_detail and detail_id:
@@ -3049,7 +3257,7 @@ class TeamworkAdapter:
         def has_permission(*names: str) -> bool:
             return any(name in term for term in permission_terms for name in names)
 
-        has_read = has_permission("read resources", "list all resources")
+        has_read = has_permission("read resources")
         has_edit_contents = has_permission("edit resources")
         has_edit_properties = has_permission("edit resource properties")
         has_administer_resources = has_permission("administer resources")

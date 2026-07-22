@@ -61,6 +61,7 @@ from app.models.domain import (
     CompareContext,
     CompareDifference,
     CompareResult,
+    CurrentPermissionStatus,
     DashboardPayload,
     ElementDiscoveryEntry,
     ElementDiscoveryResult,
@@ -74,6 +75,8 @@ from app.models.domain import (
     ModelPermissionSnapshot,
     PermissionManifest,
     PermissionManifestEntry,
+    PermissionRefreshAuditRecord,
+    PermissionRefreshRequest,
     OSLCAuthorizationStatus,
     OSLCConsumerCredentials,
     OSLCExecuteRequest,
@@ -88,6 +91,7 @@ from app.models.domain import (
     SavedSearch,
     SearchResponse,
     ServerHealth,
+    ServerPermissionInventory,
     ServerProfile,
     ServerProfileCreate,
     ServerProfileReorderRequest,
@@ -138,6 +142,10 @@ def normalize_lookup_key(value: str) -> str:
 OPAQUE_IDENTIFIER_RE = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24,32})$", re.IGNORECASE)
 
 
+class PermissionSnapshotIndeterminateError(RuntimeError):
+    """The refresh could not authoritatively confirm grants or revocations."""
+
+
 class PlatformService:
     def __init__(
         self,
@@ -157,6 +165,8 @@ class PlatformService:
         self.publisher = publisher
         self._model_cache_server_locks: dict[str, asyncio.Lock] = {}
         self._permission_snapshot_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._permission_inventory_locks: dict[str, asyncio.Lock] = {}
+        self._permission_refresh_instance_id = secrets.token_hex(16)
         self._branch_revision_probe_cache: dict[tuple[str, str, str], tuple[datetime, str | None]] = {}
         contract_path = Path(__file__).resolve().parents[3] / "contracts" / "RealSwagger.json"
         if not contract_path.exists():
@@ -349,10 +359,76 @@ class PlatformService:
     def get_preferences(self, session: SessionData) -> SessionPreferences:
         return session.preferences
 
-    async def refresh_capabilities(self, session: SessionData):
+    async def refresh_capabilities(
+        self,
+        session: SessionData,
+        payload: PermissionRefreshRequest | None = None,
+    ):
         adapter = self._adapter_for_session(session)
         capabilities = await adapter.discover_capabilities()
-        return self.sessions.update_capabilities(session, capabilities).capabilities
+        request = payload or PermissionRefreshRequest()
+        existing_job = next(
+            (
+                candidate
+                for candidate in self.jobs.list_jobs(session.user.preferred_username)
+                if candidate.server_id == session.server.id
+                and candidate.job_type == JobType.PERMISSION_REFRESH
+                and candidate.status in {JobStatus.PENDING, JobStatus.RUNNING}
+                and candidate.updated_at >= utcnow() - timedelta(minutes=2)
+            ),
+            None,
+        )
+        if existing_job is not None:
+            capabilities = capabilities.model_copy(update={"permission_refresh_job_id": existing_job.id})
+            return self.sessions.update_capabilities(session, capabilities).capabilities
+        job = self.jobs.create_job(
+            job_type=JobType.PERMISSION_REFRESH,
+            title="Refresh Teamwork Cloud permissions",
+            owner=session.user.preferred_username,
+            server_id=session.server.id,
+            payload=request.model_dump(),
+        )
+
+        async def handler(context) -> dict[str, Any]:
+            await context.report(10, "Refreshing the current user's effective TWC permissions")
+            live_session = self.sessions.get_session(session.session_id) or session
+            try:
+                live_session = await self._refresh_session_credentials_if_needed(live_session)
+                refreshed_at, delta = await self._refresh_permission_snapshot_guarded(
+                    live_session,
+                    reason="manual-capability-project-refresh",
+                    refresh_shared_inventory=False,
+                    priority_project_id=request.selected_project_id,
+                    priority_branch_id=request.selected_branch_id,
+                )
+            except Exception as exc:
+                self._mark_permission_refresh_failure(
+                    live_session,
+                    exc,
+                    reason="manual-capability-project-refresh",
+                )
+                raise
+            await context.report(95, "Permission snapshot replaced; reconciling visible projects")
+            projects = await self.list_projects(live_session, refresh=False)
+            return {
+                **delta,
+                "refreshed_at": refreshed_at.isoformat(),
+                "project_ids": [project.id for project in projects],
+                "selected_project_id": request.selected_project_id,
+                "selected_branch_id": request.selected_branch_id,
+                "selected_model_id": request.selected_model_id,
+            }
+
+        self.jobs.submit(job, handler)
+        capabilities = capabilities.model_copy(update={"permission_refresh_job_id": job.id})
+        updated_session = self.sessions.update_capabilities(session, capabilities)
+        logger.info(
+            "twc-capability-refresh-queued",
+            user=updated_session.user.preferred_username,
+            server_id=updated_session.server.id,
+            permission_refresh_job_id=job.id,
+        )
+        return updated_session.capabilities
 
     def update_preferences(self, session: SessionData, preferences: SessionPreferences) -> SessionPreferences:
         return self.sessions.update_preferences(session, preferences).preferences
@@ -1393,6 +1469,12 @@ class PlatformService:
                 summary,
             )
         )
+        # A new uploaded branch changes the project set against which the
+        # shared role/group inventory must be evaluated. Invalidate that
+        # six-hour inventory and make active sessions due for the next
+        # background permission pass.
+        self.repo.delete_server_permission_inventory(server.id)
+        self.sessions.mark_server_permission_snapshots_due(server.id)
         self._write_branch_access_manifest(
             summary,
             self.repo.list_branch_access_records(server.id, payload.project_id, payload.branch_id),
@@ -4687,6 +4769,50 @@ class PlatformService:
             return None
         return self.jobs.cancel_job(job_id)
 
+    def list_permission_refresh_audit(
+        self,
+        session: SessionData,
+        user_id: str | None = None,
+        *,
+        limit: int = 100,
+    ) -> list[PermissionRefreshAuditRecord]:
+        return self.repo.list_permission_refresh_audit(session.server.id, user_id, limit=limit)
+
+    def current_permission_status(
+        self,
+        session: SessionData,
+        project_id: str,
+        branch_id: str,
+        model_id: str | None = None,
+    ) -> CurrentPermissionStatus:
+        user_id = self._user_key(session.user.preferred_username)
+        branch = self.repo.get_branch_access_record(user_id, session.server.id, project_id, branch_id)
+        branch_accessible = bool(branch and branch.accessible)
+        model = (
+            self.repo.get_model_permission(user_id, session.server.id, project_id, branch_id, model_id)
+            if model_id
+            else None
+        )
+        return CurrentPermissionStatus(
+            project_id=project_id,
+            branch_id=branch_id,
+            model_id=model_id,
+            project_accessible=any(
+                record.accessible and record.project_id == project_id
+                for record in self.repo.list_user_branch_access_records(user_id, session.server.id)
+            ),
+            branch_accessible=branch_accessible,
+            branch_editable=bool(branch_accessible and branch and branch.editable),
+            branch_admin_access=bool(branch_accessible and branch and branch.admin_access),
+            model_accessible=(
+                bool(branch_accessible and model and model.accessible and not model.restricted)
+                if model_id
+                else None
+            ),
+            model_editable=(bool(branch_accessible and model and model.editable) if model_id else None),
+            snapshot_updated_at=branch.updated_at if branch else None,
+        )
+
     def submit_export(self, session: SessionData, request: ExportRequest) -> JobRecord:
         job = self.jobs.create_job(
             job_type=JobType.EXPORT,
@@ -5017,7 +5143,7 @@ class PlatformService:
         session = self.sessions.create_session(server, user, authorization_context, credentials, capabilities)
         self._update_user_server_state(user.preferred_username, server.id, session.created_at)
         try:
-            await self.refresh_user_permission_snapshot(session, reason="login")
+            await self._refresh_permission_snapshot_guarded(session, reason="login")
         except Exception as exc:
             self.sessions.destroy_session(session.session_id)
             logger.exception(
@@ -5195,24 +5321,60 @@ class PlatformService:
         session: SessionData,
         *,
         reason: str,
+        refresh_shared_inventory: bool = True,
+        priority_project_id: str | None = None,
+        priority_branch_id: str | None = None,
     ) -> datetime:
         user_id = self._user_key(session.user.preferred_username)
         lock_key = (session.server.id, user_id)
         lock = self._permission_snapshot_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
             refreshed_at = utcnow()
-            summaries = [
+            adapter = self._adapter_for_session(session)
+            current_user_context = await adapter.current_user_context()
+            if current_user_context is not None:
+                session = self.sessions.update_authorization_context(
+                    session,
+                    self._build_authorization_context(
+                        session.user.preferred_username,
+                        current_user_context,
+                        upstream_roles=None,
+                        upstream_groups=None,
+                    ),
+                )
+            permission_inventory = await self._server_permission_inventory(
+                adapter,
+                session.server.id,
+                allow_refresh=refresh_shared_inventory,
+            )
+            session = self._attach_inventory_role_names(session, permission_inventory)
+            registered_summaries = [
                 summary
                 for summary in self.repo.list_branch_cache_summaries(session.server.id)
                 if self._is_plugin_managed_summary(summary)
             ]
-            semaphore = asyncio.Semaphore(6)
+            summaries = self._permission_candidate_summaries(session, registered_summaries)
+            summaries.sort(
+                key=lambda summary: (
+                    0
+                    if summary.project_id == priority_project_id
+                    and (not priority_branch_id or summary.branch_id == priority_branch_id)
+                    else 1,
+                    summary.project_name.lower(),
+                    summary.branch_name.lower(),
+                    summary.project_id,
+                    summary.branch_id,
+                )
+            )
+            semaphore = asyncio.Semaphore(self.settings.permission_snapshot_max_parallel_probes)
 
             async def resolve(summary: BranchCacheSummary):
                 async with semaphore:
                     return await self._resolve_user_branch_permission_snapshot(
                         session,
                         summary,
+                        adapter=adapter,
+                        permission_inventory=permission_inventory,
                         refreshed_at=refreshed_at,
                     )
 
@@ -5241,10 +5403,255 @@ class PlatformService:
                 branch_count=len(branch_records),
                 model_permission_count=len(model_permissions),
                 permission_attachment_count=len(permission_attachments),
+                registered_branch_count=len(registered_summaries),
+                permission_candidate_count=len(summaries),
                 reason=reason,
                 refreshed_at=refreshed_at.isoformat(),
             )
             return refreshed_at
+
+    def _permission_snapshot_state(self, user_id: str, server_id: str) -> dict[str, Any]:
+        branches = [
+            record
+            for record in self.repo.list_user_branch_access_records(user_id, server_id)
+            if record.accessible
+        ]
+        models = [
+            record
+            for record in self.repo.list_user_model_permissions(user_id, server_id)
+            if record.accessible and not record.restricted
+        ]
+        branch_values = {
+            f"{record.project_id}/{record.branch_id}": {
+                "editable": record.editable,
+                "admin": record.admin_access,
+            }
+            for record in branches
+        }
+        model_values = {
+            f"{record.project_id}/{record.branch_id}/{record.model_id}": {
+                "editable": record.editable,
+            }
+            for record in models
+        }
+        serialized = json.dumps(
+            {"branches": branch_values, "models": model_values},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return {
+            "hash": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+            "projects": {record.project_id for record in branches},
+            "branches": set(branch_values),
+            "models": set(model_values),
+        }
+
+    def _permission_snapshot_delta(
+        self,
+        previous: dict[str, Any],
+        current: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "previous_hash": previous["hash"],
+            "current_hash": current["hash"],
+            "granted_projects": sorted(current["projects"] - previous["projects"]),
+            "revoked_projects": sorted(previous["projects"] - current["projects"]),
+            "granted_branches": sorted(current["branches"] - previous["branches"]),
+            "revoked_branches": sorted(previous["branches"] - current["branches"]),
+            "granted_models": sorted(current["models"] - previous["models"]),
+            "revoked_models": sorted(previous["models"] - current["models"]),
+        }
+
+    async def _refresh_permission_snapshot_guarded(
+        self,
+        session: SessionData,
+        *,
+        reason: str,
+        refresh_shared_inventory: bool = True,
+        priority_project_id: str | None = None,
+        priority_branch_id: str | None = None,
+    ) -> tuple[datetime, dict[str, Any]]:
+        user_id = self._user_key(session.user.preferred_username)
+        lease_key = f"permission-refresh:{session.server.id}:{user_id}"
+        lease_owner = f"{self._permission_refresh_instance_id}:{secrets.token_hex(8)}"
+        previous = self._permission_snapshot_state(user_id, session.server.id)
+        acquired = self.repo.acquire_permission_refresh_lease(
+            lease_key,
+            lease_owner,
+            ttl_seconds=self.settings.permission_refresh_lease_seconds,
+        )
+        if not acquired:
+            if previous["branches"]:
+                logger.info(
+                    "twc-permission-refresh-coalesced",
+                    user=session.user.preferred_username,
+                    server_id=session.server.id,
+                    reason=reason,
+                )
+                refreshed_at = session.permission_snapshot_refreshed_at or utcnow()
+                return refreshed_at, {**self._permission_snapshot_delta(previous, previous), "coalesced": True}
+            raise RuntimeError("Another Workbench process is establishing this user's initial permission snapshot.")
+
+        async def renew_lease() -> None:
+            interval = max(self.settings.permission_refresh_lease_seconds // 3, 20)
+            while True:
+                await asyncio.sleep(interval)
+                if not self.repo.renew_permission_refresh_lease(
+                    lease_key,
+                    lease_owner,
+                    ttl_seconds=self.settings.permission_refresh_lease_seconds,
+                ):
+                    logger.warning(
+                        "twc-permission-refresh-lease-lost",
+                        user=session.user.preferred_username,
+                        server_id=session.server.id,
+                        reason=reason,
+                    )
+                    return
+
+        lease_heartbeat = asyncio.create_task(renew_lease(), name=f"twc-permission-lease-{user_id}")
+        try:
+            refreshed_at = await self.refresh_user_permission_snapshot(
+                session,
+                reason=reason,
+                refresh_shared_inventory=refresh_shared_inventory,
+                priority_project_id=priority_project_id,
+                priority_branch_id=priority_branch_id,
+            )
+            current = self._permission_snapshot_state(user_id, session.server.id)
+            delta = self._permission_snapshot_delta(previous, current)
+            self.repo.append_permission_refresh_audit(
+                PermissionRefreshAuditRecord(
+                    user_id=user_id,
+                    server_id=session.server.id,
+                    reason=reason,
+                    authoritative=True,
+                    status="succeeded",
+                    **delta,
+                )
+            )
+            return refreshed_at, delta
+        except Exception as exc:
+            safe_error = self._permission_error_text(exc)
+            self.repo.append_permission_refresh_audit(
+                PermissionRefreshAuditRecord(
+                    user_id=user_id,
+                    server_id=session.server.id,
+                    reason=reason,
+                    authoritative=False,
+                    status="indeterminate",
+                    previous_hash=previous["hash"],
+                    current_hash=previous["hash"],
+                    error=safe_error,
+                )
+            )
+            raise
+        finally:
+            lease_heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await lease_heartbeat
+            self.repo.release_permission_refresh_lease(lease_key, lease_owner)
+
+    async def _server_permission_inventory(
+        self,
+        adapter,
+        server_id: str,
+        *,
+        allow_refresh: bool = True,
+    ) -> ServerPermissionInventory | None:
+        refresh_after = timedelta(hours=self.settings.permission_inventory_refresh_hours)
+        existing = self.repo.get_server_permission_inventory(server_id)
+        if not allow_refresh:
+            return existing
+        if existing and existing.captured_at + refresh_after > utcnow():
+            return existing
+
+        lock = self._permission_inventory_locks.setdefault(server_id, asyncio.Lock())
+        async with lock:
+            existing = self.repo.get_server_permission_inventory(server_id)
+            if existing and existing.captured_at + refresh_after > utcnow():
+                return existing
+            inventory_adapter = self._permission_inventory_adapter(server_id) or adapter
+            roles, groups = await asyncio.gather(
+                inventory_adapter._admin_roles(),
+                inventory_adapter._admin_usergroups(),
+            )
+            # A session without admin inventory rights must not erase a
+            # complete inventory captured by a more privileged session.
+            if not roles and existing is not None:
+                return existing
+            if not roles:
+                return None
+            inventory = ServerPermissionInventory(
+                server_id=server_id,
+                roles=roles,
+                groups=groups,
+                captured_at=utcnow(),
+            )
+            self.repo.upsert_server_permission_inventory(inventory)
+            logger.info(
+                "twc-server-permission-inventory-refreshed",
+                server_id=server_id,
+                role_count=len(roles),
+                group_count=len(groups),
+                refresh_hours=self.settings.permission_inventory_refresh_hours,
+            )
+            return inventory
+
+    def _permission_inventory_adapter(self, server_id: str) -> TeamworkAdapter | None:
+        token_map = getattr(self.settings, "twc_permission_inventory_service_tokens", {})
+        token = token_map.get(server_id, "").strip()
+        if not token:
+            return None
+        server = self._require_server(server_id)
+        return self._adapter_for_credentials(server, TokenBundle(access_token=token))
+
+    def _permission_candidate_summaries(
+        self,
+        session: SessionData,
+        summaries: list[BranchCacheSummary],
+    ) -> list[BranchCacheSummary]:
+        # When TWC returned effective permissions, Read Resources scopes are a
+        # complete, user-specific project filter. If an older TWC response did
+        # not include permissions, retain the direct-probe compatibility path.
+        if not session.authorization_context.permissions_included:
+            return summaries
+        return [
+            summary
+            for summary in summaries
+            if self._session_resource_permission_flags(
+                session,
+                summary.project_id,
+                summary.workspace_id,
+            )["accessible"]
+        ]
+
+    def _attach_inventory_role_names(
+        self,
+        session: SessionData,
+        inventory: ServerPermissionInventory | None,
+    ) -> SessionData:
+        if inventory is None or not session.authorization_context.role_ids:
+            return session
+        roles_by_id = {
+            self._user_key(str(role.get("ID") or role.get("id") or "")): str(role.get("name") or "").strip()
+            for role in inventory.roles
+            if isinstance(role, dict)
+        }
+        resolved_names = [
+            roles_by_id.get(self._user_key(role_id), "")
+            for role_id in session.authorization_context.role_ids
+        ]
+        merged_roles = self._merge_claims(
+            *session.authorization_context.roles,
+            *(name for name in resolved_names if name),
+        )
+        if merged_roles == session.authorization_context.roles:
+            return session
+        return self.sessions.update_authorization_context(
+            session,
+            session.authorization_context.model_copy(update={"roles": merged_roles}),
+        )
 
     async def refresh_due_permission_snapshots(self) -> None:
         now = utcnow()
@@ -5277,36 +5684,25 @@ class PlatformService:
                 attempted_at = utcnow()
                 try:
                     live_session = await self._refresh_session_credentials_if_needed(representative)
-                    refreshed_at = await self.refresh_user_permission_snapshot(
+                    refreshed_at, _ = await self._refresh_permission_snapshot_guarded(
                         live_session,
                         reason="scheduled-permission-refresh",
                     )
                 except Exception as exc:
-                    user_id = self._user_key(representative.user.preferred_username)
-                    try:
-                        self.repo.replace_user_permission_snapshot(
-                            user_id,
-                            representative.server.id,
-                            [],
-                            [],
-                        )
-                        self.repo.delete_user_cache(user_id, representative.server.id, PROJECT_LIST_CACHE_KEY)
-                        self.repo.delete_user_cache_prefix(user_id, representative.server.id, "project:")
-                    except Exception as revoke_exc:
-                        logger.exception(
-                            "twc-user-permission-snapshot-revoke-failed",
-                            user=representative.user.preferred_username,
-                            server_id=representative.server.id,
-                            detail=str(revoke_exc),
-                        )
                     for item in group:
                         session_to_mark = live_session if item.session_id == live_session.session_id else item
-                        self.sessions.mark_permission_snapshot_attempt(session_to_mark, attempted_at, successful=False)
+                        self._mark_permission_refresh_failure(
+                            session_to_mark,
+                            exc,
+                            reason="scheduled-permission-refresh",
+                            attempted_at=attempted_at,
+                        )
                     logger.warning(
-                        "twc-user-permission-snapshot-refresh-failed-closed",
+                        "twc-user-permission-snapshot-refresh-deferred",
                         user=representative.user.preferred_username,
                         server_id=representative.server.id,
                         detail=str(exc),
+                        retained_last_valid_snapshot=True,
                     )
                     return
                 for item in group:
@@ -5316,17 +5712,52 @@ class PlatformService:
         if due_groups:
             await asyncio.gather(*(refresh_group(group) for group in due_groups))
 
+    def _mark_permission_refresh_failure(
+        self,
+        session: SessionData,
+        exc: Exception,
+        *,
+        reason: str,
+        attempted_at: datetime | None = None,
+    ) -> None:
+        safe_error = self._permission_error_text(exc)
+        updated = self.sessions.mark_permission_snapshot_attempt(
+            session,
+            attempted_at or utcnow(),
+            successful=False,
+            error=safe_error,
+        )
+        failure_count = getattr(updated, "permission_snapshot_failure_count", 0)
+        warning_threshold = getattr(self.settings, "permission_refresh_warning_failures", 3)
+        if failure_count >= warning_threshold:
+            logger.error(
+                "twc-permission-refresh-administrator-warning",
+                user=session.user.preferred_username,
+                server_id=session.server.id,
+                reason=reason,
+                consecutive_failures=failure_count,
+                retained_last_valid_snapshot=True,
+            )
+
+    def _permission_error_text(self, exc: Exception) -> str:
+        text = str(exc).strip() or exc.__class__.__name__
+        text = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1[redacted]", text)
+        text = re.sub(r"(?i)((?:access_)?token\s*[=:]\s*)[^\s,;]+", r"\1[redacted]", text)
+        return text[:1000]
+
     async def _resolve_user_branch_permission_snapshot(
         self,
         session: SessionData,
         summary: BranchCacheSummary,
         *,
+        adapter=None,
+        permission_inventory: ServerPermissionInventory | None = None,
         refreshed_at: datetime,
     ) -> tuple[BranchAccessRecord, list[ModelPermissionSnapshot], BranchPermissionAttachment | None]:
         user_id = self._user_key(session.user.preferred_username)
         models = self.repo.list_cached_models(session.server.id, summary.project_id, summary.branch_id)
         model_ids = [model.model_id for model in models]
-        adapter = self._adapter_for_session(session)
+        adapter = adapter or self._adapter_for_session(session)
         manifest_user_access: BranchAccessRecord | None = None
         rest_attachment: BranchPermissionAttachment | None = None
         attached_before_refresh = self.repo.get_branch_permission_attachment(
@@ -5335,34 +5766,43 @@ class PlatformService:
             summary.branch_id,
         )
         manifest_error: str | None = None
-        try:
-            manifest_records = await adapter.build_plugin_branch_access_manifest(
-                summary.project_id,
-                summary.branch_id,
-                latest_revision=summary.latest_revision,
-                workspace_id=summary.workspace_id,
-            )
-            manifest_user_access = next(
-                (record for record in manifest_records if self._user_key(record.user_id) == user_id),
-                None,
-            )
-            rest_attachment = self._permission_attachment_from_rest_manifest(
+        if self._attached_rest_manifest_is_current(summary, attached_before_refresh, permission_inventory):
+            manifest_user_access = self._branch_access_from_attached_manifest(
                 session,
                 summary,
-                manifest_records,
-                refreshed_at,
                 attached_before_refresh,
             )
-        except Exception as exc:
-            manifest_error = str(exc)
-            logger.info(
-                "twc-user-permission-manifest-unavailable",
-                user=session.user.preferred_username,
-                server_id=session.server.id,
-                project_id=summary.project_id,
-                branch_id=summary.branch_id,
-                detail=manifest_error,
-            )
+        else:
+            try:
+                manifest_records = await adapter.build_plugin_branch_access_manifest(
+                    summary.project_id,
+                    summary.branch_id,
+                    latest_revision=summary.latest_revision,
+                    workspace_id=summary.workspace_id,
+                    admin_roles_inventory=permission_inventory.roles if permission_inventory else [],
+                    usergroups_inventory=permission_inventory.groups if permission_inventory else [],
+                )
+                manifest_user_access = next(
+                    (record for record in manifest_records if self._user_key(record.user_id) == user_id),
+                    None,
+                )
+                rest_attachment = self._permission_attachment_from_rest_manifest(
+                    session,
+                    summary,
+                    manifest_records,
+                    refreshed_at,
+                    attached_before_refresh,
+                )
+            except Exception as exc:
+                manifest_error = str(exc)
+                logger.info(
+                    "twc-user-permission-manifest-unavailable",
+                    user=session.user.preferred_username,
+                    server_id=session.server.id,
+                    project_id=summary.project_id,
+                    branch_id=summary.branch_id,
+                    detail=manifest_error,
+                )
 
         probe_error: str | None = None
         try:
@@ -5375,38 +5815,33 @@ class PlatformService:
                 workspace_id=summary.workspace_id,
             )
         except Exception as exc:
-            # A refresh that cannot prove access records a denial. This prevents
-            # stale grants from surviving a TWC outage or malformed response.
             probe_error = str(exc)
-            permissions = [
-                ModelPermissionSnapshot(
-                    user_id=user_id,
-                    server_id=session.server.id,
-                    project_id=summary.project_id,
-                    branch_id=summary.branch_id,
-                    model_id=model.model_id,
-                    workspace_id=summary.workspace_id or model.workspace_id,
-                    latest_revision=summary.latest_revision,
-                    accessible=False,
-                    restricted=True,
-                    editable=False,
-                    source="twc-permission-snapshot-denied",
-                    payload={"probe_error": probe_error},
-                    updated_at=refreshed_at,
-                )
-                for model in models
-            ]
             logger.warning(
-                "twc-user-permission-probe-failed-closed",
+                "twc-user-permission-probe-indeterminate",
                 user=session.user.preferred_username,
                 server_id=session.server.id,
                 project_id=summary.project_id,
                 branch_id=summary.branch_id,
                 detail=probe_error,
             )
+            raise PermissionSnapshotIndeterminateError(
+                f"Teamwork Cloud did not return an authoritative permission result for "
+                f"{summary.project_id}/{summary.branch_id}; the last valid snapshot was retained."
+            ) from exc
 
-        accessible = bool(permissions) and any(
+        direct_accessible = bool(permissions) and any(
             permission.accessible and not permission.restricted for permission in permissions
+        )
+        permission_claim_access = self._session_resource_permission_flags(
+            session,
+            summary.project_id,
+            summary.workspace_id,
+        )
+        # Security authority remains fresh per-user evidence. The six-hour
+        # group/role inventory is discovery and comparison data only.
+        accessible = bool(
+            direct_accessible
+            or permission_claim_access["accessible"]
         )
         direct_editable = any(
             permission.accessible and not permission.restricted and permission.editable for permission in permissions
@@ -5418,12 +5853,29 @@ class PlatformService:
             )
             for permission in permissions
         )
+        readonly_branch_ids = list(
+            (manifest_user_access.payload or {}).get("readonly_branch_ids", [])
+            if manifest_user_access
+            else []
+        )
+        if manifest_user_access is None:
+            try:
+                readonly_branch_ids = await adapter._user_readonly_branches(summary.project_id, user_id)
+            except Exception as exc:
+                logger.info(
+                    "twc-current-user-readonly-branches-unavailable",
+                    user=session.user.preferred_username,
+                    server_id=session.server.id,
+                    project_id=summary.project_id,
+                    detail=str(exc),
+                )
+        branch_read_only = summary.branch_id in readonly_branch_ids
         editable = bool(
             accessible
+            and not branch_read_only
             and (
                 direct_editable
-                if direct_editability_known
-                else bool(manifest_user_access and manifest_user_access.editable)
+                or permission_claim_access["editable"]
             )
         )
         permission_comparison = self._compare_attached_and_live_permissions(
@@ -5431,8 +5883,8 @@ class PlatformService:
             attached_before_refresh,
             accessible=accessible,
             editable=editable,
-            branch_admin=bool(accessible and self._branch_admin_access(manifest_user_access)),
-            access_admin=bool(accessible and self._access_admin_access(manifest_user_access)),
+            branch_admin=bool(accessible and not branch_read_only and permission_claim_access["branch_admin_access"]),
+            access_admin=bool(accessible and permission_claim_access["access_admin_access"]),
         )
         effective_permissions = [
             permission.model_copy(
@@ -5448,6 +5900,9 @@ class PlatformService:
                         "manifest_groups": manifest_user_access.via_groups if manifest_user_access else [],
                         "manifest_branch_admin_access": self._branch_admin_access(manifest_user_access),
                         "manifest_access_admin_access": self._access_admin_access(manifest_user_access),
+                        "readonly_branch_ids": readonly_branch_ids,
+                        "branch_read_only": branch_read_only,
+                        "current_user_permission_claims": permission_claim_access["matched_permissions"],
                         "attached_permission_comparison": permission_comparison,
                     },
                 }
@@ -5464,7 +5919,13 @@ class PlatformService:
             latest_revision=summary.latest_revision,
             accessible=accessible,
             editable=editable,
-            admin_access=bool(accessible and manifest_user_access and manifest_user_access.admin_access),
+            admin_access=bool(
+                accessible
+                and (
+                    (not branch_read_only and permission_claim_access["branch_admin_access"])
+                    or permission_claim_access["access_admin_access"]
+                )
+            ),
             roles=list(dict.fromkeys([
                 *(manifest_user_access.roles if manifest_user_access else []),
                 *session.authorization_context.roles,
@@ -5477,19 +5938,77 @@ class PlatformService:
             payload={
                 "model_ids": model_ids,
                 "direct_probe": probe_error is None,
+                "direct_accessible": direct_accessible,
                 "probe_error": probe_error,
                 "manifest_match": manifest_user_access is not None,
                 "manifest_error": manifest_error,
                 "direct_editability_known": direct_editability_known,
                 "manifest_payload": manifest_user_access.payload if manifest_user_access else {},
-                "branch_admin_access": bool(accessible and self._branch_admin_access(manifest_user_access)),
-                "access_admin_access": bool(accessible and self._access_admin_access(manifest_user_access)),
+                "branch_admin_access": bool(
+                    accessible and not branch_read_only and permission_claim_access["branch_admin_access"]
+                ),
+                "access_admin_access": bool(accessible and permission_claim_access["access_admin_access"]),
+                "readonly_branch_ids": readonly_branch_ids,
+                "branch_read_only": branch_read_only,
+                "current_user_permission_claims": permission_claim_access["matched_permissions"],
                 "snapshot_replaced_at": refreshed_at.isoformat(),
                 "attached_permission_comparison": permission_comparison,
             },
             updated_at=refreshed_at,
         )
         return branch_record, effective_permissions, rest_attachment
+
+    def _session_resource_permission_flags(
+        self,
+        session: SessionData,
+        project_id: str,
+        workspace_id: str | None,
+    ) -> dict[str, Any]:
+        target_ids = {
+            value.strip().lower()
+            for value in (project_id, workspace_id or "")
+            if value and value.strip()
+        }
+        matched_terms: list[str] = []
+        matched_permissions: list[dict[str, Any]] = []
+        for claim in getattr(session.authorization_context, "permissions", []):
+            related_resources = {
+                value.strip().lower()
+                for value in claim.related_resources
+                if value and value.strip()
+            }
+            if related_resources and not (related_resources & target_ids):
+                continue
+            terms = " ".join(
+                value
+                for value in (claim.name, claim.operation_name, claim.display_name)
+                if value
+            )
+            normalized = re.sub(r"[^a-z0-9]+", " ", terms.lower()).strip()
+            if not normalized:
+                continue
+            matched_terms.append(normalized)
+            matched_permissions.append(claim.model_dump())
+
+        def has_permission(*names: str) -> bool:
+            return any(name in term for term in matched_terms for name in names)
+
+        has_read = has_permission("read resources", "read resource")
+        has_edit = has_permission("edit resources")
+        has_edit_properties = has_permission("edit resource properties", "edit resource property")
+        has_administer = has_permission("administer resources", "administer resource")
+        has_manage_access = has_permission(
+            "manage owned resource access right",
+            "manage model permissions",
+            "manage user permissions",
+        )
+        return {
+            "accessible": has_read,
+            "editable": bool(has_read and has_edit),
+            "branch_admin_access": bool(has_read and has_edit and has_edit_properties and has_administer),
+            "access_admin_access": bool(has_read and has_manage_access),
+            "matched_permissions": matched_permissions,
+        }
 
     def _permission_attachment_from_rest_manifest(
         self,
@@ -5516,6 +6035,7 @@ class PlatformService:
                 branch_admin_access=self._branch_admin_access(record),
                 access_admin_access=self._access_admin_access(record),
                 via_groups=record.via_groups,
+                readonly_branch_ids=list((record.payload or {}).get("readonly_branch_ids", [])),
             )
             for record in records
         ]
@@ -5542,6 +6062,67 @@ class PlatformService:
                 warnings=prior_warnings,
             ),
             attached_at=captured_at,
+        )
+
+    def _attached_rest_manifest_is_current(
+        self,
+        summary: BranchCacheSummary,
+        attachment: BranchPermissionAttachment | None,
+        inventory: ServerPermissionInventory | None,
+    ) -> bool:
+        if attachment is None or not attachment.manifest.complete:
+            return False
+        if "twc-rest-role-manifest" not in attachment.manifest.source:
+            return False
+        if attachment.latest_revision != summary.latest_revision:
+            return False
+        freshness_floor = (
+            inventory.captured_at
+            if inventory is not None
+            else utcnow() - timedelta(hours=self.settings.permission_inventory_refresh_hours)
+        )
+        return attachment.attached_at >= freshness_floor
+
+    def _branch_access_from_attached_manifest(
+        self,
+        session: SessionData,
+        summary: BranchCacheSummary,
+        attachment: BranchPermissionAttachment,
+    ) -> BranchAccessRecord | None:
+        user_id = self._user_key(session.user.preferred_username)
+        entry = next(
+            (
+                item
+                for item in attachment.manifest.entries
+                if self._user_key(item.principal_type) == "user"
+                and self._user_key(item.principal_name or item.principal_id) == user_id
+                and item.scope_type == "project-branch"
+            ),
+            None,
+        )
+        if entry is None:
+            return None
+        return BranchAccessRecord(
+            user_id=user_id,
+            server_id=session.server.id,
+            project_id=summary.project_id,
+            branch_id=summary.branch_id,
+            workspace_id=summary.workspace_id,
+            branch_name=summary.branch_name or summary.branch_id,
+            latest_revision=summary.latest_revision,
+            accessible=entry.accessible,
+            editable=entry.editable,
+            admin_access=entry.branch_admin_access or entry.access_admin_access,
+            roles=[value.strip() for value in entry.role_name.split(",") if value.strip()],
+            via_groups=entry.via_groups,
+            source="attached-derived-project-acl",
+            payload={
+                "branch_admin_access": entry.branch_admin_access,
+                "access_admin_access": entry.access_admin_access,
+                "readonly_branch_ids": entry.readonly_branch_ids,
+                "acl_attached_at": attachment.attached_at.isoformat(),
+            },
+            updated_at=attachment.attached_at,
         )
 
     def _compare_attached_and_live_permissions(
@@ -6831,19 +7412,28 @@ class PlatformService:
     ) -> AuthorizationContext:
         roles = self._merge_claims(*(upstream_roles or []), *((current_user_context.roles) if current_user_context else []))
         groups = self._merge_claims(*(upstream_groups or []), *((current_user_context.groups) if current_user_context else []))
+        permissions = list((current_user_context.permissions) if current_user_context else [])
+        permissions_included = bool(current_user_context and current_user_context.permissions_included)
+        role_ids = list((current_user_context.role_ids) if current_user_context else [])
         can_manage = self._claims_grant_admin(preferred_username, roles, groups)
 
-        if roles or groups:
+        if roles or groups or permissions:
             return AuthorizationContext(
                 roles=roles,
+                role_ids=role_ids,
                 groups=groups,
+                permissions=permissions,
+                permissions_included=permissions_included,
                 source="upstream-authorization-claims",
                 can_manage_server_presets=can_manage,
             )
 
         return AuthorizationContext(
             roles=[],
+            role_ids=role_ids,
             groups=[],
+            permissions=permissions,
+            permissions_included=permissions_included,
             source="authenticated-user-default",
             can_manage_server_presets=can_manage,
         )
