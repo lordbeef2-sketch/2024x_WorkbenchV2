@@ -112,15 +112,65 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
                 "workspace-a",
             )
         )
-        resource_creator = {
-            "ID": "resource-creator-role",
-            "name": "Resource Creator",
+
+    def test_workspace_protected_object_applies_category_role_to_project(self) -> None:
+        adapter = object.__new__(TeamworkAdapter)
+
+        self.assertTrue(
+            adapter._role_assignment_applies_to_project(
+                {
+                    "roleID": "reviewer-role",
+                    "protectedObjects": [{"ID": "workspace-a"}],
+                },
+                "project-a",
+                "workspace-a",
+            )
+        )
+        self.assertFalse(
+            adapter._role_assignment_applies_to_project(
+                {
+                    "roleID": "reviewer-role",
+                    "protectedObjects": [{"ID": "workspace-b"}],
+                },
+                "project-a",
+                "workspace-a",
+            )
+        )
+
+    def test_realswagger_permission_operation_names_are_authoritative(self) -> None:
+        adapter = object.__new__(TeamworkAdapter)
+        role = {
+            "ID": "custom-role",
+            "name": "Localized custom role",
             "permissions": [
-                {"name": "List All Resources"},
-                {"name": "Create Resource"},
+                {
+                    "name": "com.nomagic.esi.resource_read.resource",
+                    "operationName": "read.resource",
+                    "operationDisplayName": "Read Projects",
+                },
+                {
+                    "name": "com.nomagic.esi.resource_edit.resource",
+                    "operationName": "edit.resource",
+                    "operationDisplayName": "Edit Projects",
+                },
             ],
         }
-        self.assertEqual(adapter._role_access_flags(resource_creator), (False, False, False, False))
+
+        self.assertEqual(adapter._role_access_flags(role), (True, True, False, False))
+
+    def test_expanded_security_manager_permissions_grant_documented_resource_access(self) -> None:
+        adapter = object.__new__(TeamworkAdapter)
+        role = {
+            "ID": "security-manager-role",
+            "name": "Security Manager",
+            "permissions": [
+                {"name": "List All Resources"},
+                {"name": "Manage User Permissions"},
+                {"name": "Manage Security Roles"},
+            ],
+        }
+
+        self.assertEqual(adapter._role_access_flags(role), (True, False, False, True))
 
     async def test_fresh_effective_group_permissions_can_prove_access_when_branch_probe_is_restricted(self) -> None:
         service = object.__new__(PlatformService)
@@ -244,6 +294,54 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
         flags = service._session_resource_permission_flags(session, "project-a", "workspace-a")
 
         self.assertFalse(flags["accessible"])
+
+    def test_canonical_rest_permission_operations_map_to_project_access(self) -> None:
+        service = object.__new__(PlatformService)
+        session = SimpleNamespace(
+            authorization_context=AuthorizationContext(
+                permissions_included=True,
+                permissions=[
+                    AuthorizationPermissionClaim(
+                        name="com.nomagic.esi.resource_read.resource",
+                        operation_name="read.resource",
+                        related_resources=["project-a"],
+                    ),
+                    AuthorizationPermissionClaim(
+                        name="com.nomagic.esi.resource_edit.resource",
+                        operation_name="edit.resource",
+                        related_resources=["project-a"],
+                    ),
+                    AuthorizationPermissionClaim(name="Edit Resource Properties", related_resources=["project-a"]),
+                    AuthorizationPermissionClaim(
+                        name="Administer Resources",
+                        related_resources=["project-a"],
+                    ),
+                ],
+            )
+        )
+
+        flags = service._session_resource_permission_flags(session, "project-a", "workspace-a")
+
+        self.assertTrue(flags["accessible"])
+        self.assertTrue(flags["editable"])
+        self.assertTrue(flags["branch_admin_access"])
+
+    def test_list_all_resources_grants_read_access_without_granting_edit(self) -> None:
+        service = object.__new__(PlatformService)
+        session = SimpleNamespace(
+            authorization_context=AuthorizationContext(
+                permissions_included=True,
+                permissions=[
+                    AuthorizationPermissionClaim(name="List All Resources", related_resources=[]),
+                ],
+            )
+        )
+
+        flags = service._session_resource_permission_flags(session, "project-a", "workspace-a")
+
+        self.assertTrue(flags["accessible"])
+        self.assertFalse(flags["editable"])
+        self.assertFalse(flags["branch_admin_access"])
 
     def test_uuid_only_user_roles_are_resolved_from_shared_inventory(self) -> None:
         service = object.__new__(PlatformService)

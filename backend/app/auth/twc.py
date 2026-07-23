@@ -33,14 +33,26 @@ def _auth_client_secret(settings: Settings, server) -> str | None:
     return (override.client_secret if override and override.client_secret else None) or settings.resolved_twc_auth_client_secret
 
 
-def _auth_scope(settings: Settings, server) -> str:
+def _auth_scope(settings: Settings, server) -> str | None:
     override = _auth_override(settings, server)
     return (override.scope if override and override.scope else None) or settings.twc_auth_scope
 
 
 def _auth_return_url_parameter(settings: Settings, server) -> str:
     override = _auth_override(settings, server)
-    return ((override.return_url_parameter if override and override.return_url_parameter else None) or settings.twc_saml_return_url_parameter)
+    return (
+        (override.return_url_parameter if override and override.return_url_parameter else None)
+        or settings.twc_oidc_return_url_parameter
+    )
+
+
+def _auth_token_method(settings: Settings, server) -> str:
+    override = _auth_override(settings, server)
+    return (
+        (override.token_auth_method if override and override.token_auth_method else None)
+        or settings.twc_oidc_token_auth_method
+        or "client_secret_basic"
+    ).strip().lower()
 
 
 def _url_with_path(url: str, path_or_url: str) -> str:
@@ -72,33 +84,101 @@ def _build_twc_authorize_base_url(settings: Settings, server) -> str:
     override = _auth_override(settings, server)
     if override and override.authorize_url:
         return override.authorize_url
-    configured_url = (settings.twc_saml_authorize_url or "").strip()
+    configured_url = (settings.twc_oidc_authorize_url or "").strip()
     if configured_url:
         return configured_url
 
-    login_path = (override.login_path if override and override.login_path else None) or settings.twc_saml_login_path
+    login_path = (
+        (override.login_path if override and override.login_path else None)
+        or settings.twc_oidc_authorize_path
+    )
     login_port = (override.login_port if override and override.login_port is not None else None)
     if login_port is None:
-        login_port = settings.twc_saml_login_port
-    return build_twc_auth_server_url(settings, server, login_path or "/authentication/authorize", port=login_port)
+        login_port = settings.twc_oidc_port
+    return build_twc_auth_server_url(settings, server, login_path or "/authentication/oidc/authorize", port=login_port)
 
 
 def _build_twc_token_url(settings: Settings, server) -> str:
     override = _auth_override(settings, server)
     if override and override.token_url:
         return override.token_url
-    if settings.twc_saml_token_url:
-        return settings.twc_saml_token_url
+    if settings.twc_oidc_token_url:
+        return settings.twc_oidc_token_url
 
-    token_path = (override.token_path if override and override.token_path else None) or settings.twc_saml_token_path
-    authorize_url = (override.authorize_url if override and override.authorize_url else None) or settings.twc_saml_authorize_url
+    token_path = (
+        (override.token_path if override and override.token_path else None)
+        or settings.twc_oidc_token_path
+    )
+    authorize_url = (
+        (override.authorize_url if override and override.authorize_url else None)
+        or settings.twc_oidc_authorize_url
+    )
     if authorize_url:
-        return _url_with_path(authorize_url, token_path or "/authentication/api/token")
+        return _url_with_path(authorize_url, token_path or "/authentication/api/oidc/token")
 
     login_port = (override.login_port if override and override.login_port is not None else None)
     if login_port is None:
-        login_port = settings.twc_saml_login_port
-    return build_twc_auth_server_url(settings, server, token_path or "/authentication/api/token", port=login_port)
+        login_port = settings.twc_oidc_port
+    return build_twc_auth_server_url(settings, server, token_path or "/authentication/api/oidc/token", port=login_port)
+
+
+def _build_twc_discovery_url(settings: Settings, server) -> str:
+    override = _auth_override(settings, server)
+    if override and override.discovery_url:
+        return override.discovery_url
+    if settings.twc_oidc_discovery_url:
+        return settings.twc_oidc_discovery_url
+    return build_twc_auth_server_url(
+        settings,
+        server,
+        settings.twc_oidc_discovery_path,
+        port=settings.twc_oidc_port,
+    )
+
+
+async def resolve_twc_oidc_configuration(settings: Settings, server) -> dict[str, Any]:
+    """Resolve the 2024x Refresh3 OIDC endpoints from AuthServer discovery.
+
+    Explicit per-server URLs remain authoritative. If discovery is unavailable,
+    the documented 2024x Refresh3 endpoint paths are used as a bounded fallback.
+    """
+    override = _auth_override(settings, server)
+    explicit_authorize = (override.authorize_url if override and override.authorize_url else None) or settings.twc_oidc_authorize_url
+    explicit_token = (override.token_url if override and override.token_url else None) or settings.twc_oidc_token_url
+    configuration: dict[str, Any] = {
+        "authorization_endpoint": explicit_authorize or _build_twc_authorize_base_url(settings, server),
+        "token_endpoint": explicit_token or _build_twc_token_url(settings, server),
+        "token_endpoint_auth_methods_supported": [_auth_token_method(settings, server)],
+        "scopes_supported": ["openid"],
+        "discovery_endpoint": _build_twc_discovery_url(settings, server),
+        "source": "explicit" if explicit_authorize and explicit_token else "documented-2024x-r3-default",
+    }
+    if explicit_authorize and explicit_token:
+        return configuration
+
+    verify = server.ca_bundle_path if server.verify_tls and server.ca_bundle_path else server.verify_tls
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=verify, follow_redirects=True) as client:
+            response = await client.get(configuration["discovery_endpoint"], headers={"Accept": "application/json"})
+        if response.status_code >= 400:
+            return configuration
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return configuration
+    if not isinstance(payload, dict):
+        return configuration
+    if not explicit_authorize and isinstance(payload.get("authorization_endpoint"), str):
+        configuration["authorization_endpoint"] = payload["authorization_endpoint"].strip()
+    if not explicit_token and isinstance(payload.get("token_endpoint"), str):
+        configuration["token_endpoint"] = payload["token_endpoint"].strip()
+    methods = payload.get("token_endpoint_auth_methods_supported")
+    if isinstance(methods, list):
+        configuration["token_endpoint_auth_methods_supported"] = [str(item) for item in methods]
+    scopes = payload.get("scopes_supported")
+    if isinstance(scopes, list):
+        configuration["scopes_supported"] = [str(item) for item in scopes]
+    configuration["source"] = "oidc-discovery"
+    return configuration
 
 
 def build_twc_authorize_base_url(container: ApplicationContainer, server) -> str:
@@ -109,27 +189,38 @@ def build_twc_token_url(container: ApplicationContainer, server) -> str:
     return _build_twc_token_url(container.settings, server)
 
 
-def build_twc_saml_signin_url(container: ApplicationContainer, server, state: str) -> str:
+def build_twc_oidc_authorization_url(container: ApplicationContainer, server, state: str) -> str:
     settings = container.settings
     client_id = _auth_client_id(settings, server)
     if not client_id:
         raise ValueError(
             "A TWC AuthServer client id must be configured for Teamwork Cloud SSO. "
-            "Use TWC_AUTH_CLIENT_ID or a per-server TWC_AUTH_SERVER_OVERRIDES entry from authentication.client.ids."
+            "Use the generated OpenID Connect client id in TWC_AUTH_CLIENT_ID or a per-server TWC_AUTH_SERVER_OVERRIDES entry."
         )
     callback_url = build_callback_url(settings)
     login_url = _build_twc_authorize_base_url(settings, server)
-    query = urlencode(
-        {
-            "scope": _auth_scope(settings, server),
-            _auth_return_url_parameter(settings, server): callback_url,
-            "client_id": client_id,
-            "response_type": "code",
-            "state": state,
-        }
-    )
+    query_values = {
+        _auth_return_url_parameter(settings, server): callback_url,
+        "client_id": client_id,
+        "response_type": "code",
+        "state": state,
+    }
+    if scope := _auth_scope(settings, server):
+        query_values["scope"] = scope
+    query = urlencode(query_values)
     separator = "&" if "?" in login_url else "?"
     return f"{login_url}{separator}{query}"
+
+
+async def build_twc_oidc_signin_url(container: ApplicationContainer, server, state: str) -> tuple[str, dict[str, Any]]:
+    configuration = await resolve_twc_oidc_configuration(container.settings, server)
+    url = build_twc_oidc_authorization_url(container, server, state)
+    configured_endpoint = str(configuration.get("authorization_endpoint") or "").strip()
+    if configured_endpoint:
+        parsed = urlparse(url)
+        endpoint = urlparse(configured_endpoint)
+        url = urlunparse((endpoint.scheme, endpoint.netloc, endpoint.path, endpoint.params, parsed.query, ""))
+    return url, configuration
 
 
 def infer_token_expiry(token: str | None) -> datetime | None:
@@ -182,18 +273,28 @@ async def _request_authserver_tokens(
     client_secret = _auth_client_secret(settings, server)
     if not client_id or not client_secret:
         raise PermissionError(
-            "A TWC AuthServer client id and authentication.client.secret must be configured for SSO code exchange. "
+            "A generated TWC OpenID Connect client id and secret must be configured for SSO code exchange. "
             "Use TWC_AUTH_CLIENT_ID/TWC_AUTH_CLIENT_SECRET or per-server TWC_AUTH_SERVER_OVERRIDES."
         )
 
-    token_url = _build_twc_token_url(settings, server)
+    configuration = await resolve_twc_oidc_configuration(settings, server)
+    token_url = str(configuration.get("token_endpoint") or _build_twc_token_url(settings, server))
+    token_method = _auth_token_method(settings, server)
+    supported_methods = {
+        str(item).strip().lower()
+        for item in configuration.get("token_endpoint_auth_methods_supported", [])
+        if str(item).strip()
+    }
+    if token_method == "client_secret_basic" and supported_methods and token_method not in supported_methods:
+        raise PermissionError(
+            f"TWC AuthServer discovery does not advertise configured token authentication method {token_method}."
+        )
     verify = server.ca_bundle_path if server.verify_tls and server.ca_bundle_path else server.verify_tls
     async with httpx.AsyncClient(timeout=20.0, verify=verify, follow_redirects=True) as client:
-        response = await client.post(
-            token_url,
-            headers={"X-Auth-Secret": client_secret},
-            data=form_data,
-        )
+        if token_method == "client_secret_basic":
+            response = await client.post(token_url, auth=httpx.BasicAuth(client_id, client_secret), data=form_data)
+        else:
+            raise PermissionError(f"Unsupported TWC OIDC token authentication method: {token_method}")
     if response.status_code >= 400:
         raise PermissionError(f"TWC AuthServer token exchange failed with HTTP {response.status_code}: {response.text[:500]}")
     try:
@@ -207,16 +308,18 @@ async def exchange_twc_auth_code(container: ApplicationContainer, server, code: 
     client_id = _auth_client_id(container.settings, server)
     if not client_id:
         raise PermissionError("A TWC AuthServer client id must be configured for Teamwork Cloud SSO.")
+    form_data = {
+        "redirect_uri": build_callback_url(container.settings),
+        "client_id": client_id,
+        "grant_type": "authorization_code",
+        "code": code,
+    }
+    if scope := _auth_scope(container.settings, server):
+        form_data["scope"] = scope
     return await _request_authserver_tokens(
         container.settings,
         server,
-        {
-            "scope": _auth_scope(container.settings, server),
-            "redirect_uri": build_callback_url(container.settings),
-            "client_id": client_id,
-            "grant_type": "authorization_code",
-            "code": code,
-        },
+        form_data,
     )
 
 
@@ -224,14 +327,16 @@ async def refresh_twc_auth_token(settings: Settings, server, refresh_token: str)
     client_id = _auth_client_id(settings, server)
     if not client_id:
         raise PermissionError("A TWC AuthServer client id must be configured for Teamwork Cloud token refresh.")
+    form_data = {
+        "redirect_uri": build_callback_url(settings),
+        "client_id": client_id,
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }
+    if scope := _auth_scope(settings, server):
+        form_data["scope"] = scope
     return await _request_authserver_tokens(
         settings,
         server,
-        {
-            "scope": _auth_scope(settings, server),
-            "redirect_uri": build_callback_url(settings),
-            "client_id": client_id,
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        },
+        form_data,
     )

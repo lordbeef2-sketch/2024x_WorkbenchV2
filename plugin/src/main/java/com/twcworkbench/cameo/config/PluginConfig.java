@@ -8,7 +8,6 @@ import java.util.Properties;
 
 public class PluginConfig {
     private static final String CONFIG_RELATIVE_PATH = "config/workbench-plugin.properties";
-    private static final String DEFAULT_INGEST_TOKEN = "Hnwdujnq@!N)N!)NQOWDN!*@)*#nQ)DN)!!N()@N@N!)NF";
 
     public final File configFile;
     public String workbenchBaseUrl;
@@ -23,7 +22,7 @@ public class PluginConfig {
     private PluginConfig(File configFile, Properties properties) {
         this.configFile = configFile;
         this.workbenchBaseUrl = trimToNull(properties.getProperty("workbench.baseUrl"));
-        this.workbenchIngestToken = defaultIfBlank(properties.getProperty("workbench.ingestToken"), DEFAULT_INGEST_TOKEN);
+        this.workbenchIngestToken = trimToNull(properties.getProperty("workbench.ingestToken"));
         this.snapshotOnOpen = Boolean.parseBoolean(properties.getProperty("capture.snapshotOnOpen", "true"));
         this.snapshotOnSave = Boolean.parseBoolean(properties.getProperty("capture.snapshotOnSave", "true"));
         this.insecureTls = Boolean.parseBoolean(properties.getProperty("http.insecureTls", "false"));
@@ -61,7 +60,7 @@ public class PluginConfig {
             String serverIdOverride
     ) {
         this.workbenchBaseUrl = trimToNull(workbenchBaseUrl);
-        this.workbenchIngestToken = defaultIfBlank(workbenchIngestToken, DEFAULT_INGEST_TOKEN);
+        this.workbenchIngestToken = trimToNull(workbenchIngestToken);
         this.snapshotOnOpen = snapshotOnOpen;
         this.snapshotOnSave = snapshotOnSave;
         this.insecureTls = insecureTls;
@@ -73,7 +72,7 @@ public class PluginConfig {
     public synchronized void save() {
         Properties properties = new Properties();
         properties.setProperty("workbench.baseUrl", emptyIfNull(workbenchBaseUrl));
-        properties.setProperty("workbench.ingestToken", defaultIfBlank(workbenchIngestToken, DEFAULT_INGEST_TOKEN));
+        properties.setProperty("workbench.ingestToken", emptyIfNull(workbenchIngestToken));
         properties.setProperty("capture.snapshotOnOpen", Boolean.toString(snapshotOnOpen));
         properties.setProperty("capture.snapshotOnSave", Boolean.toString(snapshotOnSave));
         properties.setProperty("http.insecureTls", Boolean.toString(insecureTls));
@@ -99,11 +98,6 @@ public class PluginConfig {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
-    }
-
-    private static String defaultIfBlank(String value, String fallback) {
-        String trimmed = value == null ? "" : value.trim();
-        return trimmed.isEmpty() ? fallback : trimmed;
     }
 
     private static String emptyIfNull(String value) {

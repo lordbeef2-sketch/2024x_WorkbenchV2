@@ -38,5 +38,10 @@ public class TWCWorkbenchMenuConfigurator implements AMConfigurator {
         if (manager.getActionFor(exportAction.getID()) == null) {
             category.addAction(exportAction);
         }
+
+        OpenWorkbenchAgentAction agentAction = new OpenWorkbenchAgentAction(plugin);
+        if (manager.getActionFor(agentAction.getID()) == null) {
+            category.addAction(agentAction);
+        }
     }
 }

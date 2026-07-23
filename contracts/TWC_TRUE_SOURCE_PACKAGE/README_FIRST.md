@@ -24,14 +24,15 @@ Public official docs confirm that:
 - The raw public 2022xR2 and 2024xR3 OpenAPI documents both declare `http://localhost:8111` as the server URL, so `8111` is the documented REST/Swagger port.
 - For this project, assume the default Teamwork Cloud layout with only your HTTPS host name substituted: browser UI at `https://<host>:8443` and REST/Swagger at `https://<host>:8111/osmc/swagger`. Do not use `8443` as the REST/Swagger base URL.
 - The public Swagger index includes entries for **2022x R2** and **2024x R3**, plus separate **server-side simulation** docs for those versions.
-- Teamwork Cloud authentication server supports **SAML**, where the authentication server acts as the Service Provider.
+- Teamwork Cloud 2024x Refresh3 documents **OpenID Connect** for client web applications, including discovery, authorization-code and refresh grants, `scope=openid`, `client_secret_basic`, and use of the ID token for TWC REST.
+- The Authentication Server can separately support **SAML** as an upstream Service Provider integration; SAML is not the web application's protocol to AuthServer.
 - Token-based authentication for REST is documented for both 2022xR2 and 2024x-era docs.
 - Teamwork Cloud sessions remain open unless reused/logged out, which matters for automation and licensing.
 
 ## What still requires live capture
 Public docs are not enough to verify your exact environment for:
 - enabled endpoints on your servers,
-- actual auth/session behavior after SAML in your environment,
+- actual OIDC redirect URI, discovery response, TLS/proxy behavior, and upstream identity-provider behavior in your environment,
 - exact 401/403/404/409 payloads,
 - collaborator/document behaviors in your deployment,
 - your internal publish service contract,

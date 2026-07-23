@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -13,14 +14,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.models.domain import PresetServerDefinition
 
 
-LEGACY_TWC_AUTH_PATHS = {
-    "/osmc/authen/login",
-    "/osmc/login.html",
-    "/authentication/saml2/sso/tssd-twc2024x",
-}
-
-
 class TWCAuthServerOverride(BaseModel):
+    discovery_url: str | None = None
     authorize_url: str | None = None
     token_url: str | None = None
     login_path: str | None = None
@@ -29,12 +24,8 @@ class TWCAuthServerOverride(BaseModel):
     client_id: str | None = None
     client_secret: str | None = None
     scope: str | None = None
+    token_auth_method: Literal["client_secret_basic"] | None = None
     return_url_parameter: str | None = None
-    oslc_rootservices_url: str | None = None
-    oslc_port: int | None = None
-    oslc_base_path: str | None = None
-    oslc_consumer_key: str | None = None
-    oslc_consumer_secret: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -43,6 +34,7 @@ class TWCAuthServerOverride(BaseModel):
             return raw
         payload = dict(raw)
         alias_groups = {
+            "discovery_url": ("oidc_configuration_endpoint", "openid_configuration_endpoint"),
             "authorize_url": ("authorization_endpoint", "authentication_authorize_url"),
             "token_url": ("token_endpoint", "authentication_token_url"),
             "client_id": (
@@ -55,16 +47,6 @@ class TWCAuthServerOverride(BaseModel):
             "client_secret": (
                 "authentication.client.secret",
                 "authentication_client_secret",
-            ),
-            "oslc_consumer_key": (
-                "oauth_consumer_key",
-                "oauth.consumer.key",
-                "consumer_key",
-            ),
-            "oslc_consumer_secret": (
-                "oauth_consumer_secret",
-                "oauth.consumer.secret",
-                "consumer_secret",
             ),
         }
         for target, aliases in alias_groups.items():
@@ -79,17 +61,15 @@ class TWCAuthServerOverride(BaseModel):
 
     @field_validator(
         "authorize_url",
+        "discovery_url",
         "token_url",
         "login_path",
         "token_path",
         "client_id",
         "client_secret",
         "scope",
+        "token_auth_method",
         "return_url_parameter",
-        "oslc_rootservices_url",
-        "oslc_base_path",
-        "oslc_consumer_key",
-        "oslc_consumer_secret",
         mode="before",
     )
     @classmethod
@@ -98,8 +78,6 @@ class TWCAuthServerOverride(BaseModel):
             text = value.strip()
             if not text:
                 return None
-            if text.lower() in LEGACY_TWC_AUTH_PATHS:
-                return "/authentication/authorize"
             return text
         return value
 
@@ -109,14 +87,6 @@ class TWCAuthServerOverride(BaseModel):
         if isinstance(value, str) and not value.strip():
             return None
         return value
-
-    @field_validator("oslc_port", mode="before")
-    @classmethod
-    def blank_oslc_port_to_none(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
-
 
 class Settings(BaseSettings):
     app_name: str = "TWC Workbench"
@@ -142,22 +112,18 @@ class Settings(BaseSettings):
     twc_authentication_client_secret: str | None = None
     twc_auth_callback_path: str | None = None
     twc_webhook_callback_path: str | None = None
-    twc_auth_scope: str = "openid"
+    twc_auth_scope: str | None = "openid"
     twc_auth_state_ttl_minutes: int = 15
     twc_auth_server_overrides: dict[str, TWCAuthServerOverride] = Field(default_factory=dict)
-    twc_saml_authorize_url: str | None = None
-    twc_saml_login_path: str = "/authentication/authorize"
-    twc_saml_login_port: int | None = 8443
-    twc_saml_token_url: str | None = None
-    twc_saml_token_path: str = "/authentication/api/token"
-    twc_saml_return_url_parameter: str = "redirect_uri"
-    oslc_auth_state_cookie_name: str = "twc_oslc_auth_state"
-    twc_oslc_rootservices_url: str | None = None
-    twc_oslc_port: int | None = 8443
-    twc_oslc_base_path: str = "/oslc/api"
-    twc_oslc_consumer_key: str | None = None
-    twc_oslc_consumer_secret: str | None = None
-    twc_oslc_callback_path: str | None = None
+    twc_oidc_discovery_url: str | None = None
+    twc_oidc_discovery_path: str = "/authentication/.well-known/oidc-configuration"
+    twc_oidc_authorize_url: str | None = None
+    twc_oidc_authorize_path: str = "/authentication/oidc/authorize"
+    twc_oidc_token_url: str | None = None
+    twc_oidc_token_path: str = "/authentication/api/oidc/token"
+    twc_oidc_port: int | None = 8443
+    twc_oidc_token_auth_method: Literal["client_secret_basic"] = "client_secret_basic"
+    twc_oidc_return_url_parameter: str = "redirect_uri"
     session_ttl_minutes: int = 480
     permission_snapshot_refresh_minutes: int = Field(default=30, ge=1)
     permission_inventory_refresh_hours: int = Field(default=6, ge=1)
@@ -213,7 +179,12 @@ class Settings(BaseSettings):
     cache_ingest_tokens: list[str] = Field(default_factory=list)
     cache_api_tokens: dict[str, str] = Field(default_factory=dict)
     three_ds_kb_path: Path | None = None
-    three_ds_kb_max_chunks: int = Field(default=1200, ge=0, le=10000)
+    three_ds_kb_max_chunks: int = Field(default=50000, ge=0, le=100000)
+    three_ds_kb_reference_file_max_bytes: int = Field(default=2_500_000, ge=250_000, le=20_000_000)
+    openwebui_verify_tls: bool = True
+    openwebui_ca_bundle_path: Path | None = None
+    openwebui_allow_insecure_http: bool = False
+    openwebui_allowed_hosts: list[str] = Field(default_factory=list)
     root_path: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -229,13 +200,11 @@ class Settings(BaseSettings):
         "twc_authentication_client_secret",
         "twc_auth_callback_path",
         "twc_webhook_callback_path",
-        "twc_saml_authorize_url",
-        "twc_saml_token_url",
-        "twc_oslc_rootservices_url",
-        "twc_oslc_consumer_key",
-        "twc_oslc_consumer_secret",
-        "twc_oslc_callback_path",
+        "twc_oidc_discovery_url",
+        "twc_oidc_authorize_url",
+        "twc_oidc_token_url",
         "permission_alert_webhook_url",
+        "openwebui_ca_bundle_path",
         mode="before",
     )
     @classmethod
@@ -244,13 +213,25 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("twc_saml_login_path", mode="before")
+    @field_validator("twc_oidc_discovery_path", mode="before")
     @classmethod
-    def blank_login_path_to_default(cls, value: object) -> object:
+    def blank_oidc_discovery_path_to_default(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
-            return "/authentication/authorize"
-        if isinstance(value, str) and value.strip().lower() in LEGACY_TWC_AUTH_PATHS:
-            return "/authentication/authorize"
+            return "/authentication/.well-known/oidc-configuration"
+        return value
+
+    @field_validator("twc_oidc_authorize_path", mode="before")
+    @classmethod
+    def blank_oidc_authorize_path_to_default(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return "/authentication/oidc/authorize"
+        return value
+
+    @field_validator("twc_oidc_token_path", mode="before")
+    @classmethod
+    def blank_oidc_token_path_to_default(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return "/authentication/api/oidc/token"
         return value
 
     @field_validator("fallback_cache_sync_time")
@@ -279,33 +260,19 @@ class Settings(BaseSettings):
 
     @field_validator("twc_auth_scope", mode="before")
     @classmethod
-    def blank_auth_scope_to_default(cls, value: object) -> object:
+    def blank_auth_scope_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
-            return "openid"
+            return None
         return value
 
-    @field_validator("twc_saml_token_path", mode="before")
-    @classmethod
-    def blank_token_path_to_default(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip():
-            return "/authentication/api/token"
-        return value
-
-    @field_validator("twc_saml_login_port", mode="before")
+    @field_validator("twc_oidc_port", mode="before")
     @classmethod
     def blank_login_port_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
 
-    @field_validator("twc_oslc_port", mode="before")
-    @classmethod
-    def blank_oslc_port_to_none(cls, value: object) -> object:
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
-
-    @field_validator("twc_saml_return_url_parameter", mode="before")
+    @field_validator("twc_oidc_return_url_parameter", mode="before")
     @classmethod
     def blank_return_parameter_to_default(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -461,18 +428,6 @@ class Settings(BaseSettings):
         return f"{self.resolved_app_origin}{self.resolved_twc_webhook_callback_path}"
 
     @property
-    def resolved_twc_oslc_callback_path(self) -> str:
-        path = self.twc_oslc_callback_path or f"{self.api_prefix.rstrip('/')}/auth/oslc/callback"
-        normalized = path.strip()
-        if not normalized.startswith("/"):
-            normalized = f"/{normalized}"
-        return normalized
-
-    @property
-    def resolved_twc_oslc_callback_url(self) -> str:
-        return f"{self.resolved_app_origin}{self.resolved_twc_oslc_callback_path}"
-
-    @property
     def resolved_twc_auth_client_id(self) -> str | None:
         return _first_config_value(
             self.twc_auth_client_id,
@@ -483,14 +438,6 @@ class Settings(BaseSettings):
     @property
     def resolved_twc_auth_client_secret(self) -> str | None:
         return _first_config_value(self.twc_auth_client_secret, self.twc_authentication_client_secret)
-
-    @property
-    def resolved_twc_oslc_consumer_key(self) -> str | None:
-        return _first_config_value(self.twc_oslc_consumer_key)
-
-    @property
-    def resolved_twc_oslc_consumer_secret(self) -> str | None:
-        return _first_config_value(self.twc_oslc_consumer_secret)
 
     def twc_auth_override_for_server(self, server_id: str) -> TWCAuthServerOverride | None:
         return self.twc_auth_server_overrides.get(server_id) or self.twc_auth_server_overrides.get("*")

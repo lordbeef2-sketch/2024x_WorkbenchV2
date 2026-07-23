@@ -208,7 +208,7 @@ export default function LandingPage() {
                     />
                   </Stack>
                   <Typography variant="body1" sx={{ color: "rgba(244, 249, 255, 0.92)", lineHeight: 1.5 }}>
-                    TWC remains the authentication and authorization authority. Sign in via TWC uses the selected server&apos;s Authentication Server and its configured SAML login, while token sign-in remains available as a fallback.
+                    TWC remains the authentication and authorization authority. Sign in via TWC uses the selected server&apos;s 2024x Refresh3 OpenID Connect discovery and authorization-code flow, while token sign-in remains available as a fallback.
                   </Typography>
                   <Stack spacing={1.1}>
                     <Stack direction="row" spacing={1.25} alignItems="center">
@@ -239,6 +239,11 @@ export default function LandingPage() {
         {banner ? <Alert severity={banner.severity}>{banner.message}</Alert> : null}
         {authError ? <Alert severity="error">{authError}</Alert> : null}
         {authOptions?.redirect_signin_message ? <Alert severity="info">{authOptions.redirect_signin_message}</Alert> : null}
+        {authOptions?.redirect_uri ? (
+          <Alert severity="info">
+            Register this exact OpenID Connect redirect URI in the TWC Web Application Platform OAuth client: <strong>{authOptions.redirect_uri}</strong>
+          </Alert>
+        ) : null}
         {redirectSignInEnabled && pendingServer ? (
           <Alert
             severity="info"
@@ -347,10 +352,7 @@ export default function LandingPage() {
                     This deployment exposes Teamwork Cloud presets before login so users can choose the configured 2024x server first. Sign in via TWC preserves that selected server until the callback finishes the app session.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    TWC Authentication Server handles SAML. After login, the app exchanges the returned code using the registered client id and Authentication Server secret, then validates the user against Teamwork Cloud.
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    OSLC uses its own OAuth consumer authorization. After you enter the workbench, the OSLC Explorer can connect that separate lane for approved consumer keys without changing the main TWC session.
+                    Register Workbench under Web Application Platform OAuth clients with this app&apos;s exact callback URI. The app discovers the OIDC endpoints, exchanges the returned code with the generated client ID and secret, then validates the ID token against Teamwork Cloud. SAML may remain upstream of AuthServer, but Workbench itself uses OIDC.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Use TWC Token remains available as a fallback. The backend validates that token against the selected Teamwork Cloud server before opening a workbench session.
@@ -372,8 +374,7 @@ export default function LandingPage() {
                   <Chip label="Projects and model browsing" color="success" />
                   <Chip label="Item details" color="success" />
                   <Chip label="Compare and revision diff" color="success" />
-                  <Chip label="TWC SAML sign-in" color="success" />
-                  <Chip label="OSLC OAuth explorer" color="success" />
+                  <Chip label="TWC OIDC sign-in" color="success" />
                 </Stack>
               </Paper>
             </Stack>

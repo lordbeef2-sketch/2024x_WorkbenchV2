@@ -329,7 +329,7 @@ if (-not $NoBrowser) {
 Write-Phase "Starting the single-origin FastAPI server"
 Push-Location $backendDir
 try {
-    & $venvPython -m uvicorn app.main:app --host $BindHost --port $Port
+    & $venvPython -m uvicorn app.main:app --host $BindHost --port $Port --no-access-log
 }
 finally {
     Pop-Location

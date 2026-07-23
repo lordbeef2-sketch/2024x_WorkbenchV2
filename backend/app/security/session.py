@@ -14,8 +14,6 @@ from redis import Redis
 from app.models.domain import (
     AuthorizationContext,
     Bookmark,
-    OSLCConsumerCredentials,
-    OSLCTokenBundle,
     SavedSearch,
     ServerProfile,
     SessionData,
@@ -208,38 +206,6 @@ class SessionManager:
 
     def update_credentials(self, session: SessionData, credentials: TokenBundle) -> SessionData:
         session.encrypted_credentials = self.cipher.encrypt(credentials)
-        self.store.set(session)
-        return session
-
-    def get_oslc_credentials(self, session: SessionData) -> OSLCTokenBundle | None:
-        if not session.encrypted_oslc_credentials:
-            return None
-        raw = self.cipher.decrypt_raw(session.encrypted_oslc_credentials)
-        return OSLCTokenBundle.model_validate_json(raw)
-
-    def set_oslc_credentials(self, session: SessionData, credentials: OSLCTokenBundle) -> SessionData:
-        session.encrypted_oslc_credentials = self.cipher.encrypt_raw(credentials.model_dump_json().encode("utf-8"))
-        self.store.set(session)
-        return session
-
-    def clear_oslc_credentials(self, session: SessionData) -> SessionData:
-        session.encrypted_oslc_credentials = None
-        self.store.set(session)
-        return session
-
-    def get_oslc_consumer_credentials(self, session: SessionData) -> OSLCConsumerCredentials | None:
-        if not session.encrypted_oslc_consumer_credentials:
-            return None
-        raw = self.cipher.decrypt_raw(session.encrypted_oslc_consumer_credentials)
-        return OSLCConsumerCredentials.model_validate_json(raw)
-
-    def set_oslc_consumer_credentials(self, session: SessionData, credentials: OSLCConsumerCredentials) -> SessionData:
-        session.encrypted_oslc_consumer_credentials = self.cipher.encrypt_raw(credentials.model_dump_json().encode("utf-8"))
-        self.store.set(session)
-        return session
-
-    def clear_oslc_consumer_credentials(self, session: SessionData) -> SessionData:
-        session.encrypted_oslc_consumer_credentials = None
         self.store.set(session)
         return session
 

@@ -69,6 +69,12 @@
       "scope": ["auth server"]
     },
     {
+      "id": "docs-oidc-authentication-2024xr3",
+      "type": "developer-guide",
+      "url": "https://docs.nomagic.com/spaces/DEVG2024xR3/pages/225347498/OpenID%2BConnect%2Bauthentication",
+      "scope": ["2024xR3", "OIDC", "authentication", "REST token"]
+    },
+    {
       "id": "docs-saml-2024x",
       "type": "doc",
       "url": "https://docs.nomagic.com/spaces/TWCloud2024x/pages/137986541/SAML%2Bintegration",
@@ -103,6 +109,90 @@
       "type": "doc",
       "url": "https://docs.nomagic.com/spaces/NMDOC/pages/178160520/2022x%2BRefresh2%2BHot%2BFix%2B2%2BVersion%2BNews",
       "scope": ["2022xR2", "release notes"]
+    },
+    {
+      "id": "jdocs-cameo-2022x-overview",
+      "type": "jdocs",
+      "url": "https://jdocs.nomagic.com/2022x/",
+      "scope": ["2022x", "cameo", "plugin api"]
+    },
+    {
+      "id": "jdocs-cameo-2024x-overview",
+      "type": "jdocs",
+      "url": "https://jdocs.nomagic.com/2024x/",
+      "scope": ["2024x", "cameo", "plugin api"]
+    },
+    {
+      "id": "jdocs-cameo-2022x-plugins-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2022x/com/nomagic/magicdraw/plugins/package-summary.html",
+      "scope": ["2022x", "cameo", "plugins"]
+    },
+    {
+      "id": "jdocs-cameo-2024x-plugins-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2024x/com/nomagic/magicdraw/plugins/package-summary.html",
+      "scope": ["2024x", "cameo", "plugins"]
+    },
+    {
+      "id": "jdocs-cameo-2022x-openapi-uml-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2022x/com/nomagic/magicdraw/openapi/uml/package-summary.html",
+      "scope": ["2022x", "cameo", "openapi", "uml"]
+    },
+    {
+      "id": "jdocs-cameo-2024x-openapi-uml-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2024x/com/nomagic/magicdraw/openapi/uml/package-summary.html",
+      "scope": ["2024x", "cameo", "openapi", "uml"]
+    },
+    {
+      "id": "jdocs-cameo-2022x-browser-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2022x/com/nomagic/magicdraw/ui/browser/package-summary.html",
+      "scope": ["2022x", "cameo", "browser"]
+    },
+    {
+      "id": "jdocs-cameo-2024x-browser-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2024x/com/nomagic/magicdraw/ui/browser/package-summary.html",
+      "scope": ["2024x", "cameo", "browser"]
+    },
+    {
+      "id": "jdocs-cameo-2022x-specifications-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2022x/com/nomagic/magicdraw/ui/dialogs/specifications/package-summary.html",
+      "scope": ["2022x", "cameo", "specifications"]
+    },
+    {
+      "id": "jdocs-cameo-2024x-specifications-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2024x/com/nomagic/magicdraw/ui/dialogs/specifications/package-summary.html",
+      "scope": ["2024x", "cameo", "specifications"]
+    },
+    {
+      "id": "jdocs-cameo-2022x-teamwork2-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2022x/com/nomagic/magicdraw/teamwork2/package-summary.html",
+      "scope": ["2022x", "cameo", "teamwork2"]
+    },
+    {
+      "id": "jdocs-cameo-2024x-teamwork2-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2024x/com/nomagic/magicdraw/teamwork2/package-summary.html",
+      "scope": ["2024x", "cameo", "teamwork2"]
+    },
+    {
+      "id": "jdocs-cameo-2022x-uml-symbols-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2022x/com/nomagic/magicdraw/uml/symbols/package-summary.html",
+      "scope": ["2022x", "cameo", "uml", "symbols"]
+    },
+    {
+      "id": "jdocs-cameo-2024x-uml-symbols-package",
+      "type": "jdocs-package",
+      "url": "https://jdocs.nomagic.com/2024x/com/nomagic/magicdraw/uml/symbols/package-summary.html",
+      "scope": ["2024x", "cameo", "uml", "symbols"]
     }
   ]
 }

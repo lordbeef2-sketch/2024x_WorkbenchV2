@@ -14,7 +14,9 @@ import com.twcworkbench.cameo.service.WorkbenchIngestClient;
 import com.twcworkbench.cameo.ui.PluginProgressDialog;
 import com.twcworkbench.cameo.ui.WorkbenchConnectionDialog;
 
+import java.awt.Desktop;
 import java.io.File;
+import java.net.URI;
 import javax.swing.SwingWorker;
 
 public class TWCWorkbenchCameoPlugin extends Plugin {
@@ -110,6 +112,27 @@ public class TWCWorkbenchCameoPlugin extends Plugin {
         }
         catch (Exception exception) {
             Application.getInstance().getGUILog().log("[ERROR] Failed to update TWC Workbench connection settings: " + exception.getMessage());
+            exception.printStackTrace();
+        }
+    }
+
+    public void openWorkbenchAgent() {
+        try {
+            if (config.workbenchBaseUrl == null || config.workbenchBaseUrl.isBlank()) {
+                Application.getInstance().getGUILog().log(
+                        "[WARNING] Configure the Workbench base URL before opening Workbench Agent."
+                );
+                configureWorkbenchConnection();
+                return;
+            }
+            if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                throw new IllegalStateException("This desktop cannot open the system browser.");
+            }
+            String baseUrl = config.workbenchBaseUrl.replaceAll("/+$", "");
+            Desktop.getDesktop().browse(URI.create(baseUrl + "/workspace?tab=agent"));
+        }
+        catch (Exception exception) {
+            Application.getInstance().getGUILog().log("[ERROR] Failed to open Workbench Agent: " + exception.getMessage());
             exception.printStackTrace();
         }
     }

@@ -181,7 +181,6 @@ def get_branch(
         _render_candidates(
             client,
             candidates,
-            workspace_id=resolved_workspace_id or None,
             resource_id=resolved_resource_id,
             branch_id=resolved_branch_id,
         ),
@@ -196,22 +195,15 @@ def list_models(
 ) -> Any:
     resolved_resource_id = _resolve_required_str(client, resource_id, "resource_id")
     resolved_branch_id = _resolve_required_str(client, branch_id, "branch_id")
-    resolved_workspace_id = _resolve_optional_str(client, workspace_id, "workspace_id")
-    candidates: list[str] = []
-    if resolved_workspace_id:
-        candidates.append("/osmc/workspaces/{workspace_id}/resources/{resource_id}/branches/{branch_id}/models")
-    candidates.extend(
-        [
-            "/osmc/resources/{resource_id}/branches/{branch_id}/models",
-            "/osmc/resources/{resource_id}/models",
-        ]
-    )
+    candidates = [
+        "/osmc/resources/{resource_id}/branches/{branch_id}/models",
+        "/osmc/resources/{resource_id}/models",
+    ]
     return client.request_json(
         "GET",
         _render_candidates(
             client,
             candidates,
-            workspace_id=resolved_workspace_id or None,
             resource_id=resolved_resource_id,
             branch_id=resolved_branch_id,
         ),
@@ -228,16 +220,10 @@ def get_model(
     resolved_model_id = _resolve_required_str(client, model_id, "model_id")
     resolved_resource_id = _resolve_required_str(client, resource_id, "resource_id")
     resolved_branch_id = _resolve_required_str(client, branch_id, "branch_id")
-    resolved_workspace_id = _resolve_optional_str(client, workspace_id, "workspace_id")
-    candidates: list[str] = []
-    if resolved_workspace_id:
-        candidates.append("/osmc/workspaces/{workspace_id}/resources/{resource_id}/branches/{branch_id}/models/{model_id}")
-    candidates.extend(
-        [
-            "/osmc/resources/{resource_id}/branches/{branch_id}/models/{model_id}",
-            "/osmc/resources/{resource_id}/models/{model_id}",
-        ]
-    )
+    candidates = [
+        "/osmc/resources/{resource_id}/branches/{branch_id}/models/{model_id}",
+        "/osmc/resources/{resource_id}/models/{model_id}",
+    ]
     return client.request_json(
         "GET",
         _render_candidates(

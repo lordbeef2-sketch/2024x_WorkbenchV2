@@ -7,15 +7,9 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
 from app.models.domain import (
     BranchAccessManifestStatus,
-    BranchCacheSyncRequest,
     CacheApiKeyCreateRequest,
     CacheIngestTokenRequest,
     CacheElementSearchResponse,
-    FallbackCacheRefreshRequest,
-    OSLCExecuteRequest,
-    OSLCGenerateConsumerRequest,
-    OSLCSharedConsumerRequest,
-    OSLCStoreConsumerRequest,
     PermissionRefreshRequest,
     SessionPreferences,
     StereotypeElementSearchResponse,
@@ -108,110 +102,6 @@ def delete_cache_api_key(
 @router.get("/contract")
 def contract_manifest(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
     return container.platform.swagger_contract_manifest()
-
-
-@router.get("/oslc/status")
-async def oslc_status(session=Depends(require_admin), container: ApplicationContainer = Depends(get_container)):
-    return await container.platform.oslc_status(session)
-
-
-@router.get("/oslc/shared-consumer")
-def oslc_shared_consumer_status(
-    session=Depends(require_admin),
-    container: ApplicationContainer = Depends(get_container),
-):
-    return container.platform.oslc_shared_consumer_status(session)
-
-
-@router.put("/oslc/shared-consumer")
-def store_shared_oslc_consumer(
-    payload: OSLCSharedConsumerRequest,
-    session=Depends(require_admin_csrf),
-    container: ApplicationContainer = Depends(get_container),
-):
-    try:
-        return container.platform.set_shared_oslc_consumer(
-            session,
-            consumer_key=payload.consumer_key,
-            consumer_secret=payload.consumer_secret,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-
-
-@router.delete("/oslc/shared-consumer")
-def clear_shared_oslc_consumer(
-    session=Depends(require_admin_csrf),
-    container: ApplicationContainer = Depends(get_container),
-):
-    container.platform.clear_shared_oslc_consumer(session)
-    return {"ok": True}
-
-
-@router.post("/oslc/request")
-async def execute_oslc_request(
-    payload: OSLCExecuteRequest,
-    session=Depends(require_admin_csrf),
-    container: ApplicationContainer = Depends(get_container),
-):
-    try:
-        return await container.platform.execute_oslc_request(session, payload)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-
-
-@router.post("/oslc/disconnect")
-def disconnect_oslc(session=Depends(require_admin_csrf), container: ApplicationContainer = Depends(get_container)):
-    container.platform.disconnect_oslc(session)
-    return {"ok": True}
-
-
-@router.post("/oslc/consumer/generate")
-async def generate_oslc_consumer(
-    payload: OSLCGenerateConsumerRequest,
-    session=Depends(require_admin_csrf),
-    container: ApplicationContainer = Depends(get_container),
-):
-    try:
-        return await container.platform.generate_oslc_consumer(
-            session,
-            consumer_name=payload.name,
-            consumer_secret=payload.secret,
-            remember_for_session=payload.remember_for_session,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-
-
-@router.post("/oslc/consumer/session")
-def store_oslc_consumer(
-    payload: OSLCStoreConsumerRequest,
-    session=Depends(require_admin_csrf),
-    container: ApplicationContainer = Depends(get_container),
-):
-    try:
-        return container.platform.set_oslc_consumer(
-            session,
-            consumer_key=payload.consumer_key,
-            consumer_secret=payload.consumer_secret,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-
-
-@router.delete("/oslc/consumer/session")
-def clear_oslc_consumer(
-    session=Depends(require_admin_csrf),
-    container: ApplicationContainer = Depends(get_container),
-):
-    container.platform.clear_oslc_consumer(session)
-    return {"ok": True}
 
 
 @router.post("/contract/execute")
@@ -459,30 +349,6 @@ async def retry_permission_inventory(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.get("/fallback-cache/status")
-def fallback_cache_status(
-    session=Depends(require_admin),
-    container: ApplicationContainer = Depends(get_container),
-):
-    return container.platform.fallback_cache_refresh_status(session)
-
-
-@router.post("/fallback-cache/refresh", status_code=status.HTTP_202_ACCEPTED)
-async def refresh_fallback_cache(
-    payload: FallbackCacheRefreshRequest,
-    session=Depends(require_csrf),
-    container: ApplicationContainer = Depends(get_container),
-):
-    try:
-        return container.platform.trigger_fallback_cache_refresh(session, payload)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-
 @router.get("/permissions/current")
 def current_permission_status(
     projectId: str = Query(...),
@@ -492,20 +358,6 @@ def current_permission_status(
     container: ApplicationContainer = Depends(get_container),
 ):
     return container.platform.current_permission_status(session, projectId, branchId, modelId)
-
-
-@router.post("/model-cache/sync")
-async def start_model_cache_sync(
-    payload: BranchCacheSyncRequest,
-    session=Depends(require_csrf),
-    container: ApplicationContainer = Depends(get_container),
-):
-    try:
-        return await container.platform.submit_branch_cache_sync(session, payload)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
 @router.post("/model-cache/webhooks/{registration_id}", status_code=status.HTTP_202_ACCEPTED)

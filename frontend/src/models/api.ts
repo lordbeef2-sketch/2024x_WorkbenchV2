@@ -440,27 +440,6 @@ export interface ServerPermissionInventoryStatus {
   message: string;
 }
 
-export interface FallbackCacheRefreshStatus {
-  server_id: string;
-  schedule_time: string;
-  schedule_timezone: string;
-  schedule_window_minutes: number;
-  current_local_time: string;
-  current_user_can_refresh: boolean;
-  active_server_administrator_count: number;
-  fallback_branch_count: number;
-  plugin_branch_count: number;
-  last_job_id: string | null;
-  last_job_status: JobStatus | null;
-  last_job_message: string | null;
-  last_triggered_by: string | null;
-  last_trigger_reason: string | null;
-  last_started_at: string | null;
-  last_finished_at: string | null;
-  nightly_window_open: boolean;
-  message: string;
-}
-
 export interface ServerPermissionInventoryAuditRecord {
   id: string;
   server_id: string;
@@ -546,42 +525,8 @@ export interface AuthOptions {
   token_signin_enabled: boolean;
   redirect_signin_enabled: boolean;
   redirect_signin_message?: string | null;
+  redirect_uri: string;
   csrf_header_name: string;
-}
-
-export interface OSLCRootServicesSummary {
-  rootservices_url: string;
-  service_provider_catalog_url?: string | null;
-  configuration_management_service_providers_url?: string | null;
-  request_token_url?: string | null;
-  authorize_url?: string | null;
-  access_token_url?: string | null;
-  request_consumer_key_url?: string | null;
-  raw_content_type: string;
-}
-
-export interface OSLCAuthorizationStatus {
-  server_id: string;
-  configured: boolean;
-  authorized: boolean;
-  rootservices?: OSLCRootServicesSummary | null;
-  consumer_key_configured: boolean;
-  consumer_key_source: "none" | "config" | "shared" | "session";
-  can_generate_consumer_key: boolean;
-  message: string;
-}
-
-export interface OSLCSharedConsumerRequest {
-  consumer_key: string;
-  consumer_secret: string;
-}
-
-export interface OSLCSharedConsumerStatus {
-  server_id: string;
-  configured: boolean;
-  consumer_key?: string | null;
-  updated_at?: string | null;
-  source: "none" | "shared" | "config";
 }
 
 export interface CacheIngestTokenStatus {
@@ -682,6 +627,7 @@ export interface WorkbenchAgentStatus {
   knowledge_branch_id?: string | null;
   reference_file_id?: string | null;
   reference_file_name?: string | null;
+  reference_file_count: number;
   reference_synced_at?: string | null;
   updated_at?: string | null;
   knowledge_synced_at?: string | null;
@@ -703,6 +649,7 @@ export interface WorkbenchAgentKnowledgeStatus {
   knowledge_file_name: string;
   reference_file_id: string;
   reference_file_name: string;
+  reference_file_count: number;
   synced_at: string;
   model_count: number;
   element_count: number;
@@ -732,45 +679,6 @@ export interface WorkbenchAgentChatResponse {
   knowledge_file_name?: string | null;
   raw_response: Record<string, unknown>;
   message: string;
-}
-
-export interface OSLCStoreConsumerRequest {
-  consumer_key: string;
-  consumer_secret: string;
-}
-
-export interface OSLCGenerateConsumerRequest {
-  name: string;
-  secret: string;
-  remember_for_session: boolean;
-}
-
-export interface OSLCGenerateConsumerResponse {
-  consumer_key: string;
-  request_consumer_key_url: string;
-  stored_for_session: boolean;
-  approval_required: boolean;
-  message: string;
-}
-
-export interface OSLCExecuteRequest {
-  path_or_url: string;
-  accept?: string | null;
-  timeout_seconds: number;
-}
-
-export interface OSLCExecuteResponse {
-  requested_url: string;
-  status_code: number;
-  ok: boolean;
-  content_type: string;
-  headers: Record<string, string>;
-  body: unknown;
-  text?: string | null;
-  body_base64?: string | null;
-  is_binary: boolean;
-  size_bytes: number;
-  filename?: string | null;
 }
 
 export interface TokenLoginRequest {

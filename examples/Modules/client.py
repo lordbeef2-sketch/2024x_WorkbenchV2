@@ -45,15 +45,15 @@ def build_authenticated_client(config_path: str | Path | None = None) -> TwcExam
 def authorize_request_url(config_or_path: ExampleConfig | str | Path | None = None, state: str | None = None) -> str:
     config = _resolve_config(config_or_path)
     request_state = state or secrets.token_urlsafe(24)
-    query = urlencode(
-        {
-            "scope": config.resolved_auth_scope,
-            "redirect_uri": config.callback_url,
-            "client_id": config.auth.client_id.strip(),
-            "response_type": "code",
-            "state": request_state,
-        }
-    )
+    query_values = {
+        "redirect_uri": config.callback_url,
+        "client_id": config.auth.client_id.strip(),
+        "response_type": "code",
+        "state": request_state,
+    }
+    if config.resolved_auth_scope:
+        query_values["scope"] = config.resolved_auth_scope
+    query = urlencode(query_values)
     return f"{authorize_url(config)}?{query}"
 
 

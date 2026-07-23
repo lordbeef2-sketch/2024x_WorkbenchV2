@@ -65,8 +65,11 @@ Copy `backend/.env.example` to `backend/.env` and set values appropriate for you
 `TWC_PRESET_SERVERS` is the authoritative JSON catalog for pre-login Teamwork Cloud discovery. Each preset includes `id`, `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
 The backend loads that catalog at startup and exposes enabled presets on the landing page before authentication. Users do not create their own target servers just to connect; the app persists only each user’s selected and last-used server state separately.
 To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` and restart the backend.
-`Sign In via TWC` is the primary sign-in path. It redirects to the Authentication Server for the selected Teamwork Cloud preset, derived by default as `https://<selected-twc-host>:8443/authentication/authorize`, requests an authorization code, exchanges that code for a token through `/authentication/api/token`, refreshes that token when the AuthServer returns a refresh token, and validates the user through the RealSwagger `/osmc/admin/currentUser` REST endpoint. The documented deployment profile for this project is a Teamwork Cloud 2024x server, with `TWC_AUTH_SERVER_OVERRIDES` available when that 2024x environment uses an explicit Authentication Server host or proxy path. `Use TWC Token` remains the explicit fallback.
-OSLC remains a separate API lane from `/osmc`. The workbench now includes an OSLC Explorer that discovers `/oslc/api/rootservices`, authorizes through OAuth 1.0a consumer endpoints, signs OSLC GET requests with an approved consumer key/secret, and can generate an OSLC consumer key from `jfs:oauthRequestConsumerKeyUrl` when the server publishes that root-services link.
+`Sign In via TWC` is the primary sign-in path. It uses the official Teamwork Cloud 2024x Refresh3 OpenID Connect authorization-code flow. Workbench reads `https://<selected-twc-host>:8443/authentication/.well-known/oidc-configuration`, redirects to its `authorization_endpoint`, exchanges the code at its `token_endpoint` using `client_secret_basic`, requests `scope=openid`, refreshes the ID token when a refresh token is returned, and validates the user through `/osmc/admin/currentUser`. SAML may remain the Authentication Server's upstream identity provider, but it is not the protocol between Workbench and the Authentication Server. `Use TWC Token` remains the explicit fallback.
+The supplied launchers disable Uvicorn access logging so the authorization code
+in the callback query string is not copied into console logs. Application audit
+events remain available through structured Workbench logging.
+The bundled 3DS 2024x source package documents OSLC resources, but it does not define an OSLC authentication contract for this Workbench. The previous consumer-key/request-token implementation was removed because it was not supported by that source package or a captured live-server contract. OSLC access must remain unavailable until its actual 2024x endpoints and authentication exchange are captured and tested.
 Preset-management authorization is derived from Teamwork Cloud or trusted reverse-proxy role and group context. When no upstream role or group claims are available, the app defaults to allowing authenticated users rather than maintaining a separate authorization list.
 
 Important settings:
@@ -82,20 +85,15 @@ Important settings:
 - `UPSTREAM_GROUP_HEADERS`: optional JSON array of trusted reverse-proxy group headers used to mirror TWC group membership.
 - `UPSTREAM_ROLE_HEADERS`: optional JSON array of trusted reverse-proxy role headers used to mirror TWC role membership.
 - `UPSTREAM_ACCESS_TOKEN_HEADERS`: optional JSON array of trusted reverse-proxy TWC token headers.
-- `TWC_AUTH_CLIENT_ID`: one Authentication Server client id listed in `authentication.client.ids`.
-- `TWC_AUTH_CLIENT_SECRET`: Authentication Server `authentication.client.secret` used as the `X-Auth-Secret` token-exchange header.
+- `TWC_AUTH_CLIENT_ID`: the client ID generated for Workbench under Web Application Platform Settings -> OAuth clients -> OpenID Connect.
+- `TWC_AUTH_CLIENT_SECRET`: the generated secret for that OIDC client.
 - `TWC_AUTHENTICATION_CLIENT_ID`, `TWC_AUTHENTICATION_CLIENT_IDS`, `TWC_AUTHENTICATION_CLIENT_SECRET`: optional aliases for the same TWC AuthServer properties.
-- `TWC_AUTH_SCOPE`: optional AuthServer token-exchange scope. Leave blank unless Dassault support tells you otherwise; the app defaults it to the Teamwork Cloud documented value.
-- `TWC_SAML_AUTHORIZE_URL`: optional complete SAML/AuthServer authorize URL. Leave blank to derive it from the selected server.
-- `TWC_SAML_LOGIN_PATH`: authorize path used when `TWC_SAML_AUTHORIZE_URL` is blank. Defaults to `/authentication/authorize`.
-- `TWC_SAML_LOGIN_PORT`: authorize port used when `TWC_SAML_AUTHORIZE_URL` is blank. Defaults to `8443`.
-- `TWC_SAML_TOKEN_URL`: optional complete AuthServer token URL. Leave blank to derive it from the selected server or authorize URL.
-- `TWC_SAML_RETURN_URL_PARAMETER`: query parameter used to pass the app callback URL to the TWC authorize endpoint. Defaults to `redirect_uri`.
+- `TWC_AUTH_SCOPE`: defaults to the documented `openid` scope.
+- `TWC_OIDC_DISCOVERY_URL`: optional complete 2024x Refresh3 discovery URL; otherwise Workbench derives it from the selected server.
+- `TWC_OIDC_AUTHORIZE_URL` / `TWC_OIDC_TOKEN_URL`: optional explicit endpoint overrides. Normally leave them blank and use discovery.
+- `TWC_OIDC_TOKEN_AUTH_METHOD`: defaults to the documented `client_secret_basic` method.
+- `TWC_OIDC_RETURN_URL_PARAMETER`: query parameter used to pass the app callback URL to the TWC OIDC authorization endpoint. Defaults to `redirect_uri`.
 - `TWC_AUTH_SERVER_OVERRIDES`: optional JSON object keyed by preset server id for explicit 2024x AuthServer hosts, client ids, secrets, ports, paths, scopes, and return parameter names.
-- `TWC_OSLC_CONSUMER_KEY`, `TWC_OSLC_CONSUMER_SECRET`: approved OAuth 1.0a consumer credentials for OSLC. These can also be generated from the OSLC Explorer and stored per app session, but generated keys still require admin approval in Teamwork Cloud Settings.
-- `TWC_OSLC_ROOTSERVICES_URL`: optional complete OSLC root services URL. Leave blank to derive `https://<selected-twc-host>:8443/oslc/api/rootservices`.
-- `TWC_OSLC_PORT`, `TWC_OSLC_BASE_PATH`: derivation controls for OSLC when the root services URL is not explicitly set.
-- `TWC_OSLC_CALLBACK_PATH`: optional browser-visible callback path for the OSLC OAuth redirect.
 - `CACHE_INGEST_TOKENS`: optional legacy fallback list for plugin write tokens. The preferred path is to manage the plugin ingest token from Workbench admin Settings.
 - `CACHE_API_TOKENS`: optional legacy fallback map of bearer token to Workbench username for cache-read API access. The preferred path is to let users create their own API keys from Workbench Settings.
 - `PERMISSION_SNAPSHOT_REFRESH_MINUTES`: active-user effective permissions are atomically replaced on this interval; defaults to `30`.
@@ -184,16 +182,24 @@ for integrations and recovery, but filtering and navigation operate against
 the full tree instead of model headers alone.
 
 Workbench Agent maintains the official 3DS / No Magic 2024x reference as a
-persistent, fingerprinted Open WebUI file separate from permission-scoped branch
-model files. Every Agent chat attaches both sources and instructs any mapped OWUI
+persistent, fingerprinted, size-segmented Open WebUI file set separate from permission-scoped branch
+model files. Every Agent chat attaches the complete reference set plus the branch source and instructs any mapped OWUI
 model to use the reference for Workbench/3DS guidance and the branch file for
 project facts. Set `THREE_DS_KB_PATH` to the generated KB folder or
-`datasheet_chunks.jsonl`; `THREE_DS_KB_MAX_CHUNKS` bounds the included
-source-attributed chunks. The local development fallback recognizes the shared
+`datasheet_chunks.jsonl`; `THREE_DS_KB_MAX_CHUNKS` is a safety ceiling (the default covers the full generated KB), while `THREE_DS_KB_REFERENCE_FILE_MAX_BYTES` segments the source-attributed reference into upload-safe OWUI files without dropping chunks. The local development fallback recognizes the shared
 `C:/sand/TWC_Data_Sheets/TWC2024x/output/nomagic_owui_kb` build.
+Open WebUI TLS verification is enabled by default. Set
+`OPENWEBUI_CA_BUNDLE_PATH` for an internal CA; disabling
+`OPENWEBUI_VERIFY_TLS` is an explicit controlled-environment exception.
+Workbench requires an HTTPS Open WebUI origin by default, rejects embedded
+credentials/query fragments, and can restrict destinations with
+`OPENWEBUI_ALLOWED_HOSTS`. `OPENWEBUI_ALLOW_INSECURE_HTTP=true` is an explicit
+development-only override.
 Agent knowledge pushes execute as background Workbench jobs and the UI polls
 their status, so large Open WebUI ingestion runs are not held inside one HTTP
-request that a gateway can terminate.
+request that a gateway can terminate. Each completed reference segment is
+checkpointed, so a later gateway or processing failure resumes at the first
+unfinished segment instead of re-uploading the processed prefix.
 
 ## Frontend Configuration
 
@@ -295,13 +301,13 @@ Open `http://localhost:8000`.
 Run backend on Windows:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --no-access-log
 ```
 
 Run backend on Linux:
 
 ```bash
-./.venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+./.venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --no-access-log
 ```
 
 Run frontend in a second terminal:
@@ -340,7 +346,7 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 - The post-login app session is bound to the selected server, not the other way around.
 - Redirect-based `Sign In via TWC` sends the browser to the selected preset's AuthServer authorize endpoint, preserves the selected preset server, and completes the app session on the callback route after exchanging the returned authorization code.
 - The callback URL is the Workbench app URL, normally `https://<workbench-host>/api/auth/callback`; whitelist that same callback in every TWC/AuthServer client registration that should be able to return users to this app.
-- If your 2024x environment uses a separate Authentication Server host, `authentication.client.ids`, `authentication.client.secret`, or proxy path, put those values in `TWC_AUTH_SERVER_OVERRIDES` keyed by the matching `TWC_PRESET_SERVERS` id.
+- Register Workbench under Web Application Platform Settings -> OAuth clients -> OpenID Connect using the exact Workbench callback URI. Put the generated client ID and secret in `TWC_AUTH_CLIENT_ID` and `TWC_AUTH_CLIENT_SECRET`, or in `TWC_AUTH_SERVER_OVERRIDES` keyed by the matching preset.
 - If your deployment bypasses the AuthServer code flow, the callback must receive authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your proxy or auth gateway.
 - `Use TWC Token` remains the explicit fallback when your deployment cannot return authenticated TWC context to the callback.
 - If your proxy cannot forward Teamwork Cloud session cookies, configure `UPSTREAM_ACCESS_TOKEN_HEADERS` to pass a user-scoped TWC token instead.

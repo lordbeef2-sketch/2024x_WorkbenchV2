@@ -12,6 +12,7 @@ from io import StringIO
 from pathlib import Path
 import re
 from typing import Any, Callable
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -84,12 +85,6 @@ from app.models.domain import (
     PermissionManifestEntry,
     PermissionRefreshAuditRecord,
     PermissionRefreshRequest,
-    OSLCAuthorizationStatus,
-    OSLCConsumerCredentials,
-    OSLCExecuteRequest,
-    OSLCExecuteResponse,
-    OSLCGenerateConsumerResponse,
-    OSLCSharedConsumerStatus,
     OpenWebUIModelEntry,
     ProjectSummary,
     ProjectTombstoneRecord,
@@ -163,14 +158,12 @@ class PlatformService:
         self,
         *,
         settings: Settings,
-        oauth,
         repo: SqliteRepository,
         sessions: SessionManager,
         jobs: JobCoordinator,
         publisher: PublisherAdapter,
     ) -> None:
         self.settings = settings
-        self.oauth = oauth
         self.repo = repo
         self.sessions = sessions
         self.jobs = jobs
@@ -506,6 +499,7 @@ class PlatformService:
             knowledge_branch_id=secret.knowledge_branch_id,
             reference_file_id=secret.reference_file_id,
             reference_file_name=secret.reference_file_name,
+            reference_file_count=len(secret.reference_file_ids) or (1 if secret.reference_file_id else 0),
             reference_synced_at=secret.reference_synced_at,
             updated_at=secret.updated_at,
             knowledge_synced_at=secret.knowledge_synced_at,
@@ -535,6 +529,8 @@ class PlatformService:
             knowledge_branch_id=existing.knowledge_branch_id if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
             reference_file_id=existing.reference_file_id if existing and existing.base_url == base_url else None,
             reference_file_name=existing.reference_file_name if existing and existing.base_url == base_url else None,
+            reference_file_ids=existing.reference_file_ids if existing and existing.base_url == base_url else [],
+            reference_file_names=existing.reference_file_names if existing and existing.base_url == base_url else [],
             reference_fingerprint=existing.reference_fingerprint if existing and existing.base_url == base_url else None,
             reference_synced_at=existing.reference_synced_at if existing and existing.base_url == base_url else None,
             knowledge_synced_at=existing.knowledge_synced_at if existing and existing.base_url == base_url and existing.model_id == payload.model_id.strip() else None,
@@ -559,7 +555,7 @@ class PlatformService:
             raise ValueError("Save an Open WebUI base URL and API key before loading models.")
         url = f"{secret.base_url}/api/models"
         try:
-            async with httpx.AsyncClient(timeout=30.0, verify=False, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=30.0, verify=self._openwebui_verify(), follow_redirects=True) as client:
                 response = await client.get(url, headers=self._openwebui_headers(secret.api_key))
         except httpx.HTTPError as exc:
             raise RuntimeError(f"Open WebUI model listing failed: {self._openwebui_http_error_message(exc)}") from exc
@@ -587,7 +583,11 @@ class PlatformService:
         if summary is None:
             raise ValueError("The selected stored project branch is not available to this Workbench user.")
 
-        reference_file_id, reference_file_name, reference_stats, reference_fingerprint = await self._ensure_workbench_reference_knowledge(secret)
+        reference_files, reference_stats, reference_fingerprint = await self._ensure_workbench_reference_knowledge(
+            secret,
+            session=session,
+        )
+        reference_file_id, reference_file_name = reference_files[0]
         file_name, file_content, bundle_stats = self._build_workbench_agent_knowledge_document(session, project_id, branch_id)
         file_id = await self._upload_openwebui_markdown_file(secret, file_name, file_content)
 
@@ -600,6 +600,8 @@ class PlatformService:
                 "knowledge_synced_at": utcnow(),
                 "reference_file_id": reference_file_id,
                 "reference_file_name": reference_file_name,
+                "reference_file_ids": [file_id for file_id, _ in reference_files],
+                "reference_file_names": [name for _, name in reference_files],
                 "reference_fingerprint": reference_fingerprint,
                 "reference_synced_at": secret.reference_synced_at if secret.reference_fingerprint == reference_fingerprint else utcnow(),
                 "updated_at": utcnow(),
@@ -613,10 +615,11 @@ class PlatformService:
             knowledge_file_name=file_name,
             reference_file_id=reference_file_id,
             reference_file_name=reference_file_name,
+            reference_file_count=len(reference_files),
             synced_at=updated_secret.knowledge_synced_at or utcnow(),
             **bundle_stats,
             **reference_stats,
-            message="Open WebUI processed the branch model file and the persistent Workbench + 3DS 2024x reference file. Every Workbench Agent chat attaches both sources.",
+            message=f"Open WebUI processed the branch model file and {len(reference_files)} persistent Workbench + 3DS 2024x reference files. Every Workbench Agent chat attaches the complete reference set.",
         )
 
     def submit_workbench_agent_knowledge_sync(
@@ -660,7 +663,7 @@ class PlatformService:
         async def handler(context):
             await context.report(5, "Preparing the Workbench + 3DS reference and branch model knowledge files.")
             result = await self.sync_workbench_agent_knowledge(session, project_id, branch_id)
-            await context.report(100, "Open WebUI finished processing both Workbench Agent knowledge files.")
+            await context.report(100, "Open WebUI finished processing the complete reference set and branch model file.")
             return result.model_dump(mode="json")
 
         return self.jobs.submit(job, handler)
@@ -690,12 +693,18 @@ class PlatformService:
         if not working_secret.knowledge_file_id:
             raise ValueError("Sync the current project branch knowledge before chatting with Workbench Agent.")
 
-        reference_file_id, reference_file_name, _, reference_fingerprint = await self._ensure_workbench_reference_knowledge(working_secret)
+        reference_files, _, reference_fingerprint = await self._ensure_workbench_reference_knowledge(
+            working_secret,
+            session=session,
+        )
+        reference_file_id, reference_file_name = reference_files[0]
         if working_secret.reference_file_id != reference_file_id or working_secret.reference_fingerprint != reference_fingerprint:
             working_secret = working_secret.model_copy(
                 update={
                     "reference_file_id": reference_file_id,
                     "reference_file_name": reference_file_name,
+                    "reference_file_ids": [file_id for file_id, _ in reference_files],
+                    "reference_file_names": [name for _, name in reference_files],
                     "reference_fingerprint": reference_fingerprint,
                     "reference_synced_at": utcnow(),
                     "updated_at": utcnow(),
@@ -711,13 +720,16 @@ class PlatformService:
             "model": working_secret.model_id,
             "messages": request_messages,
             "files": [
-                {"type": "file", "id": reference_file_id, "status": "processed"},
+                *[
+                    {"type": "file", "id": file_id, "status": "processed"}
+                    for file_id, _ in reference_files
+                ],
                 {"type": "file", "id": working_secret.knowledge_file_id, "status": "processed"},
             ],
         }
         chat_timeout = httpx.Timeout(connect=30.0, read=300.0, write=120.0, pool=60.0)
         try:
-            async with httpx.AsyncClient(timeout=chat_timeout, verify=False, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=chat_timeout, verify=self._openwebui_verify(), follow_redirects=True) as client:
                 response = await client.post(
                     f"{working_secret.base_url}/api/chat/completions",
                     headers={
@@ -742,7 +754,7 @@ class PlatformService:
             knowledge_file_id=working_secret.knowledge_file_id,
             knowledge_file_name=working_secret.knowledge_file_name,
             raw_response=raw_payload if isinstance(raw_payload, dict) else {"payload": raw_payload},
-            message="Workbench Agent used the mapped Open WebUI model with both the persistent Workbench + 3DS reference and the accessible branch model attached.",
+            message="Workbench Agent used the mapped Open WebUI model with the complete persistent Workbench + 3DS reference set and the accessible branch model attached.",
         )
 
     def add_bookmark(self, session: SessionData, bookmark: Bookmark) -> list[Bookmark]:
@@ -4689,124 +4701,6 @@ class PlatformService:
         )
         return self._swagger_response(operation_key, operation.method, operation.path, requested_path, response)
 
-    async def oslc_status(self, session: SessionData) -> OSLCAuthorizationStatus:
-        server = self._require_server(session.server.id, include_disabled=False)
-        session_consumer = self.sessions.get_oslc_consumer_credentials(session)
-        shared_consumer, _ = self._shared_oslc_consumer_credentials(server.id)
-        resolved_consumer = self.oauth.effective_consumer_credentials(server, shared_consumer, session_consumer)
-        configured = resolved_consumer is not None
-        authorized = self.sessions.get_oslc_credentials(session) is not None
-        consumer_source = resolved_consumer.source if resolved_consumer else "none"
-        try:
-            discovery = await self.oauth.discover(server)
-            return OSLCAuthorizationStatus(
-                server_id=server.id,
-                configured=configured,
-                authorized=authorized,
-                rootservices=discovery.summary,
-                consumer_key_configured=bool(resolved_consumer),
-                consumer_key_source=consumer_source,
-                can_generate_consumer_key=bool(discovery.summary.request_consumer_key_url),
-            )
-        except RuntimeError as exc:
-            return OSLCAuthorizationStatus(
-                server_id=server.id,
-                configured=configured,
-                authorized=authorized,
-                consumer_key_configured=bool(resolved_consumer),
-                consumer_key_source=consumer_source,
-                message=str(exc),
-            )
-
-    async def generate_oslc_consumer(
-        self,
-        session: SessionData,
-        *,
-        consumer_name: str,
-        consumer_secret: str,
-        remember_for_session: bool = True,
-    ) -> OSLCGenerateConsumerResponse:
-        consumer_name = consumer_name.strip()
-        consumer_secret = consumer_secret.strip()
-        if not consumer_name or not consumer_secret:
-            raise ValueError("OSLC consumer name and secret are required.")
-        server = self._require_server(session.server.id, include_disabled=False)
-        discovery = await self.oauth.discover(server)
-        if not discovery.summary.request_consumer_key_url:
-            raise RuntimeError("OSLC root services did not publish a consumer key registration URL.")
-        consumer_key = await self.oauth.request_consumer_key(
-            server,
-            discovery.summary,
-            consumer_name=consumer_name,
-            consumer_secret=consumer_secret,
-        )
-        stored_for_session = False
-        if remember_for_session:
-            self.sessions.set_oslc_consumer_credentials(
-                session,
-                OSLCConsumerCredentials(
-                    consumer_key=consumer_key,
-                    consumer_secret=consumer_secret,
-                    source="session",
-                ),
-            )
-            self.sessions.clear_oslc_credentials(session)
-            stored_for_session = True
-        return OSLCGenerateConsumerResponse(
-            consumer_key=consumer_key,
-            request_consumer_key_url=discovery.summary.request_consumer_key_url,
-            stored_for_session=stored_for_session,
-            approval_required=True,
-            message=(
-                "The consumer key was generated successfully. It still must be approved in Magic Collaboration Studio Settings before OSLC authorization will succeed."
-            ),
-        )
-
-    def set_oslc_consumer(self, session: SessionData, *, consumer_key: str, consumer_secret: str) -> OSLCAuthorizationStatus:
-        consumer_key = consumer_key.strip()
-        consumer_secret = consumer_secret.strip()
-        if not consumer_key or not consumer_secret:
-            raise ValueError("OSLC consumer key and secret are required.")
-        self.sessions.set_oslc_consumer_credentials(
-            session,
-            OSLCConsumerCredentials(
-                consumer_key=consumer_key,
-                consumer_secret=consumer_secret,
-                source="session",
-            ),
-        )
-        self.sessions.clear_oslc_credentials(session)
-        return OSLCAuthorizationStatus(
-            server_id=session.server.id,
-            configured=True,
-            authorized=False,
-            consumer_key_configured=True,
-            consumer_key_source="session",
-            message="Session-scoped OSLC consumer credentials were stored. If the key is already approved, you can connect OSLC now.",
-        )
-
-    def clear_oslc_consumer(self, session: SessionData) -> None:
-        self.sessions.clear_oslc_consumer_credentials(session)
-        self.sessions.clear_oslc_credentials(session)
-
-    async def execute_oslc_request(self, session: SessionData, payload: OSLCExecuteRequest) -> OSLCExecuteResponse:
-        server = self._require_server(session.server.id, include_disabled=False)
-        credentials = self.sessions.get_oslc_credentials(session)
-        if credentials is None:
-            raise PermissionError("Connect OSLC for this server before running OSLC requests.")
-        response = await self.oauth.signed_request(
-            server,
-            credentials,
-            method="GET",
-            path_or_url=payload.path_or_url,
-            accept=payload.accept,
-            timeout=payload.timeout_seconds,
-        )
-        return self._oslc_response(response, self.oauth.request_url(credentials.rootservices_url, payload.path_or_url))
-
-    def disconnect_oslc(self, session: SessionData) -> None:
-        self.sessions.clear_oslc_credentials(session)
-
     async def simulation_configs(self, session: SessionData, project_id: str | None) -> list[SimulationConfig]:
         return await self._adapter_for_session(session).list_simulation_configs(project_id)
 
@@ -5732,22 +5626,6 @@ class PlatformService:
             method=method,
             path=path,
             requested_path=requested_path,
-            status_code=response.status_code,
-            ok=200 <= response.status_code < 300,
-            content_type=content_type,
-            headers=visible_headers,
-            body=body,
-            text=text,
-            body_base64=body_base64,
-            is_binary=is_binary,
-            size_bytes=len(content),
-            filename=self._filename_from_content_disposition(response.headers.get("content-disposition", "")),
-        )
-
-    def _oslc_response(self, response: httpx.Response, requested_url: str) -> OSLCExecuteResponse:
-        content_type, content, body, text, body_base64, is_binary, visible_headers = self._response_payload(response)
-        return OSLCExecuteResponse(
-            requested_url=requested_url,
             status_code=response.status_code,
             ok=200 <= response.status_code < 300,
             content_type=content_type,
@@ -6909,6 +6787,8 @@ class PlatformService:
             if value and value.strip()
         }
         matched_terms: list[str] = []
+        operation_names: set[str] = set()
+        permission_names: set[str] = set()
         matched_permissions: list[dict[str, Any]] = []
         for claim in getattr(session.authorization_context, "permissions", []):
             related_resources = {
@@ -6927,13 +6807,25 @@ class PlatformService:
             if not normalized:
                 continue
             matched_terms.append(normalized)
+            if claim.operation_name:
+                operation_names.add(claim.operation_name.strip().lower())
+            if claim.name:
+                permission_names.add(claim.name.strip().lower())
             matched_permissions.append(claim.model_dump())
 
         def has_permission(*names: str) -> bool:
             return any(name in term for term in matched_terms for name in names)
 
-        has_read = has_permission("read resources", "read resource")
-        has_edit = has_permission("edit resources")
+        has_read = bool(
+            "read.resource" in operation_names
+            or "com.nomagic.esi.resource_read.resource" in permission_names
+            or has_permission("read resources", "read resource", "read projects", "list all resources")
+        )
+        has_edit = bool(
+            "edit.resource" in operation_names
+            or "com.nomagic.esi.resource_edit.resource" in permission_names
+            or has_permission("edit resources", "edit projects")
+        )
         has_edit_properties = has_permission("edit resource properties", "edit resource property")
         has_administer = has_permission("administer resources", "administer resource")
         has_manage_access = has_permission(
@@ -7604,7 +7496,20 @@ class PlatformService:
         normalized = base_url.strip().rstrip("/")
         if normalized.endswith("/api"):
             normalized = normalized[:-4]
-        return normalized.rstrip("/")
+        normalized = normalized.rstrip("/")
+        parsed = urlparse(normalized)
+        if parsed.scheme not in ({"https", "http"} if self.settings.openwebui_allow_insecure_http else {"https"}):
+            raise ValueError("Open WebUI must use HTTPS unless OPENWEBUI_ALLOW_INSECURE_HTTP is explicitly enabled.")
+        if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("Open WebUI base URL must be a host origin without credentials, query, or fragment.")
+        allowed_hosts = {
+            str(host).strip().lower()
+            for host in self.settings.openwebui_allowed_hosts
+            if str(host).strip()
+        }
+        if allowed_hosts and parsed.hostname.lower() not in allowed_hosts:
+            raise ValueError("Open WebUI host is not listed in OPENWEBUI_ALLOWED_HOSTS.")
+        return normalized
 
     def _workbench_agent_secret(self, session: SessionData) -> WorkbenchAgentSecret | None:
         user_id = self._user_key(session.user.preferred_username)
@@ -7676,6 +7581,13 @@ class PlatformService:
                 return self._openwebui_file_id(nested)
         return None
 
+    def _openwebui_verify(self) -> bool | str:
+        if not self.settings.openwebui_verify_tls:
+            return False
+        if self.settings.openwebui_ca_bundle_path is not None:
+            return str(self.settings.openwebui_ca_bundle_path.expanduser().resolve())
+        return True
+
     async def _upload_openwebui_markdown_file(
         self,
         secret: WorkbenchAgentSecret,
@@ -7685,7 +7597,7 @@ class PlatformService:
         upload_url = f"{secret.base_url}/api/v1/files/?process=true&process_in_background=true"
         upload_timeout = httpx.Timeout(connect=30.0, read=120.0, write=900.0, pool=60.0)
         try:
-            async with httpx.AsyncClient(timeout=upload_timeout, verify=False, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=upload_timeout, verify=self._openwebui_verify(), follow_redirects=True) as client:
                 response = await client.post(
                     upload_url,
                     headers={"Authorization": f"Bearer {secret.api_key}", "Accept": "application/json"},
@@ -7710,7 +7622,7 @@ class PlatformService:
         status_timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=60.0)
         deadline = datetime.now(UTC) + timedelta(minutes=15)
 
-        async with httpx.AsyncClient(timeout=status_timeout, verify=False, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=status_timeout, verify=self._openwebui_verify(), follow_redirects=True) as client:
             while datetime.now(UTC) < deadline:
                 try:
                     response = await client.get(status_url, headers=self._openwebui_headers(secret.api_key))
@@ -7776,7 +7688,7 @@ class PlatformService:
         )
         return (
             "You are the Workbench Agent inside TWC Workbench. "
-            "Two processed files are attached to every request. Always retrieve from the persistent 'TWC Workbench Agent reference' file for Workbench usage, API automation, Cameo, MagicDraw, Teamwork Cloud, SysML, UML, plugin, or 3DS 2024x guidance. "
+            "A processed branch file and the complete persistent Workbench + 3DS reference file set are attached to every request. Always retrieve from the persistent reference files for Workbench usage, API automation, Cameo, MagicDraw, Teamwork Cloud, SysML, UML, plugin, or 3DS 2024x guidance. "
             "Use the branch model file as the primary source of truth for project-specific names, IDs, containment, native specifications, stereotypes, relationships, and diagrams. "
             "If Open WebUI native knowledge tools are available, call list_knowledge and query_knowledge_files before answering; prefer exact-file search for identifiers and semantic search for conceptual guidance. "
             "Never invent an endpoint, Java API, property, stereotype value, or model fact that the attached sources do not establish. "
@@ -7895,13 +7807,13 @@ class PlatformService:
             "three_ds_kb_chunk_count": len(chunks),
         }
 
-    def _build_workbench_reference_document(self) -> tuple[str, bytes, dict[str, int], str]:
+    def _build_workbench_reference_documents(self) -> tuple[list[tuple[str, bytes]], dict[str, int], str]:
         chunks, stats = self._three_ds_kb_chunks()
         if not chunks:
             raise RuntimeError(
                 "The 3DS 2024x knowledge base is not available. Configure THREE_DS_KB_PATH before using Workbench Agent."
             )
-        lines = [
+        common_lines = [
             "# TWC Workbench Agent reference",
             "",
             "This is the persistent operating reference for every model used through Workbench Agent.",
@@ -7920,42 +7832,119 @@ class PlatformService:
             "- Model Browser: complete accessible Cameo containment tree in published order.",
             "- Specification workspace: native metamodel properties plus ordered applied-stereotype properties, defaults, derived values, multiplicity, type, and state metadata.",
             "- Developer API: scoped cache reads, search, graph, tree, child, and edit workflows.",
-            "- Agent: this persistent reference file plus the current user's selected branch model file.",
+            "- Agent: this complete persistent reference set plus the current user's selected branch model file.",
             "",
             "## Complete Workbench Python examples",
             "",
         ]
         for name, content in self._workbench_agent_example_payload().items():
-            lines.extend([f"### {name}", "", "```python", content, "```", ""])
-        lines.extend(
-            [
-                "## Official 3DS / No Magic 2024x knowledge",
-                "",
-                f"This section contains {len(chunks)} source-attributed chunks from the configured 3DS KB.",
-                "",
-            ]
-        )
+            common_lines.extend([f"### {name}", "", "```python", content, "```", ""])
+
+        header_lines = [
+            "# Official 3DS / No Magic 2024x knowledge",
+            "",
+            "This is one part of the source-attributed 3DS knowledge attached to every Workbench Agent request.",
+            "Use the source URL below each section and do not infer unsupported product behavior.",
+            "",
+        ]
+        max_bytes = self.settings.three_ds_kb_reference_file_max_bytes
+        sections: list[str] = []
         for chunk in chunks:
             title = str(chunk.get("title") or chunk.get("section_path") or chunk.get("chunk_id") or "3DS reference").strip()
             url = str(chunk.get("url") or "").strip()
             content = str(chunk.get("content") or "").strip()
-            lines.extend([f"### {title}", ""])
+            section_lines = [f"### {title}", ""]
             if url:
-                lines.extend([f"Source: {url}", ""])
-            lines.extend([content, ""])
-        content = "\n".join(lines).encode("utf-8")
-        fingerprint = hashlib.sha256(content).hexdigest()
-        return "twc-workbench-3ds-2024x-reference.md", content, stats, fingerprint
+                section_lines.extend([f"Source: {url}", ""])
+            section_lines.extend([content, ""])
+            sections.append("\n".join(section_lines))
+
+        documents: list[tuple[str, bytes]] = []
+        operating_content = "\n".join(common_lines).encode("utf-8")
+        documents.append(("twc-workbench-operating-reference.md", operating_content))
+
+        part_sections: list[str] = []
+        header = "\n".join(header_lines)
+        for section in sections:
+            candidate = "\n".join([header, *part_sections, section]).encode("utf-8")
+            if part_sections and len(candidate) > max_bytes:
+                part_number = len(documents)
+                documents.append(
+                    (
+                        f"twc-3ds-2024x-reference-part-{part_number:03d}.md",
+                        "\n".join([header, *part_sections]).encode("utf-8"),
+                    )
+                )
+                part_sections = [section]
+            else:
+                part_sections.append(section)
+        if part_sections:
+            part_number = len(documents)
+            documents.append(
+                (
+                    f"twc-3ds-2024x-reference-part-{part_number:03d}.md",
+                    "\n".join([header, *part_sections]).encode("utf-8"),
+                )
+            )
+
+        digest = hashlib.sha256()
+        for name, content in documents:
+            digest.update(name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(content)
+            digest.update(b"\0")
+        return documents, stats, digest.hexdigest()
 
     async def _ensure_workbench_reference_knowledge(
         self,
         secret: WorkbenchAgentSecret,
-    ) -> tuple[str, str, dict[str, int], str]:
-        file_name, content, stats, fingerprint = self._build_workbench_reference_document()
-        if secret.reference_file_id and secret.reference_fingerprint == fingerprint:
-            return secret.reference_file_id, secret.reference_file_name or file_name, stats, fingerprint
-        file_id = await self._upload_openwebui_markdown_file(secret, file_name, content)
-        return file_id, file_name, stats, fingerprint
+        *,
+        session: SessionData | None = None,
+    ) -> tuple[list[tuple[str, str]], dict[str, int], str]:
+        documents, stats, fingerprint = self._build_workbench_reference_documents()
+        existing_ids = list(secret.reference_file_ids)
+        existing_names = list(secret.reference_file_names)
+        if not existing_ids and secret.reference_file_id:
+            existing_ids = [secret.reference_file_id]
+            existing_names = [secret.reference_file_name or documents[0][0]]
+        if (
+            secret.reference_fingerprint == fingerprint
+            and len(existing_ids) == len(documents)
+            and len(existing_names) == len(documents)
+            and all(existing_ids)
+        ):
+            return list(zip(existing_ids, existing_names, strict=False)), stats, fingerprint
+
+        expected_names = [name for name, _ in documents]
+        can_resume = bool(
+            secret.reference_fingerprint == fingerprint
+            and len(existing_ids) == len(existing_names)
+            and len(existing_ids) < len(documents)
+            and existing_names == expected_names[: len(existing_names)]
+            and all(existing_ids)
+        )
+        uploaded: list[tuple[str, str]] = (
+            list(zip(existing_ids, existing_names, strict=False)) if can_resume else []
+        )
+        for file_name, content in documents[len(uploaded) :]:
+            file_id = await self._upload_openwebui_markdown_file(secret, file_name, content)
+            uploaded.append((file_id, file_name))
+            if session is not None:
+                # Persist every completed segment so a gateway restart or a
+                # failed later segment resumes without re-uploading the files
+                # that Open WebUI has already processed.
+                partial_secret = secret.model_copy(
+                    update={
+                        "reference_file_id": uploaded[0][0],
+                        "reference_file_name": uploaded[0][1],
+                        "reference_file_ids": [uploaded_id for uploaded_id, _ in uploaded],
+                        "reference_file_names": [uploaded_name for _, uploaded_name in uploaded],
+                        "reference_fingerprint": fingerprint,
+                        "updated_at": utcnow(),
+                    }
+                )
+                self._store_workbench_agent_secret(session, partial_secret)
+        return uploaded, stats, fingerprint
 
     def _tree_markdown_lines(self, nodes: list[TreeNode]) -> list[str]:
         lines: list[str] = []
@@ -8006,7 +7995,7 @@ class PlatformService:
         lines = [
             f"# TWC Workbench knowledge: {project_name} / {branch_name}",
             "",
-            "This bundle is generated from the current user's accessible stored branch snapshot. It is authoritative for project-specific facts. Product, API, and Workbench operating guidance lives in the separately attached persistent Workbench + 3DS reference file.",
+            "This bundle is generated from the current user's accessible stored branch snapshot. It is authoritative for project-specific facts. Product, API, and Workbench operating guidance lives in the separately attached persistent Workbench + 3DS reference file set.",
             "",
             "## Context",
             "",
@@ -8083,9 +8072,6 @@ class PlatformService:
             "tree_node_count": tree_response.total_nodes,
         }
         return file_name, "\n".join(lines).encode("utf-8"), stats
-
-    def _shared_oslc_secret_scope(self, server_id: str) -> str:
-        return f"oslc-shared:{server_id}"
 
     def _shared_cache_ingest_scope(self) -> str:
         return "cache-ingest-shared"
@@ -8285,66 +8271,6 @@ class PlatformService:
             self.repo.upsert_app_secret(self._shared_cache_ingest_scope(), encrypted_payload)
         )
 
-    def _shared_oslc_consumer_credentials(self, server_id: str) -> tuple[OSLCConsumerCredentials | None, datetime | None]:
-        stored = self.repo.get_app_secret(self._shared_oslc_secret_scope(server_id))
-        if not stored:
-            return None, None
-        encrypted_payload, updated_at_raw = stored
-        try:
-            raw = self.sessions.cipher.decrypt_raw(encrypted_payload)
-            credentials = OSLCConsumerCredentials.model_validate_json(raw)
-            updated_at = datetime.fromisoformat(updated_at_raw)
-        except Exception:
-            self.repo.delete_app_secret(self._shared_oslc_secret_scope(server_id))
-            return None, None
-        return credentials, updated_at
-
-    def oslc_shared_consumer_status(self, session: SessionData) -> OSLCSharedConsumerStatus:
-        server = self._require_server(session.server.id, include_disabled=False)
-        shared_credentials, updated_at = self._shared_oslc_consumer_credentials(server.id)
-        if shared_credentials:
-            return OSLCSharedConsumerStatus(
-                server_id=server.id,
-                configured=True,
-                consumer_key=shared_credentials.consumer_key,
-                updated_at=updated_at,
-                source="shared",
-            )
-        configured_credentials = self.oauth.configured_consumer_credentials(server)
-        if configured_credentials:
-            return OSLCSharedConsumerStatus(
-                server_id=server.id,
-                configured=True,
-                consumer_key=configured_credentials.consumer_key,
-                source="config",
-            )
-        return OSLCSharedConsumerStatus(server_id=server.id, configured=False, source="none")
-
-    def set_shared_oslc_consumer(self, session: SessionData, *, consumer_key: str, consumer_secret: str) -> OSLCSharedConsumerStatus:
-        consumer_key = consumer_key.strip()
-        consumer_secret = consumer_secret.strip()
-        if not consumer_key or not consumer_secret:
-            raise ValueError("OSLC consumer key and secret are required.")
-        encrypted_payload = self.sessions.cipher.encrypt_raw(
-            OSLCConsumerCredentials(
-                consumer_key=consumer_key,
-                consumer_secret=consumer_secret,
-                source="shared",
-            ).model_dump_json().encode("utf-8")
-        )
-        updated_at = self.repo.upsert_app_secret(self._shared_oslc_secret_scope(session.server.id), encrypted_payload)
-        return OSLCSharedConsumerStatus(
-            server_id=session.server.id,
-            configured=True,
-            consumer_key=consumer_key,
-            updated_at=datetime.fromisoformat(updated_at),
-            source="shared",
-        )
-
-    def clear_shared_oslc_consumer(self, session: SessionData) -> None:
-        self.repo.delete_app_secret(self._shared_oslc_secret_scope(session.server.id))
-        self.sessions.clear_oslc_credentials(session)
-
     def _build_authorization_context(
         self,
         preferred_username: str,
@@ -8442,18 +8368,14 @@ class PlatformService:
 
 class ApplicationContainer:
     def __init__(self, settings: Settings) -> None:
-        from app.auth.oauth import OAuthService
-
         self.settings = settings
         self.repo = SqliteRepository(settings.resolved_database_path)
         self.repo.sync_servers(settings.twc_preset_servers)
         self.sessions = SessionManager(settings)
-        self.oauth = OAuthService(settings)
         self.jobs = JobCoordinator(self.repo)
         self.publisher = build_publisher(settings)
         self.platform = PlatformService(
             settings=settings,
-            oauth=self.oauth,
             repo=self.repo,
             sessions=self.sessions,
             jobs=self.jobs,

@@ -301,4 +301,4 @@ fi
 
 write_phase "Starting the single-origin FastAPI server"
 cd "$backend_dir"
-exec "$venv_python" -m uvicorn app.main:app --host "$bind_host" --port "$port"
+exec "$venv_python" -m uvicorn app.main:app --host "$bind_host" --port "$port" --no-access-log

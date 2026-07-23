@@ -10,9 +10,10 @@ Do **not** invent endpoints, sample payloads, or hidden behaviors.
 
 ## Environment assumptions
 - Authentication is handled by Teamwork Cloud Authentication Server.
-- SSO is SAML.
+- A Workbench-style web application is an OpenID Connect client of the Authentication Server: use discovery, authorization code flow, `scope=openid`, and `client_secret_basic` as documented for 2024x Refresh3.
+- SAML may be the Authentication Server's upstream enterprise identity-provider integration; it is not the Workbench-to-Authentication-Server protocol.
 - The application is not the identity provider.
-- The application uses post-authenticated REST/API access.
+- Teamwork Cloud REST receives the returned OIDC ID token as `Authorization: Token <ID token>`.
 - SSL verification may be disabled in runtime because this is an internal environment.
 - There is a separate internal publish service for PPT/doc generation/editable deliverables.
 - Cameo Collaborator for Teamwork Cloud must be treated separately from core TWC REST.
@@ -36,7 +37,8 @@ Produce:
    - MISSING
 5. Keep the following systems separate:
    - TWC REST
-   - TWC Authentication Server / SAML
+   - Workbench to TWC Authentication Server / OpenID Connect
+   - Authentication Server to optional enterprise identity provider / SAML
    - Cameo Collaborator for TWC
    - Internal publish service
 

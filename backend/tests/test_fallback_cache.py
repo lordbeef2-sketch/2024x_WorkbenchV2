@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 
 from app.core.storage import SqliteRepository
-from app.api.routes.workspace import refresh_fallback_cache, sync_workbench_agent_knowledge
+from app.api.routes.workspace import sync_workbench_agent_knowledge
 from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
     BranchCacheSummary,
@@ -32,8 +32,7 @@ class FallbackCacheTests(unittest.TestCase):
 
         asyncio.run(service.refresh_due_fallback_caches())
 
-    def test_background_job_routes_run_on_application_event_loop(self) -> None:
-        self.assertTrue(iscoroutinefunction(refresh_fallback_cache))
+    def test_agent_background_job_route_runs_on_application_event_loop(self) -> None:
         self.assertTrue(iscoroutinefunction(sync_workbench_agent_knowledge))
 
     def test_job_submission_without_event_loop_fails_persisted_job(self) -> None:

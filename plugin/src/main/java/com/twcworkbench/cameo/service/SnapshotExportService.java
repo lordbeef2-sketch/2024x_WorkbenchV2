@@ -236,7 +236,11 @@ public class SnapshotExportService {
             EsiUtils.EsiBranchInfo branchInfo = EsiUtils.getCurrentBranch(project.getPrimaryProject());
             if (branchInfo != null) {
                 payload.branchName = branchInfo.getName() == null ? "trunk" : branchInfo.getName();
-                payload.branchId = "trunk".equals(payload.branchName) ? "master" : String.valueOf(branchInfo.getID());
+                String resolvedBranchId = branchInfo.getID() == null ? "" : String.valueOf(branchInfo.getID()).trim();
+                // TWC's branch inventory and branch-scoped permissions use the
+                // branch UUID even when the display name is "trunk". "master"
+                // is only a fallback for deployments that expose no branch ID.
+                payload.branchId = resolvedBranchId.isBlank() ? "master" : resolvedBranchId;
             }
         }
         payload.permissionManifest = capturePermissionManifest(project, payload.sourceUser, payload.branchId, progress);

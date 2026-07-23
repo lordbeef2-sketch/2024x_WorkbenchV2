@@ -12,9 +12,9 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
-from app.api.deps import get_container, require_admin, require_csrf
-from app.auth.twc import build_twc_authorize_base_url, build_twc_saml_signin_url, exchange_twc_auth_code
-from app.models.domain import OSLCConsumerCredentials, OSLCRootServicesSummary, TokenLoginRequest
+from app.api.deps import get_container, require_csrf
+from app.auth.twc import build_twc_oidc_signin_url, exchange_twc_auth_code
+from app.models.domain import TokenLoginRequest
 from app.services.platform import ApplicationContainer
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 logger = structlog.get_logger(__name__)
 
 REDIRECT_SIGNIN_MESSAGE = (
-    "Sign in via TWC redirects to the selected Teamwork Cloud Authentication Server, uses that server's configured SAML login, exchanges the returned code with authentication.client.secret, and validates the session through /osmc/admin/currentUser."
+    "Sign in via TWC uses the selected Teamwork Cloud 2024x Authentication Server OpenID Connect authorization-code flow, then validates the returned user token through /osmc/admin/currentUser."
 )
 
 
@@ -58,25 +58,9 @@ def clear_auth_state_cookie(response: Response, container: ApplicationContainer)
     response.delete_cookie(container.settings.auth_state_cookie_name, path="/")
 
 
-def clear_oslc_auth_state_cookie(response: Response, container: ApplicationContainer) -> None:
-    response.delete_cookie(container.settings.oslc_auth_state_cookie_name, path="/")
-
-
 def set_auth_state_cookie(response: Response, container: ApplicationContainer, value: str) -> None:
     response.set_cookie(
         key=container.settings.auth_state_cookie_name,
-        value=value,
-        httponly=True,
-        secure=container.settings.secure_cookies,
-        samesite="lax",
-        max_age=container.settings.twc_auth_state_ttl_minutes * 60,
-        path="/",
-    )
-
-
-def set_oslc_auth_state_cookie(response: Response, container: ApplicationContainer, value: str) -> None:
-    response.set_cookie(
-        key=container.settings.oslc_auth_state_cookie_name,
         value=value,
         httponly=True,
         secure=container.settings.secure_cookies,
@@ -97,7 +81,6 @@ def build_workspace_redirect(
     set_session_cookie(redirect, container, session_id)
     clear_pending_server_cookie(redirect, container)
     clear_auth_state_cookie(redirect, container)
-    clear_oslc_auth_state_cookie(redirect, container)
     return redirect
 
 
@@ -106,7 +89,6 @@ def build_session_redirect(container: ApplicationContainer, session_id: str) -> 
     set_session_cookie(redirect, container, session_id)
     clear_pending_server_cookie(redirect, container)
     clear_auth_state_cookie(redirect, container)
-    clear_oslc_auth_state_cookie(redirect, container)
     return redirect
 
 
@@ -115,7 +97,6 @@ def build_error_redirect(container: ApplicationContainer, detail: str) -> Redire
     redirect = RedirectResponse(f"{container.settings.resolved_app_origin}/?{query}", status_code=status.HTTP_302_FOUND)
     clear_pending_server_cookie(redirect, container)
     clear_auth_state_cookie(redirect, container)
-    clear_oslc_auth_state_cookie(redirect, container)
     return redirect
 
 
@@ -184,64 +165,6 @@ def load_auth_state_cookie(container: ApplicationContainer, raw_value: str | Non
     return {"state": data["state"], "server_id": data["server_id"]}
 
 
-def create_oslc_auth_state_cookie(
-    container: ApplicationContainer,
-    *,
-    session_id: str,
-    server_id: str,
-    state: str,
-    request_token: str,
-    request_token_secret: str,
-    rootservices_summary: dict[str, str | None],
-    consumer_key: str | None = None,
-    consumer_secret: str | None = None,
-) -> str:
-    payload = json.dumps(
-        {
-            "session_id": session_id,
-            "server_id": server_id,
-            "state": state,
-            "request_token": request_token,
-            "request_token_secret": request_token_secret,
-            "rootservices_summary": rootservices_summary,
-            "consumer_key": consumer_key,
-            "consumer_secret": consumer_secret,
-            "issued_at": datetime.now(UTC).isoformat(),
-        },
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return container.sessions.cipher.encrypt_raw(payload)
-
-
-def load_oslc_auth_state_cookie(container: ApplicationContainer, raw_value: str | None) -> dict[str, object] | None:
-    if not raw_value:
-        return None
-    try:
-        payload = container.sessions.cipher.decrypt_raw(raw_value)
-        data = json.loads(payload)
-    except Exception:
-        return None
-
-    issued_at_raw = data.get("issued_at")
-    if not isinstance(issued_at_raw, str):
-        return None
-    try:
-        issued_at = datetime.fromisoformat(issued_at_raw)
-    except ValueError:
-        return None
-
-    if issued_at < datetime.now(UTC) - timedelta(minutes=container.settings.twc_auth_state_ttl_minutes):
-        return None
-
-    required_fields = ("session_id", "server_id", "state", "request_token", "request_token_secret")
-    if any(not isinstance(data.get(field), str) or not str(data.get(field)).strip() for field in required_fields):
-        return None
-
-    if not isinstance(data.get("rootservices_summary"), dict):
-        data["rootservices_summary"] = {}
-    return data
-
-
 @router.get("/session")
 async def get_session_snapshot(
     request: Request,
@@ -279,6 +202,7 @@ def get_auth_options(container: ApplicationContainer = Depends(get_container)):
         "token_signin_enabled": True,
         "redirect_signin_enabled": True,
         "redirect_signin_message": REDIRECT_SIGNIN_MESSAGE,
+        "redirect_uri": container.settings.resolved_twc_auth_callback_url,
         "csrf_header_name": container.settings.csrf_header_name,
     }
 
@@ -291,7 +215,7 @@ async def signin(server_id: str, container: ApplicationContainer = Depends(get_c
 
     state, cookie_value = create_auth_state_cookie(container, server.id)
     try:
-        twc_signin_url = build_twc_saml_signin_url(container, server, state)
+        twc_signin_url, oidc_configuration = await build_twc_oidc_signin_url(container, server, state)
     except ValueError as exc:
         logger.warning("auth-signin-failed", auth_mode="twc-authserver-redirect-start", server_id=server.id, detail=str(exc))
         return build_error_redirect(container, str(exc))
@@ -300,9 +224,10 @@ async def signin(server_id: str, container: ApplicationContainer = Depends(get_c
     set_auth_state_cookie(redirect, container, cookie_value)
     logger.info(
         "auth-mode-selected",
-        auth_mode="twc-authserver-redirect-start",
+        auth_mode="twc-oidc-authorization-code-start",
         server_id=server.id,
-        twc_authorize_url=build_twc_authorize_base_url(container, server),
+        twc_authorize_url=oidc_configuration.get("authorization_endpoint"),
+        oidc_configuration_source=oidc_configuration.get("source"),
         callback=container.settings.resolved_twc_auth_callback_url,
     )
     return redirect
@@ -331,9 +256,10 @@ async def callback(
         logger.warning("auth-callback-failed", auth_mode="redirect-callback", detail="Selected Teamwork Cloud server no longer matches callback state")
         return build_error_redirect(container, "Selected Teamwork Cloud server no longer matches callback state. Start Sign in via TWC again.")
 
-    relay_state = request.query_params.get("RelayState")
-    callback_state = state or relay_state
-    if callback_state and callback_state != auth_state["state"]:
+    if not state:
+        logger.warning("auth-callback-failed", auth_mode="oidc-code-callback", detail="OIDC state is missing")
+        return build_error_redirect(container, "OIDC state is missing. Start Sign in via TWC again.")
+    if state != auth_state["state"]:
         logger.warning("auth-callback-failed", auth_mode="redirect-callback", detail="Authentication state mismatch")
         return build_error_redirect(container, "Authentication state mismatch. Start Sign in via TWC again.")
 
@@ -394,131 +320,6 @@ async def callback(
     return build_session_redirect(container, session.session_id)
 
 
-@router.get("/oslc/signin")
-async def oslc_signin(
-    session=Depends(require_admin),
-    container: ApplicationContainer = Depends(get_container),
-):
-    server = container.platform.get_server(session.server.id, include_disabled=False)
-    if not server:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
-
-    shared_consumer, _ = container.platform._shared_oslc_consumer_credentials(server.id)
-    session_consumer = container.sessions.get_oslc_consumer_credentials(session)
-    resolved_consumer = container.oauth.effective_consumer_credentials(server, shared_consumer, session_consumer)
-    configuration_error = container.oauth.configuration_error(server, shared_consumer, session_consumer)
-    if configuration_error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=configuration_error)
-
-    try:
-        discovery = await container.oauth.discover(server)
-        state = secrets.token_urlsafe(24)
-        callback_url = f"{container.settings.resolved_twc_oslc_callback_url}?{urlencode({'state': state})}"
-        request_token, request_token_secret = await container.oauth.request_token(
-            server,
-            discovery.summary,
-            callback_url,
-            consumer_credentials=resolved_consumer,
-            shared_credentials=shared_consumer,
-        )
-        cookie_value = create_oslc_auth_state_cookie(
-            container,
-            session_id=session.session_id,
-            server_id=server.id,
-            state=state,
-            request_token=request_token,
-            request_token_secret=request_token_secret,
-            rootservices_summary=discovery.summary.model_dump(),
-            consumer_key=resolved_consumer.consumer_key if resolved_consumer else None,
-            consumer_secret=resolved_consumer.consumer_secret if resolved_consumer else None,
-        )
-    except (PermissionError, RuntimeError) as exc:
-        logger.warning("auth-oslc-signin-failed", server_id=server.id, detail=str(exc))
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-    redirect = RedirectResponse(
-        container.oauth.authorize_redirect_url(discovery.summary, request_token),
-        status_code=status.HTTP_302_FOUND,
-    )
-    set_oslc_auth_state_cookie(redirect, container, cookie_value)
-    return redirect
-
-
-@router.get("/oslc/callback")
-async def oslc_callback(
-    request: Request,
-    oauth_token: str | None = None,
-    oauth_verifier: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-    error_description: str | None = None,
-    container: ApplicationContainer = Depends(get_container),
-):
-    oslc_state = load_oslc_auth_state_cookie(container, request.cookies.get(container.settings.oslc_auth_state_cookie_name))
-    session_id = request.cookies.get(container.settings.session_cookie_name) or (
-        str(oslc_state["session_id"]) if oslc_state else None
-    )
-    session = container.sessions.get_session(session_id)
-    if not session:
-        return build_error_redirect(container, "The app session expired before OSLC authorization completed. Sign in again.")
-
-    if error:
-        return build_workspace_redirect(container, session.session_id, params={"oslcAuthError": error_description or error})
-
-    if not oslc_state:
-        return build_workspace_redirect(
-            container,
-            session.session_id,
-            params={"oslcAuthError": "OSLC authorization state is missing or expired. Start OSLC sign-in again."},
-        )
-
-    if state != oslc_state["state"]:
-        return build_workspace_redirect(
-            container,
-            session.session_id,
-            params={"oslcAuthError": "OSLC authorization state mismatch. Start OSLC sign-in again."},
-        )
-
-    if oauth_token != oslc_state["request_token"] or not oauth_verifier:
-        return build_workspace_redirect(
-            container,
-            session.session_id,
-            params={"oslcAuthError": "OSLC callback did not return the expected OAuth verifier."},
-        )
-
-    server = container.platform.get_server(str(oslc_state["server_id"]), include_disabled=False)
-    if not server:
-        return build_workspace_redirect(container, session.session_id, params={"oslcAuthError": "Preset server not found."})
-
-    try:
-        summary = OSLCRootServicesSummary.model_validate(oslc_state.get("rootservices_summary") or {})
-        shared_consumer, _ = container.platform._shared_oslc_consumer_credentials(server.id)
-        consumer_credentials = None
-        consumer_key = oslc_state.get("consumer_key")
-        consumer_secret = oslc_state.get("consumer_secret")
-        if isinstance(consumer_key, str) and consumer_key.strip() and isinstance(consumer_secret, str) and consumer_secret.strip():
-            consumer_credentials = OSLCConsumerCredentials(
-                consumer_key=consumer_key.strip(),
-                consumer_secret=consumer_secret.strip(),
-                source="session",
-            )
-        credentials = await container.oauth.access_token(
-            server,
-            summary,
-            request_token=str(oslc_state["request_token"]),
-            request_token_secret=str(oslc_state["request_token_secret"]),
-            verifier=oauth_verifier,
-            consumer_credentials=consumer_credentials,
-            shared_credentials=shared_consumer,
-        )
-        container.sessions.set_oslc_credentials(session, credentials)
-    except (PermissionError, RuntimeError) as exc:
-        logger.warning("auth-oslc-callback-failed", server_id=server.id, detail=str(exc))
-        return build_workspace_redirect(container, session.session_id, params={"oslcAuthError": str(exc)})
-
-    return build_workspace_redirect(container, session.session_id, params={"oslcAuth": "connected"})
-
-
 @router.post("/token")
 async def token_login(
     payload: TokenLoginRequest,
@@ -558,5 +359,4 @@ def logout(
     response.delete_cookie(container.settings.session_cookie_name, path="/")
     clear_pending_server_cookie(response, container)
     clear_auth_state_cookie(response, container)
-    clear_oslc_auth_state_cookie(response, container)
     return {"ok": True}

@@ -19,9 +19,10 @@ Already present in this repo:
 
 ## B. Authentication / Session behavior
 ### Capture
-- [ ] Successful SAML login flow notes (high-level only; sanitize secrets)
-- [ ] Whether REST calls rely on token header, cookie/session reuse, or both
-- [ ] Redirect/callback expectations after TWC-managed auth, if relevant to your app
+- [ ] Successful OIDC discovery, authorization-code, callback, and refresh flow notes (sanitize codes, tokens, and secrets)
+- [ ] Exact registered Workbench redirect URI and client configuration (never capture the secret value)
+- [ ] Confirmation that REST calls accept `Authorization: Token <ID token>`
+- [ ] Upstream SAML notes only if AuthServer delegates authentication to a SAML identity provider
 - [ ] Logout/session termination behavior
 
 ### Save to

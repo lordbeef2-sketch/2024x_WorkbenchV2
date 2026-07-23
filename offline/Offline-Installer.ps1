@@ -120,10 +120,26 @@ $envTarget = Join-Path $backendTarget ".env"
 
 Write-Phase "Installing the verified Workbench payload"
 New-Item -ItemType Directory -Path $installRoot, $backendTarget, $frontendTarget -Force | Out-Null
-Remove-InstallChild -InstallRoot $installRoot -ChildPath (Join-Path $backendTarget "app")
-Remove-InstallChild -InstallRoot $installRoot -ChildPath (Join-Path $frontendTarget "dist")
-Copy-Item -LiteralPath (Join-Path $payloadRoot "backend\app") -Destination $backendTarget -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $payloadRoot "frontend\dist") -Destination $frontendTarget -Recurse -Force
+$deploymentStage = Join-Path $installRoot ".offline-stage-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path (Join-Path $deploymentStage "backend"), (Join-Path $deploymentStage "frontend") -Force | Out-Null
+try {
+    Copy-Item -LiteralPath (Join-Path $payloadRoot "backend\app") -Destination (Join-Path $deploymentStage "backend\app") -Recurse -Force
+    Copy-Item -LiteralPath (Join-Path $payloadRoot "frontend\dist") -Destination (Join-Path $deploymentStage "frontend\dist") -Recurse -Force
+    Copy-Item -LiteralPath (Join-Path $payloadRoot "knowledge") -Destination (Join-Path $deploymentStage "knowledge") -Recurse -Force
+
+    # All payload copies finish before the installed runtime is replaced. The
+    # final moves stay on the same volume and therefore minimize the upgrade
+    # window where a target directory is absent.
+    Remove-InstallChild -InstallRoot $installRoot -ChildPath (Join-Path $backendTarget "app")
+    Move-Item -LiteralPath (Join-Path $deploymentStage "backend\app") -Destination (Join-Path $backendTarget "app")
+    Remove-InstallChild -InstallRoot $installRoot -ChildPath (Join-Path $frontendTarget "dist")
+    Move-Item -LiteralPath (Join-Path $deploymentStage "frontend\dist") -Destination (Join-Path $frontendTarget "dist")
+    Remove-InstallChild -InstallRoot $installRoot -ChildPath (Join-Path $installRoot "knowledge")
+    Move-Item -LiteralPath (Join-Path $deploymentStage "knowledge") -Destination (Join-Path $installRoot "knowledge")
+}
+finally {
+    Remove-InstallChild -InstallRoot $installRoot -ChildPath $deploymentStage
+}
 Copy-Item -LiteralPath (Join-Path $payloadRoot "backend\.env.example") -Destination (Join-Path $backendTarget ".env.example") -Force
 foreach ($file in @("README.md", "CACHE_API.md")) {
     $source = Join-Path $payloadRoot $file
@@ -135,6 +151,7 @@ if (-not (Test-Path -LiteralPath $envTarget)) {
     $secret = New-SessionSecret
     $content = Get-Content -LiteralPath $envTarget -Raw
     $content = [regex]::Replace($content, '(?m)^SESSION_SECRET=.*$', "SESSION_SECRET=$secret")
+    $content = [regex]::Replace($content, '(?m)^THREE_DS_KB_PATH=.*$', 'THREE_DS_KB_PATH=../knowledge/3ds/2024x')
     Set-Content -LiteralPath $envTarget -Value $content -Encoding utf8
     Write-Host "Created backend/.env with a new random SESSION_SECRET." -ForegroundColor Green
 }
@@ -196,7 +213,7 @@ if (-not $NoBrowser) {
 }
 Write-Host "Starting TWC Workbench at $url" -ForegroundColor Green
 Push-Location $backendDir
-try { & $python -m uvicorn app.main:app --host $BindHost --port $Port }
+try { & $python -m uvicorn app.main:app --host $BindHost --port $Port --no-access-log }
 finally { Pop-Location }
 '@
 Set-Content -LiteralPath $launcherPath -Value $launcher -Encoding utf8

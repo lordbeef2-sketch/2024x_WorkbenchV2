@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory,
+    [string]$KnowledgeBasePath,
     [string]$PipIndexUrl,
     [string]$PackageCaFile,
     [switch]$AllowUntrustedPackageHosts,
@@ -11,6 +12,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+# PEP 517 creates nested pip processes for build requirements. The environment
+# setting carries native Windows trust-store use into those child processes as
+# well as the explicit top-level pip calls below.
+$env:PIP_USE_FEATURE = "truststore"
 
 function Write-Phase {
     param([string]$Message)
@@ -74,7 +79,10 @@ function Copy-DirectoryContents {
 }
 
 function Get-PipNetworkArguments {
-    $arguments = @()
+    # Python.org's Windows runtime and venv pip can otherwise ignore the
+    # enterprise roots trusted by Windows. Keep TLS verification enabled while
+    # allowing pip to use the native certificate store.
+    $arguments = @("--use-feature", "truststore")
     if (-not [string]::IsNullOrWhiteSpace($PipIndexUrl)) {
         $arguments += @("--index-url", $PipIndexUrl)
     }
@@ -92,6 +100,24 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
 $backendDir = Join-Path $rootDir "backend"
 $frontendDir = Join-Path $rootDir "frontend"
+if ([string]::IsNullOrWhiteSpace($KnowledgeBasePath)) {
+    $repositoryKnowledge = Join-Path $rootDir "knowledge\3ds\2024x"
+    $builderKnowledge = "C:\sand\TWC_Data_Sheets\TWC2024x\output\nomagic_owui_kb"
+    if (Test-Path -LiteralPath (Join-Path $repositoryKnowledge "datasheet_chunks.jsonl") -PathType Leaf) {
+        $KnowledgeBasePath = $repositoryKnowledge
+    }
+    elseif (Test-Path -LiteralPath (Join-Path $builderKnowledge "datasheet_chunks.jsonl") -PathType Leaf) {
+        $KnowledgeBasePath = $builderKnowledge
+    }
+}
+if ([string]::IsNullOrWhiteSpace($KnowledgeBasePath)) {
+    throw "The complete 3DS 2024x knowledge base was not found. Pass -KnowledgeBasePath with a folder containing datasheet_chunks.jsonl and manifest.json."
+}
+$knowledgeRoot = [System.IO.Path]::GetFullPath($KnowledgeBasePath)
+$knowledgeChunks = Join-Path $knowledgeRoot "datasheet_chunks.jsonl"
+$knowledgeManifest = Join-Path $knowledgeRoot "manifest.json"
+if (-not (Test-Path -LiteralPath $knowledgeChunks -PathType Leaf)) { throw "3DS KB chunks were not found: $knowledgeChunks" }
+if (-not (Test-Path -LiteralPath $knowledgeManifest -PathType Leaf)) { throw "3DS KB manifest was not found: $knowledgeManifest" }
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $scriptDir "artifacts"
 }
@@ -174,6 +200,7 @@ Write-Phase "Assembling the offline runtime payload"
 Copy-DirectoryContents -Source (Join-Path $backendDir "app") -Destination (Join-Path $payloadRoot "backend\app")
 Copy-Item -LiteralPath (Join-Path $backendDir ".env.example") -Destination (Join-Path $payloadRoot "backend\.env.example") -Force
 Copy-DirectoryContents -Source (Join-Path $frontendDir "dist") -Destination (Join-Path $payloadRoot "frontend\dist")
+Copy-DirectoryContents -Source $knowledgeRoot -Destination (Join-Path $payloadRoot "knowledge\3ds\2024x")
 foreach ($file in @("README.md", "CACHE_API.md")) {
     if (Test-Path -LiteralPath (Join-Path $rootDir $file)) {
         Copy-Item -LiteralPath (Join-Path $rootDir $file) -Destination (Join-Path $payloadRoot $file) -Force
@@ -183,9 +210,22 @@ Copy-Item -LiteralPath (Join-Path $scriptDir "Offline-Installer.ps1") -Destinati
 Copy-Item -LiteralPath (Join-Path $scriptDir "README.md") -Destination (Join-Path $stageRoot "README.md") -Force
 
 $commit = "unknown"
+$sourceDirty = $null
+$sourceDiffSha256 = $null
 $git = Get-Command git -ErrorAction SilentlyContinue
 if ($git) {
-    try { $commit = (& $git.Source -C $rootDir rev-parse HEAD).Trim() } catch { }
+    try {
+        $commit = (& $git.Source -C $rootDir rev-parse HEAD).Trim()
+        $porcelain = (& $git.Source -C $rootDir status --porcelain=v1) -join "`n"
+        $sourceDirty = -not [string]::IsNullOrWhiteSpace($porcelain)
+        if ($sourceDirty) {
+            $diffBytes = [System.Text.Encoding]::UTF8.GetBytes($porcelain)
+            $hasher = [System.Security.Cryptography.SHA256]::Create()
+            try { $sourceDiffSha256 = ([Convert]::ToHexString($hasher.ComputeHash($diffBytes))).ToLowerInvariant() }
+            finally { $hasher.Dispose() }
+        }
+    }
+    catch { }
 }
 $files = Get-ChildItem -LiteralPath $stageRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
     $relativePath = $_.FullName.Substring($stageRoot.TrimEnd("\").Length + 1)
@@ -200,6 +240,9 @@ $manifest = [ordered]@{
     application = "TWC Workbench"
     created_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     source_commit = $commit
+    source_dirty = $sourceDirty
+    source_status_sha256 = $sourceDiffSha256
+    three_ds_kb_manifest_sha256 = (Get-FileHash -LiteralPath $knowledgeManifest -Algorithm SHA256).Hash.ToLowerInvariant()
     python_version = $pythonMetadata.version
     python_major_minor = $pythonMetadata.major_minor
     architecture = $pythonMetadata.architecture

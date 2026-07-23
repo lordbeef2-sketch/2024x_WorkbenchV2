@@ -3,9 +3,9 @@
 This FastAPI service is the secure integration layer for TWC Workbench. It manages delegated Teamwork Cloud sessions, direct Teamwork Cloud token sign-in, HTTP-only app sessions, startup-loaded Teamwork Cloud preset servers from `TWC_PRESET_SERVERS`, pre-login selected-server state, per-user post-login server selection state, Teamwork Cloud adapters, and capability probing.
 
 To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` in `backend/.env` and restart the backend.
-`Sign In via TWC` is the primary path. It sends the browser to the selected Teamwork Cloud Authentication Server authorize endpoint, derived by default as `https://<selected-twc-host>:8443/authentication/authorize`, exchanges the returned authorization code at `/authentication/api/token`, refreshes that token when the AuthServer returns a refresh token, and validates the user through `/osmc/admin/currentUser`. `Use TWC Token` remains the explicit fallback. The Authentication Server must have this app's callback URL whitelisted, one app client id from `authentication.client.ids`, and `authentication.client.secret` configured. This project is now documented and configured around a Teamwork Cloud 2024x deployment profile.
+`Sign In via TWC` is the primary path. It uses Teamwork Cloud 2024x Refresh3 OpenID Connect discovery at `/authentication/.well-known/oidc-configuration`, authorization code flow, `scope=openid`, and the discovered token endpoint with `client_secret_basic`, then validates the returned ID token through `/osmc/admin/currentUser`. Register the exact callback URI in Web Application Platform Settings -> OAuth clients -> OpenID Connect and configure the generated client ID and secret in Workbench. SAML may be configured behind AuthServer as its upstream identity provider; Workbench itself is an OIDC client. `Use TWC Token` remains the explicit fallback.
 
-OSLC is a separate integration lane. The workbench now includes an OSLC Explorer that discovers `/oslc/api/rootservices`, authorizes through the server's OAuth 1.0a consumer endpoints, executes signed OSLC GET requests with the approved consumer key and secret configured in `backend/.env`, and can generate a consumer key from the root-services registration URL when the server publishes it. Generated keys still require admin approval in Magic Collaboration Studio Settings before OSLC authorization will succeed.
+OSLC authentication is intentionally not implemented. The bundled 3DS 2024x package documents OSLC resources but does not define the authentication exchange needed by this application, and no captured live-server contract is checked into the repository. The unsupported consumer-key/request-token implementation was removed instead of being presented as verified TWC 2024x behavior.
 
 The backend also supports plugin-fed model cache ingestion. The preferred setup is to generate the plugin ingest token inside the admin Settings screen, where Workbench stores it encrypted in app storage. `CACHE_INGEST_TOKENS` remains available as a legacy fallback for bearer-authenticated writes into:
 
@@ -43,10 +43,8 @@ Key labels, creation time, and last-used time are stored for light auditability,
 Workbench uses TWC REST for permission authority only. Background and manual
 REST model/element fallback synchronization are disabled. Projects, branches,
 models, elements, specifications, usages, and presentation data enter the
-shared cache only through Cameo Workbench plugin snapshots. The retained
-`GET /api/workspace/fallback-cache/status` endpoint reports that disabled state;
-`POST /api/workspace/fallback-cache/refresh` rejects attempts to start the
-legacy crawler.
+shared cache only through Cameo Workbench plugin snapshots. The old REST
+fallback status, manual refresh, and model-cache sync routes are not exposed.
 
 The cache API stores the shared branch model payload once and keeps per-user
 permission overlays separately. That avoids duplicating the same branch model
@@ -175,13 +173,15 @@ live-TWC smoke commands are documented in `backend/ops/README.md`.
 
 See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
 
-Workbench Agent uses two retrieval-friendly Markdown files. A persistent,
-content-fingerprinted reference contains Workbench operating instructions,
-runnable API examples, and the official 3DS / No Magic 2024x chunks. A separate
+Workbench Agent uses retrieval-friendly Markdown files. A persistent,
+content-fingerprinted and size-segmented reference set contains Workbench operating instructions,
+runnable API examples, and every configured official 3DS / No Magic 2024x chunk. A separate
 permission-scoped file contains the selected branch's complete tree and native
-Cameo specifications. Workbench waits for both Open WebUI files to report
-`completed`, attaches both to every chat, and supplies a system instruction that
+Cameo specifications. Workbench waits for every Open WebUI file to report
+`completed`, attaches the complete set to every chat, and supplies a system instruction that
 separates product/API guidance from project-specific facts.
+Each completed reference segment is checkpointed in encrypted per-user agent
+configuration so an interrupted sync can resume at the first unfinished file.
 
 Knowledge pushes run as Workbench background jobs. The Agent tab submits the
 job and polls `GET /api/workspace/jobs/{job_id}` with short requests while Open
@@ -228,13 +228,13 @@ Run locally from the repository root virtual environment:
 Windows:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --no-access-log
 ```
 
 Linux:
 
 ```bash
-./.venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+./.venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --no-access-log
 ```
 
 Important environment variables are documented in `backend/.env.example` and the repository root `README.md`.

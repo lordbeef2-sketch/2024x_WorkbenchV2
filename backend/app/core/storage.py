@@ -560,7 +560,6 @@ class SqliteRepository:
             if cursor.rowcount > 0:
                 self._remove_server_from_user_state(connection, server_id)
                 connection.execute("DELETE FROM user_data_cache WHERE server_id = ?", (server_id,))
-                connection.execute("DELETE FROM app_secrets WHERE scope = ?", (self._oslc_shared_scope(server_id),))
                 self._delete_materialized_cache_for_server(connection, server_id)
             connection.commit()
         return cursor.rowcount > 0
@@ -2235,10 +2234,17 @@ class SqliteRepository:
         self._prune_invalid_materialized_cache(connection, valid_server_ids)
 
     def _prune_invalid_app_secrets(self, connection: sqlite3.Connection, valid_server_ids: set[str]) -> None:
-        valid_scopes = {self._oslc_shared_scope(server_id) for server_id in valid_server_ids}
-        valid_scopes.add(self._cache_ingest_scope())
+        valid_scopes = {self._cache_ingest_scope()}
         rows = connection.execute("SELECT scope FROM app_secrets").fetchall()
-        invalid_scopes = [str(row["scope"]) for row in rows if str(row["scope"]) not in valid_scopes]
+        invalid_scopes = [
+            str(row["scope"])
+            for row in rows
+            if str(row["scope"]) not in valid_scopes
+            and not any(
+                str(row["scope"]).startswith(f"workbench-agent:{server_id}:")
+                for server_id in valid_server_ids
+            )
+        ]
         if invalid_scopes:
             connection.executemany("DELETE FROM app_secrets WHERE scope = ?", [(scope,) for scope in invalid_scopes])
 
@@ -2304,9 +2310,6 @@ class SqliteRepository:
         ):
             connection.execute(f"DELETE FROM {table}")
         connection.execute("DELETE FROM twc_permission_refresh_leases")
-
-    def _oslc_shared_scope(self, server_id: str) -> str:
-        return f"oslc-shared:{server_id}"
 
     def _cache_ingest_scope(self) -> str:
         return "cache-ingest-shared"

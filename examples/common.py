@@ -26,13 +26,16 @@ class ExampleError(RuntimeError):
 class AuthConfig:
     client_id: str = ""
     client_secret: str = ""
-    scope: str = ""
+    scope: str = "openid"
+    discovery_url: str = ""
     authorize_url: str = ""
     token_url: str = ""
     auth_scheme: str = "https"
     auth_port: int = 8443
-    authorize_path: str = "/authentication/authorize"
-    token_path: str = "/authentication/api/token"
+    discovery_path: str = "/authentication/.well-known/oidc-configuration"
+    authorize_path: str = "/authentication/oidc/authorize"
+    token_path: str = "/authentication/api/oidc/token"
+    token_auth_method: str = "client_secret_basic"
     callback_host: str = "127.0.0.1"
     callback_port: int = 8765
     callback_path: str = "/callback"
@@ -74,8 +77,8 @@ class ExampleConfig:
         return CONFIG_PATH.parent / (self.auth.token_cache_file or ".twc_sso_token_cache.json")
 
     @property
-    def resolved_auth_scope(self) -> str:
-        return self.auth.scope.strip() or "openid"
+    def resolved_auth_scope(self) -> str | None:
+        return self.auth.scope.strip() or None
 
 
 @dataclass(slots=True)
@@ -167,16 +170,42 @@ def build_auth_server_url(config: ExampleConfig, path_or_url: str) -> str:
 def authorize_url(config: ExampleConfig) -> str:
     if config.auth.authorize_url.strip():
         return config.auth.authorize_url.strip()
-    return build_auth_server_url(config, config.auth.authorize_path or "/authentication/authorize")
+    discovered = oidc_configuration(config).get("authorization_endpoint")
+    if isinstance(discovered, str) and discovered.strip():
+        return discovered.strip()
+    return build_auth_server_url(config, config.auth.authorize_path or "/authentication/oidc/authorize")
 
 
 def token_url(config: ExampleConfig) -> str:
     if config.auth.token_url.strip():
         return config.auth.token_url.strip()
-    return build_auth_server_url(config, config.auth.token_path or "/authentication/api/token")
+    discovered = oidc_configuration(config).get("token_endpoint")
+    if isinstance(discovered, str) and discovered.strip():
+        return discovered.strip()
+    return build_auth_server_url(config, config.auth.token_path or "/authentication/api/oidc/token")
 
 
-def token_bundle_from_payload(payload: dict[str, Any], *, scope: str) -> TokenBundle:
+def oidc_configuration(config: ExampleConfig) -> dict[str, Any]:
+    discovery_url = config.auth.discovery_url.strip() or build_auth_server_url(
+        config,
+        config.auth.discovery_path or "/authentication/.well-known/oidc-configuration",
+    )
+    try:
+        with httpx.Client(verify=build_requests_verify(config), follow_redirects=True) as session:
+            response = session.get(
+                discovery_url,
+                headers={"Accept": "application/json"},
+                timeout=max(config.request_timeout_seconds, 30),
+            )
+        if response.status_code >= 400:
+            return {}
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+    except (httpx.HTTPError, ValueError):
+        return {}
+
+
+def token_bundle_from_payload(payload: dict[str, Any], *, scope: str | None) -> TokenBundle:
     id_token = payload.get("id_token") if isinstance(payload.get("id_token"), str) else None
     access_token = payload.get("access_token") if isinstance(payload.get("access_token"), str) else None
     refresh_token = payload.get("refresh_token") if isinstance(payload.get("refresh_token"), str) else None
@@ -256,17 +285,21 @@ def requests_session(config: ExampleConfig) -> httpx.Client:
 
 
 def exchange_auth_code(config: ExampleConfig, code: str) -> TokenBundle:
+    form_data = {
+        "redirect_uri": config.callback_url,
+        "client_id": config.auth.client_id.strip(),
+        "grant_type": "authorization_code",
+        "code": code,
+    }
+    if config.resolved_auth_scope:
+        form_data["scope"] = config.resolved_auth_scope
     with requests_session(config) as session:
+        if config.auth.token_auth_method.strip().lower() != "client_secret_basic":
+            raise ExampleError("The 2024x Refresh3 examples support the documented client_secret_basic token method.")
         response = session.post(
             token_url(config),
-            headers={"X-Auth-Secret": config.auth.client_secret.strip()},
-            data={
-                "scope": config.resolved_auth_scope,
-                "redirect_uri": config.callback_url,
-                "client_id": config.auth.client_id.strip(),
-                "grant_type": "authorization_code",
-                "code": code,
-            },
+            auth=httpx.BasicAuth(config.auth.client_id.strip(), config.auth.client_secret.strip()),
+            data=form_data,
             timeout=max(config.request_timeout_seconds, 30),
         )
     if response.status_code >= 400:
@@ -279,17 +312,21 @@ def exchange_auth_code(config: ExampleConfig, code: str) -> TokenBundle:
 
 
 def refresh_auth_token(config: ExampleConfig, refresh_token: str) -> TokenBundle:
+    form_data = {
+        "redirect_uri": config.callback_url,
+        "client_id": config.auth.client_id.strip(),
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }
+    if config.resolved_auth_scope:
+        form_data["scope"] = config.resolved_auth_scope
     with requests_session(config) as session:
+        if config.auth.token_auth_method.strip().lower() != "client_secret_basic":
+            raise ExampleError("The 2024x Refresh3 examples support the documented client_secret_basic token method.")
         response = session.post(
             token_url(config),
-            headers={"X-Auth-Secret": config.auth.client_secret.strip()},
-            data={
-                "scope": config.resolved_auth_scope,
-                "redirect_uri": config.callback_url,
-                "client_id": config.auth.client_id.strip(),
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            },
+            auth=httpx.BasicAuth(config.auth.client_id.strip(), config.auth.client_secret.strip()),
+            data=form_data,
             timeout=max(config.request_timeout_seconds, 30),
         )
     if response.status_code >= 400:
@@ -353,7 +390,15 @@ def capture_auth_callback(config: ExampleConfig, state: str) -> dict[str, str]:
     except OSError:
         listener_started = False
 
-    signin_url = f"{authorize_url(config)}?{urlencode({'scope': config.resolved_auth_scope, 'redirect_uri': config.callback_url, 'client_id': config.auth.client_id.strip(), 'response_type': 'code', 'state': state})}"
+    query_values = {
+        "redirect_uri": config.callback_url,
+        "client_id": config.auth.client_id.strip(),
+        "response_type": "code",
+        "state": state,
+    }
+    if config.resolved_auth_scope:
+        query_values["scope"] = config.resolved_auth_scope
+    signin_url = f"{authorize_url(config)}?{urlencode(query_values)}"
 
     print("")
     print("Open this URL to sign in with TWC SSO:")
@@ -390,10 +435,10 @@ def capture_auth_callback(config: ExampleConfig, state: str) -> dict[str, str]:
     if not callback_params:
         raise ExampleError("No callback parameters were captured from the TWC sign-in flow.")
 
-    if callback_params.get("state") and callback_params["state"] != state:
+    if not callback_params.get("state"):
+        raise ExampleError("TWC OIDC callback did not include state.")
+    if callback_params["state"] != state:
         raise ExampleError("TWC callback state mismatch.")
-    if callback_params.get("RelayState") and callback_params["RelayState"] != state:
-        raise ExampleError("TWC callback RelayState mismatch.")
     if callback_params.get("error"):
         detail = callback_params.get("error_description") or callback_params["error"]
         raise ExampleError(f"TWC sign-in returned an error: {detail}")

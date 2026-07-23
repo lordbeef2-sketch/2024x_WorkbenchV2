@@ -8,13 +8,13 @@ The numbered scripts are now thin examples around the reusable Python functions 
 import from other Python code instead of copying request logic into each script.
 
 Everything here reads from [config.json](config.json)
-and uses the same AuthServer SSO pattern as the app:
+and uses the same official 2024x Refresh3 OIDC pattern as the app:
 
-1. open the TWC Authentication Server authorize URL,
-2. complete the configured SAML login,
+1. read `/authentication/.well-known/oidc-configuration`,
+2. open the discovered OIDC authorization endpoint and complete login,
 3. receive an authorization code on the local callback,
-4. exchange that code at `/authentication/api/token` using
-   `authentication.client.secret`,
+4. exchange that code at the discovered token endpoint using the registered
+   client ID and secret with `client_secret_basic`,
 5. call `/osmc/...` with `Authorization: Token <id_token>`.
 
 ## Before you run anything
@@ -117,8 +117,9 @@ python .\19_nomagic_openapi_project_summary.py
 
 These examples cover the hardcoded REST calls used by the app and extractor:
 
-- `/authentication/authorize`
-- `/authentication/api/token`
+- `/authentication/.well-known/oidc-configuration`
+- `/authentication/oidc/authorize`
+- `/authentication/api/oidc/token`
 - `/osmc/admin/currentUser?permission=true`
 - `/osmc/version`
 - `/osmc/workspaces?includeBody=true`
@@ -163,7 +164,6 @@ Files:
 - `32_permission_refresh_job.py` (session-authenticated background refresh and status polling)
 - `33_workbench_cache_api_tombstone_branch.py` (revision-guarded stored-branch removal; requires explicit confirmation)
 - `34_workbench_cache_api_tombstone_project.py` (atomic all-branch project removal; requires explicit confirmation)
-- `35_fallback_cache_refresh.py` (TWC Server Administrator manual trigger and background job status)
 
 They read from:
 
@@ -190,7 +190,6 @@ python .\32_permission_refresh_job.py
 python .\33_workbench_cache_api_tombstone_branch.py
 # More destructive: removes every stored branch in the configured project.
 python .\34_workbench_cache_api_tombstone_project.py
-python .\35_fallback_cache_refresh.py
 ```
 
 More background is in:
@@ -204,8 +203,7 @@ children endpoint used by incremental tree clients.
 
 ## Not included on purpose
 
-- OSLC examples are not in this folder because the app uses OAuth 1.0a for OSLC,
-  not the AuthServer SSO/token flow above.
+- OSLC examples are not included because the bundled 3DS package does not define a verified Workbench authentication contract for OSLC. Add examples only after a live 2024x contract is captured and tested.
 - No Magic desktop OpenAPI calls are not part of the Teamwork Cloud REST transport.
    They are exposed separately through `Modules.nomagic_openapi` so they do not get
    mixed into the REST client layer.

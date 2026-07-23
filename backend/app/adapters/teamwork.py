@@ -2442,13 +2442,10 @@ class TeamworkAdapter:
         branch_id: str,
         workspace_id: str | None = None,
     ) -> tuple[list[str], str, list[str]]:
-        warnings: list[str] = [
-            "RealSwagger.json does not declare GET /osmc/workspaces/{workspaceId}/resources/{resourceId}/branches/{branchId}/elements, so discovery starts from Swagger-declared model roots and then traverses GET /elements/{elementId} recursively."
-        ]
+        warnings: list[str] = []
         model_payload = await self._request_candidates_paged(
             "GET",
             [
-                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models",) if workspace_id else ()),
                 f"/osmc/resources/{project_id}/branches/{branch_id}/models",
                 f"/osmc/resources/{project_id}/models",
             ],
@@ -2471,7 +2468,6 @@ class TeamworkAdapter:
             model_detail = await self._request_candidates_paged(
                 "GET",
                 [
-                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models/{model_id}",) if workspace_id else ()),
                     f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
                     f"/osmc/resources/{project_id}/models/{model_id}",
                 ],
@@ -2489,8 +2485,7 @@ class TeamworkAdapter:
 
         if not seed_ids:
             warnings.append("No model roots were available to seed element traversal.")
-        seed_source = "workspace-model-roots" if workspace_id else "resource-model-roots"
-        return seed_ids, seed_source, warnings
+        return seed_ids, "resource-model-roots", warnings
 
     async def list_branch_models(
         self,
@@ -2507,7 +2502,6 @@ class TeamworkAdapter:
         model_payload = await self._request_candidates_paged(
             "GET",
             [
-                *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models",) if workspace_id else ()),
                 f"/osmc/resources/{project_id}/branches/{branch_id}/models",
                 f"/osmc/resources/{project_id}/models",
             ],
@@ -2527,7 +2521,6 @@ class TeamworkAdapter:
             detail = await self._request_candidates_paged(
                 "GET",
                 [
-                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models/{model_id}",) if workspace_id else ()),
                     f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
                     f"/osmc/resources/{project_id}/models/{model_id}",
                 ],
@@ -2554,7 +2547,6 @@ class TeamworkAdapter:
             payload = await self._request_candidates_paged(
                 "GET",
                 [
-                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models/{model_id}",) if workspace_id else ()),
                     f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
                     f"/osmc/resources/{project_id}/models/{model_id}",
                 ],
@@ -2972,9 +2964,9 @@ class TeamworkAdapter:
             timeout=30.0,
         )
         if isinstance(payload, dict) and payload.get("restricted"):
-            raise PermissionError("The active Teamwork Cloud session cannot enumerate server user groups.")
+            raise PermissionError("The active Teamwork Cloud session cannot enumerate server roles.")
         if payload is None:
-            raise RuntimeError("Teamwork Cloud did not return the server user-group inventory.")
+            raise RuntimeError("Teamwork Cloud did not return the server role inventory.")
         if not payload:
             return []
         items = extract_resource_list(payload)
@@ -3228,9 +3220,7 @@ class TeamworkAdapter:
                 self._readonly_branch_probe_supported = False
             return []
         if isinstance(payload, dict) and payload.get("restricted"):
-            raise PermissionError("The active Teamwork Cloud session cannot enumerate server roles.")
-        if payload is None:
-            raise RuntimeError("Teamwork Cloud did not return the server role inventory.")
+            raise PermissionError("The active Teamwork Cloud session cannot read branch-specific permissions.")
         if not payload:
             return []
         self._readonly_branch_probe_supported = True
@@ -3238,17 +3228,17 @@ class TeamworkAdapter:
 
     def _role_access_flags(self, role: dict[str, Any]) -> tuple[bool, bool, bool, bool]:
         permissions = _as_list(role.get("permissions"))
-        role_text = " ".join(
-            value.lower()
-            for value in (
-                _first_text(role.get("name")),
-                _first_text(role.get("description")),
-            )
-            if value
-        )
         permission_terms: list[str] = []
+        operation_names: set[str] = set()
+        permission_names: set[str] = set()
         for permission in permissions:
             if isinstance(permission, dict):
+                operation_name = _first_text(permission.get("operationName")).strip().lower()
+                permission_name = _first_text(permission.get("name")).strip().lower()
+                if operation_name:
+                    operation_names.add(operation_name)
+                if permission_name:
+                    permission_names.add(permission_name)
                 permission_text = " ".join(
                     value.lower()
                     for value in (
@@ -3266,12 +3256,26 @@ class TeamworkAdapter:
         def has_permission(*names: str) -> bool:
             return any(name in term for term in permission_terms for name in names)
 
-        has_read = has_permission("read resources")
-        has_edit_contents = has_permission("edit resources")
+        # RealSwagger.json uses stable operation identifiers such as
+        # read.resource and edit.resource. The 3DS admin documentation uses
+        # the human labels Read Resources and Edit Resources. Accept both
+        # exact contracts so localized/older display labels (for example,
+        # Read Projects) cannot silently remove access.
+        has_read = bool(
+            "read.resource" in operation_names
+            or "com.nomagic.esi.resource_read.resource" in permission_names
+            or has_permission("read resources", "read projects", "list all resources")
+        )
+        has_edit_contents = bool(
+            "edit.resource" in operation_names
+            or "com.nomagic.esi.resource_edit.resource" in permission_names
+            or has_permission("edit resources", "edit projects")
+        )
         has_edit_properties = has_permission("edit resource properties")
         has_administer_resources = has_permission("administer resources")
         has_manage_access = has_permission(
             "manage owned resource access right",
+            "manage model permissions",
             "manage user permissions",
         )
 
@@ -3366,7 +3370,6 @@ class TeamworkAdapter:
             resolved_payload = await self._request_candidates_paged(
                 "GET",
                 [
-                    *((f"/osmc/workspaces/{workspace_id}/resources/{project_id}/branches/{branch_id}/models/{model_id}",) if workspace_id else ()),
                     f"/osmc/resources/{project_id}/branches/{branch_id}/models/{model_id}",
                     f"/osmc/resources/{project_id}/models/{model_id}",
                 ],
