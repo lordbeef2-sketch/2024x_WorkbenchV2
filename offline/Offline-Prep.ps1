@@ -100,24 +100,25 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
 $backendDir = Join-Path $rootDir "backend"
 $frontendDir = Join-Path $rootDir "frontend"
+$authoritativeKnowledgeRoot = [System.IO.Path]::GetFullPath("C:\Users\Main1\Documents\NI KB base\3DS_KB")
 if ([string]::IsNullOrWhiteSpace($KnowledgeBasePath)) {
-    $repositoryKnowledge = Join-Path $rootDir "knowledge\3ds\2024x"
-    $builderKnowledge = "C:\sand\TWC_Data_Sheets\TWC2024x\output\nomagic_owui_kb"
-    if (Test-Path -LiteralPath (Join-Path $repositoryKnowledge "datasheet_chunks.jsonl") -PathType Leaf) {
-        $KnowledgeBasePath = $repositoryKnowledge
-    }
-    elseif (Test-Path -LiteralPath (Join-Path $builderKnowledge "datasheet_chunks.jsonl") -PathType Leaf) {
-        $KnowledgeBasePath = $builderKnowledge
-    }
+    $KnowledgeBasePath = $authoritativeKnowledgeRoot
 }
 if ([string]::IsNullOrWhiteSpace($KnowledgeBasePath)) {
-    throw "The complete 3DS 2024x knowledge base was not found. Pass -KnowledgeBasePath with a folder containing datasheet_chunks.jsonl and manifest.json."
+    throw "The authoritative 3DS KB path is required."
 }
 $knowledgeRoot = [System.IO.Path]::GetFullPath($KnowledgeBasePath)
-$knowledgeChunks = Join-Path $knowledgeRoot "datasheet_chunks.jsonl"
-$knowledgeManifest = Join-Path $knowledgeRoot "manifest.json"
-if (-not (Test-Path -LiteralPath $knowledgeChunks -PathType Leaf)) { throw "3DS KB chunks were not found: $knowledgeChunks" }
-if (-not (Test-Path -LiteralPath $knowledgeManifest -PathType Leaf)) { throw "3DS KB manifest was not found: $knowledgeManifest" }
+if (-not $knowledgeRoot.Equals($authoritativeKnowledgeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Offline prep only accepts the single authoritative 3DS KB: $authoritativeKnowledgeRoot"
+}
+$knowledgeController = Join-Path $knowledgeRoot "AGENTS.md"
+$knowledgeManifest = Join-Path $knowledgeRoot "00_MACHINE_MANIFEST.md"
+$knowledgeValidation = Join-Path $knowledgeRoot "00_VALIDATION.md"
+foreach ($requiredKnowledgeFile in @($knowledgeController, $knowledgeManifest, $knowledgeValidation)) {
+    if (-not (Test-Path -LiteralPath $requiredKnowledgeFile -PathType Leaf)) {
+        throw "Authoritative 3DS KB control file was not found: $requiredKnowledgeFile"
+    }
+}
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $scriptDir "artifacts"
 }
@@ -143,6 +144,17 @@ if ($AllowUntrustedPackageHosts) {
     Write-Warning "TLS verification is disabled only for pypi.org and files.pythonhosted.org during this prep run. Prefer -PackageCaFile or an approved -PipIndexUrl."
 }
 
+Write-Phase "Validating the single authoritative 3DS KB"
+$knowledgeCertificate = Join-Path $stageRoot "three_ds_corpus_certificate.tsv"
+$knowledgeValidationCode = "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); from app.services.three_ds_corpus import ThreeDsCorpus; ThreeDsCorpus(Path(sys.argv[2])).validate(Path(sys.argv[3]))"
+Invoke-Checked -Executable $python.Executable -Arguments (@($python.Arguments) + @(
+    "-c",
+    $knowledgeValidationCode,
+    $backendDir,
+    $knowledgeRoot,
+    $knowledgeCertificate
+))
+
 if (-not $SkipTests) {
     Write-Phase "Creating an isolated backend test environment"
     $testVenv = Join-Path $stageRoot ".test-venv"
@@ -158,6 +170,8 @@ if (-not $SkipTests) {
 
 $npm = Get-Command npm -ErrorAction SilentlyContinue
 if (-not $npm) { throw "Node.js 20+ and npm are required on the connected prep machine to build frontend/dist." }
+$node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $node) { throw "Node.js 20+ is required on the connected prep machine to build frontend/dist." }
 if (-not $SkipFrontendInstall) {
     Write-Phase "Installing locked frontend dependencies"
     Push-Location $frontendDir
@@ -171,7 +185,20 @@ if (-not $SkipFrontendInstall) {
 }
 Write-Phase "Building the production frontend"
 Push-Location $frontendDir
-try { Invoke-Checked -Executable $npm.Source -Arguments @("run", "build") }
+try {
+    $buildArguments = @("run", "build")
+    & $npm.Source @buildArguments
+    if ($LASTEXITCODE -ne 0) {
+        $localTsc = Join-Path $frontendDir "node_modules\typescript\bin\tsc"
+        $localVite = Join-Path $frontendDir "node_modules\vite\bin\vite.js"
+        if (-not (Test-Path -LiteralPath $localTsc -PathType Leaf) -or -not (Test-Path -LiteralPath $localVite -PathType Leaf)) {
+            throw "Command failed with exit code $LASTEXITCODE`: $($npm.Source) run build"
+        }
+        Write-Host "npm run build failed; retrying with local TypeScript and Vite entrypoints." -ForegroundColor Yellow
+        Invoke-Checked -Executable $node.Source -Arguments @($localTsc, "-b")
+        Invoke-Checked -Executable $node.Source -Arguments @($localVite, "build")
+    }
+}
 finally { Pop-Location }
 if (-not (Test-Path -LiteralPath (Join-Path $frontendDir "dist\index.html"))) {
     throw "Frontend build did not produce frontend/dist/index.html."
@@ -200,7 +227,6 @@ Write-Phase "Assembling the offline runtime payload"
 Copy-DirectoryContents -Source (Join-Path $backendDir "app") -Destination (Join-Path $payloadRoot "backend\app")
 Copy-Item -LiteralPath (Join-Path $backendDir ".env.example") -Destination (Join-Path $payloadRoot "backend\.env.example") -Force
 Copy-DirectoryContents -Source (Join-Path $frontendDir "dist") -Destination (Join-Path $payloadRoot "frontend\dist")
-Copy-DirectoryContents -Source $knowledgeRoot -Destination (Join-Path $payloadRoot "knowledge\3ds\2024x")
 foreach ($file in @("README.md", "CACHE_API.md")) {
     if (Test-Path -LiteralPath (Join-Path $rootDir $file)) {
         Copy-Item -LiteralPath (Join-Path $rootDir $file) -Destination (Join-Path $payloadRoot $file) -Force
@@ -242,7 +268,11 @@ $manifest = [ordered]@{
     source_commit = $commit
     source_dirty = $sourceDirty
     source_status_sha256 = $sourceDiffSha256
+    three_ds_kb_path = $knowledgeRoot
+    three_ds_kb_controller_sha256 = (Get-FileHash -LiteralPath $knowledgeController -Algorithm SHA256).Hash.ToLowerInvariant()
     three_ds_kb_manifest_sha256 = (Get-FileHash -LiteralPath $knowledgeManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+    three_ds_kb_validation_sha256 = (Get-FileHash -LiteralPath $knowledgeValidation -Algorithm SHA256).Hash.ToLowerInvariant()
+    three_ds_kb_certificate_sha256 = (Get-FileHash -LiteralPath $knowledgeCertificate -Algorithm SHA256).Hash.ToLowerInvariant()
     python_version = $pythonMetadata.version
     python_major_minor = $pythonMetadata.major_minor
     architecture = $pythonMetadata.architecture

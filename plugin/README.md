@@ -140,8 +140,10 @@ TWC Workbench -> Workbench Agent...
 
 The launcher uses `workbench.baseUrl` and deliberately does not store a second
 Open WebUI API key in the Cameo plugin. Sign in to Workbench, select the
-published project/branch, and use its Agent tab so every request receives the
-complete segmented 3DS reference set plus the permission-scoped branch file.
+published project/branch, and use its Agent tab so every request receives
+validated control rails and query-routed evidence from the single authoritative
+`C:\Users\Main1\Documents\NI KB base\3DS_KB` corpus plus the
+permission-scoped branch file.
 
 `CACHE_INGEST_TOKENS` still exists as a legacy fallback in `backend/.env` if you need file-based bootstrap during migration:
 

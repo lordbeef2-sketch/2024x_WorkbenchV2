@@ -173,20 +173,19 @@ live-TWC smoke commands are documented in `backend/ops/README.md`.
 
 See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
 
-Workbench Agent uses retrieval-friendly Markdown files. A persistent,
-content-fingerprinted and size-segmented reference set contains Workbench operating instructions,
-runnable API examples, and every configured official 3DS / No Magic 2024x chunk. A separate
-permission-scoped file contains the selected branch's complete tree and native
-Cameo specifications. Workbench waits for every Open WebUI file to report
-`completed`, attaches the complete set to every chat, and supplies a system instruction that
-separates product/API guidance from project-specific facts.
-Each completed reference segment is checkpointed in encrypted per-user agent
-configuration so an interrupted sync can resume at the first unfinished file.
+Workbench Agent uses only
+`C:\Users\Main1\Documents\NI KB base\3DS_KB`. A background integrity gate
+serially verifies its controller anchors and all 163,668 manifest rows before
+retrieval. Persistent, content-fingerprinted OWUI files contain Workbench
+operating instructions, runnable API examples, and the validated corpus control
+rails. For every question, Workbench injects query-routed documents from that
+corpus into the OWUI system context. A separate permission-scoped file contains
+the selected branch's complete tree and native Cameo specifications.
 
 Knowledge pushes run as Workbench background jobs. The Agent tab submits the
 job and polls `GET /api/workspace/jobs/{job_id}` with short requests while Open
-WebUI processes each file, avoiding reverse-proxy timeouts during large branch
-or 3DS reference ingestion. Open WebUI failures are retained in the job message
+WebUI processes each file, avoiding reverse-proxy timeouts during branch and
+control-rail ingestion. Open WebUI failures are retained in the job message
 and returned to the user instead of being reduced to a generic gateway error.
 
 Preset-management authorization is derived from Teamwork Cloud user context and trusted upstream role or group headers when they are available. The backend does not keep a separate hardcoded admin-user list.

@@ -7,22 +7,22 @@ treated as proof of the TWC contract.
 
 ## Evidence precedence
 
-1. Packaged official 3DS 2024x documentation under
-   `C:/sand/TWC_Data_Sheets/TWC2024x/output/nomagic_owui_kb`.
+1. The single authoritative 3DS corpus at
+   `C:/Users/Main1/Documents/NI KB base/3DS_KB`.
 2. The captured REST contract in `contracts/RealSwagger.json`.
 3. Live target-server responses and an installed Cameo 2024x SDK/runtime.
 4. Workbench implementation and tests, used only to show conformance to the
    evidence above.
 
-The rebuilt KB manifest contains 3,444 pages and 27,783 valid JSONL chunks:
-181 official 2024x Refresh3 Confluence pages and 3,263 2024x Javadoc pages,
-including 2,986 class/interface pages. All 26 Java types imported by the
-plugin and all 23 audited methods/constants are present in the generated
-class-level Javadocs. Eight links emitted by the official all-classes index
-point to internal/nested-class pages that return HTTP 404; the failed URLs are
-retained in `manifest.json`, and those eight names remain represented in the
-captured all-classes index rather than being reported as successfully fetched
-class pages.
+The retained corpus contains 163,671 Markdown documents and 163,668
+manifest-controlled evidence files. Its controller, manifest, and validation
+anchors were verified, every evidence file was read and hash-checked in
+manifest order, and the resulting 163,670-record completion certificate
+matched the required SHA-256
+`f1798d6892b64d92a239d9604197a32e5a7b4cabde119c7fae0c465850c9e1f5`.
+The corpus contains exact Cameo Java OpenAPI release trees, No Magic
+documentation spaces and attachments, current authoritative sources, SysML
+v2/KerML specifications, and Systems Modeling repositories.
 
 ## Coverage matrix
 
@@ -43,9 +43,9 @@ class pages.
 | Edit/commit | Swagger-defined edit paths and plugin ingestion define distinct write boundaries. | UI/API exposes only capability-backed edits; plugin snapshots/deltas update the shared model cache. | Implemented boundary. Live conflict, lock, revision, and permission-loss behavior remains. |
 | Developer API and examples | Routes are grounded in Workbench contracts and `RealSwagger.json`. | Scoped per-user API keys and Python examples cover tree/spec/cache operations and documented TWC model calls. Unsupported workspace-latest-model routes were removed. | Source-aligned; examples require live target-server smoke tests. |
 | API information visibility | Documentation is text; mutations and API keys remain permission-bearing operations. | Non-admin users may read developer guidance while admin contract exploration and administrative actions remain gated. | Implemented; UI-role smoke test remains. |
-| Workbench Agent | 3DS KB artifacts and Workbench examples are local source material. | Agent splits the complete source set into bounded files, checkpoints every processed segment, resumes interrupted uploads, and attaches every reference segment plus a separate permission-scoped selected-branch source to each chat. Cameo opens this same Workbench Agent tab instead of bypassing it with direct OWUI chat. OWUI TLS is verified by default and may be host-allowlisted. | Unit-tested structurally. Live OWUI upload/chat, file-count limits, retrieval quality, and gateway behavior require end-to-end proof. |
-| Offline packaging | Repository contains connected prep and offline installer workflows. | Prep tests/builds, creates wheels, verifies `--no-index`, embeds the complete verified 3DS KB, records source/KB provenance and hashes, and creates a ZIP. Installer verifies every manifest entry, replaces the packaged KB, preserves configuration/data, generates a session secret, and installs from the wheelhouse. Pip and nested PEP 517 builds use the native Windows trust store without disabling TLS verification. | The final ZIP was hash-verified, extracted, installed to a clean path strictly from its wheelhouse, and import-tested. The installed KB contained all 3,444 pages and 27,783 chunks. |
-| Presentation | Existing deck is the visual reference. | Deck and speech now describe the documented OIDC flow, segmented complete KB reference set, permission overlay, and honest validation boundary. | All 13 slides were rendered, affected slides were visually inspected, and the presentation overflow test passed. Live product screenshots remain deployment evidence, not a source-contract claim. |
+| Workbench Agent | The retained 3DS_KB controller defines the corpus gate and query rails. | A background sync serially validates the corpus and uploads only Workbench operating guidance plus validated control rails. Every chat receives path-routed evidence from the retained corpus in its system context plus the permission-scoped selected-branch source. Cameo opens this same Workbench Agent tab instead of bypassing it with direct OWUI chat. OWUI TLS is verified by default and may be host-allowlisted. | Corpus integrity and retrieval are locally testable. Live OWUI upload/chat and retrieval-quality testing remain required. |
+| Offline packaging | Repository contains connected prep and offline installer workflows. | Prep tests/builds, creates wheels, verifies `--no-index`, validates the external authoritative 3DS_KB, records its control and certificate hashes without copying the corpus, and creates a ZIP. Installer verifies every package entry and the external KB control hashes, preserves configuration/data, generates a session secret, and installs from the wheelhouse. | Regenerated locally after the authoritative-path change. The isolated wheelhouse installed with `--no-index`; the ZIP contained no copied KB entries and the manifest points to the retained external KB. Target-machine installer smoke testing remains deployment evidence. |
+| Presentation | Existing deck is the visual reference. | The speech now describes the documented OIDC flow, single retained 3DS_KB, integrity gate, query-routed evidence, permission overlay, and honest validation boundary. | The PPTX still requires the same copy update and render/overflow QA. The required bundled presentation editor was unavailable in this environment, so the deck was not mutated or falsely claimed as updated. |
 | Operations | Repository contains restart/lease, SQLite backup verification, live TWC smoke, and sanitized alert-forwarding checks. | Local multi-worker lease/restart check passed; a generated current-schema SQLite database and its backup matched table counts, integrity, and SHA-256 reporting; alert sanitization is unit-tested. | Live TWC smoke and delivery to an actual alert receiver remain environment-gated. |
 
 ## Security invariants

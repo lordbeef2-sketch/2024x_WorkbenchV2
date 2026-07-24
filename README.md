@@ -181,13 +181,18 @@ the plugin-backed branch snapshot. The lazy child endpoint remains available
 for integrations and recovery, but filtering and navigation operate against
 the full tree instead of model headers alone.
 
-Workbench Agent maintains the official 3DS / No Magic 2024x reference as a
-persistent, fingerprinted, size-segmented Open WebUI file set separate from permission-scoped branch
-model files. Every Agent chat attaches the complete reference set plus the branch source and instructs any mapped OWUI
-model to use the reference for Workbench/3DS guidance and the branch file for
-project facts. Set `THREE_DS_KB_PATH` to the generated KB folder or
-`datasheet_chunks.jsonl`; `THREE_DS_KB_MAX_CHUNKS` is a safety ceiling (the default covers the full generated KB), while `THREE_DS_KB_REFERENCE_FILE_MAX_BYTES` segments the source-attributed reference into upload-safe OWUI files without dropping chunks. The local development fallback recognizes the shared
-`C:/sand/TWC_Data_Sheets/TWC2024x/output/nomagic_owui_kb` build.
+Workbench Agent uses only
+`C:/Users/Main1/Documents/NI KB base/3DS_KB`. Before retrieval, its controller,
+manifest, validation anchor, all 163,668 manifest rows, and every Markdown
+document are serially verified to produce the controller-required 163,670-record
+completion certificate. Persistent OWUI files carry Workbench operating
+guidance and the validated corpus control rails. For each user question,
+Workbench routes the most relevant documents from that corpus into the OWUI
+system context and attaches the current user's permission-scoped branch model
+file. There is no generated-KB, repository, or `C:\sand` fallback.
+`THREE_DS_KB_RETRIEVAL_MAX_DOCUMENTS` and
+`THREE_DS_KB_RETRIEVAL_MAX_CHARACTERS` bound per-question context without
+creating another KB copy.
 Open WebUI TLS verification is enabled by default. Set
 `OPENWEBUI_CA_BUNDLE_PATH` for an internal CA; disabling
 `OPENWEBUI_VERIFY_TLS` is an explicit controlled-environment exception.

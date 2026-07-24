@@ -5353,7 +5353,7 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Workbench Agent</Typography>
             <Typography variant="body2" color="text.secondary">
-              Map any Open WebUI model to Workbench. Every chat uses the complete persistent Workbench + official 3DS / No Magic 2024x reference set and the current user&apos;s permission-scoped branch model snapshot.
+              Map any Open WebUI model to Workbench. Every chat uses integrity-validated, query-routed evidence from the single authoritative 3DS_KB plus the current user&apos;s permission-scoped branch model snapshot.
             </Typography>
           </Box>
           {workbenchAgentStatusQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentStatusQuery.error)}</Alert> : null}
@@ -5446,7 +5446,7 @@ export default function WorkspacePage() {
             <Chip
               label={
                 workbenchAgentStatus?.three_ds_kb_available
-                  ? `3DS KB: ${workbenchAgentStatus.three_ds_kb_page_count} pages / ${workbenchAgentStatus.three_ds_kb_chunk_count} chunks`
+                  ? `3DS KB: ${workbenchAgentStatus.three_ds_kb_page_count} documents / ${workbenchAgentStatus.three_ds_kb_chunk_count} integrity-gated evidence records`
                   : "3DS KB not configured"
               }
               color={workbenchAgentStatus?.three_ds_kb_available ? "success" : "warning"}
@@ -5490,7 +5490,7 @@ export default function WorkspacePage() {
           ) : null}
           {workbenchAgentStatus?.reference_file_id ? (
             <Alert severity="success">
-              Persistent Agent reference set: {workbenchAgentStatus.reference_file_count || 1} processed files
+              Persistent Agent controls: {workbenchAgentStatus.reference_file_count || 1} processed files. Relevant evidence is routed from the validated corpus for each question.
               {workbenchAgentStatus.reference_synced_at ? ` at ${new Date(workbenchAgentStatus.reference_synced_at).toLocaleString()}` : ""}. The complete set is attached before the branch file for every mapped model used in Workbench Agent.
             </Alert>
           ) : null}

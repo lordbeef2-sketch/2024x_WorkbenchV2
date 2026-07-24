@@ -1,8 +1,10 @@
 from types import SimpleNamespace
+from pathlib import Path
 import unittest
 
 from app.services.platform import PlatformService
 from app.models.domain import WorkbenchAgentSecret
+from app.services.three_ds_corpus import CorpusDocument
 
 
 class WorkbenchAgentKnowledgeTests(unittest.TestCase):
@@ -24,42 +26,62 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "without credentials"):
             service._normalize_openwebui_base_url("https://user:secret@owui.example")
 
-    def test_full_3ds_kb_is_split_without_dropping_chunks(self) -> None:
+    def test_reference_documents_use_validated_authoritative_control_rails(self) -> None:
         service = object.__new__(PlatformService)
-        service.settings = SimpleNamespace(three_ds_kb_reference_file_max_bytes=4_000)
-        chunks = [
-            {
-                "chunk_id": f"chunk-{index}",
-                "title": f"Reference {index}",
-                "url": f"https://docs.example/{index}",
-                "content": f"UNIQUE-CONTENT-{index} " + ("x" * 1_800),
-            }
-            for index in range(5)
-        ]
-        service._three_ds_kb_chunks = lambda: (
-            chunks,
-            {"three_ds_kb_page_count": 5, "three_ds_kb_chunk_count": 5},
+        service.settings = SimpleNamespace()
+        corpus = SimpleNamespace(
+            root=Path("C:/authoritative/3DS_KB"),
+            validated=lambda: SimpleNamespace(certificate_sha256="a" * 64),
+            control_documents=lambda: (
+                CorpusDocument(relative_path="AGENTS.md", content="ONLY-AUTHORITATIVE-CONTROL"),
+            ),
         )
+        service._validate_three_ds_corpus = lambda: corpus
+        service._three_ds_kb_status = lambda: {
+            "three_ds_kb_available": True,
+            "three_ds_kb_page_count": 163671,
+            "three_ds_kb_chunk_count": 163670,
+        }
         service._workbench_agent_example_payload = lambda: {"example.py": "print('workbench')"}
 
         documents, stats, fingerprint = service._build_workbench_reference_documents()
 
-        self.assertGreater(len(documents), 2)
+        self.assertEqual(len(documents), 2)
         self.assertEqual(documents[0][0], "twc-workbench-operating-reference.md")
         combined = b"\n".join(content for _, content in documents).decode("utf-8")
-        for index in range(5):
-            self.assertEqual(combined.count(f"UNIQUE-CONTENT-{index}"), 1)
-        self.assertEqual(stats["three_ds_kb_chunk_count"], 5)
+        self.assertEqual(combined.count("ONLY-AUTHORITATIVE-CONTROL"), 1)
+        self.assertIn("C:\\authoritative\\3DS_KB", combined)
+        self.assertEqual(stats["three_ds_kb_chunk_count"], 163670)
         self.assertEqual(len(fingerprint), 64)
+
+    def test_query_context_contains_only_retrieved_authoritative_documents(self) -> None:
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(
+            three_ds_kb_retrieval_max_documents=12,
+            three_ds_kb_retrieval_max_characters=120_000,
+        )
+        corpus = SimpleNamespace(
+            root=Path("C:/authoritative/3DS_KB"),
+            validated=lambda: SimpleNamespace(certificate_sha256="b" * 64),
+            retrieve=lambda *_args, **_kwargs: (
+                CorpusDocument(relative_path="CAMEO_JAVA_OPENAPI_2024xR3/Element.md", content="getOwnedElement"),
+            ),
+        )
+        service._validate_three_ds_corpus = lambda: corpus
+
+        context = service._three_ds_query_context("How do I read owned elements?")
+
+        self.assertIn("CAMEO_JAVA_OPENAPI_2024xR3/Element.md", context)
+        self.assertIn("getOwnedElement", context)
+        self.assertIn("C:\\authoritative\\3DS_KB", context)
 
 
 class WorkbenchAgentKnowledgeUploadTests(unittest.IsolatedAsyncioTestCase):
-    async def test_every_segment_is_uploaded_and_reused_as_one_reference_set(self) -> None:
+    async def test_every_reference_file_is_uploaded_and_reused_as_one_set(self) -> None:
         service = object.__new__(PlatformService)
         documents = [
             ("twc-workbench-operating-reference.md", b"operations"),
-            ("twc-3ds-2024x-reference-part-001.md", b"part one"),
-            ("twc-3ds-2024x-reference-part-002.md", b"part two"),
+            ("twc-3ds-kb-control-rails.md", b"controls"),
         ]
         service._build_workbench_reference_documents = lambda: (
             documents,
@@ -84,7 +106,7 @@ class WorkbenchAgentKnowledgeUploadTests(unittest.IsolatedAsyncioTestCase):
         uploaded, stats, fingerprint = await service._ensure_workbench_reference_knowledge(secret)
 
         self.assertEqual(uploads, documents)
-        self.assertEqual([file_id for file_id, _ in uploaded], ["file-1", "file-2", "file-3"])
+        self.assertEqual([file_id for file_id, _ in uploaded], ["file-1", "file-2"])
         self.assertEqual(stats["three_ds_kb_chunk_count"], 2)
         self.assertEqual(fingerprint, "fingerprint")
 
@@ -100,9 +122,9 @@ class WorkbenchAgentKnowledgeUploadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reused, uploaded)
         self.assertEqual(uploads, [])
 
-    async def test_failed_segment_can_resume_from_persisted_processed_prefix(self) -> None:
+    async def test_failed_reference_upload_can_resume_from_processed_prefix(self) -> None:
         service = object.__new__(PlatformService)
-        documents = [("operations.md", b"ops"), ("part-1.md", b"one"), ("part-2.md", b"two")]
+        documents = [("operations.md", b"ops"), ("control-rails.md", b"controls")]
         service._build_workbench_reference_documents = lambda: (
             documents,
             {"three_ds_kb_page_count": 2, "three_ds_kb_chunk_count": 2},
@@ -132,10 +154,10 @@ class WorkbenchAgentKnowledgeUploadTests(unittest.IsolatedAsyncioTestCase):
             session=SimpleNamespace(),
         )
 
-        self.assertEqual(uploaded_names, ["part-1.md", "part-2.md"])
+        self.assertEqual(uploaded_names, ["control-rails.md"])
         self.assertEqual(completed[0], ("existing-operations", "operations.md"))
-        self.assertEqual(len(persisted), 2)
-        self.assertEqual(persisted[-1].reference_file_names, ["operations.md", "part-1.md", "part-2.md"])
+        self.assertEqual(len(persisted), 1)
+        self.assertEqual(persisted[-1].reference_file_names, ["operations.md", "control-rails.md"])
 
 
 if __name__ == "__main__":

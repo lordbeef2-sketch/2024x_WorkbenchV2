@@ -95,6 +95,23 @@ if (-not (Test-Path -LiteralPath $wheelhouse -PathType Container)) { throw "The 
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($manifest.schema_version -ne 1) { throw "Unsupported offline manifest schema: $($manifest.schema_version)" }
+$knowledgeRoot = [System.IO.Path]::GetFullPath("$($manifest.three_ds_kb_path)")
+$knowledgeController = Join-Path $knowledgeRoot "AGENTS.md"
+$knowledgeManifest = Join-Path $knowledgeRoot "00_MACHINE_MANIFEST.md"
+$knowledgeValidation = Join-Path $knowledgeRoot "00_VALIDATION.md"
+foreach ($knowledgeCheck in @(
+    @($knowledgeController, "$($manifest.three_ds_kb_controller_sha256)"),
+    @($knowledgeManifest, "$($manifest.three_ds_kb_manifest_sha256)"),
+    @($knowledgeValidation, "$($manifest.three_ds_kb_validation_sha256)")
+)) {
+    if (-not (Test-Path -LiteralPath $knowledgeCheck[0] -PathType Leaf)) {
+        throw "The single authoritative 3DS KB is unavailable: $($knowledgeCheck[0])"
+    }
+    $knowledgeHash = (Get-FileHash -LiteralPath $knowledgeCheck[0] -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($knowledgeHash -ne $knowledgeCheck[1].ToLowerInvariant()) {
+        throw "The authoritative 3DS KB control hash changed: $($knowledgeCheck[0])"
+    }
+}
 
 Write-Phase "Verifying every offline package file"
 foreach ($entry in $manifest.files) {
@@ -125,7 +142,6 @@ New-Item -ItemType Directory -Path (Join-Path $deploymentStage "backend"), (Join
 try {
     Copy-Item -LiteralPath (Join-Path $payloadRoot "backend\app") -Destination (Join-Path $deploymentStage "backend\app") -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $payloadRoot "frontend\dist") -Destination (Join-Path $deploymentStage "frontend\dist") -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $payloadRoot "knowledge") -Destination (Join-Path $deploymentStage "knowledge") -Recurse -Force
 
     # All payload copies finish before the installed runtime is replaced. The
     # final moves stay on the same volume and therefore minimize the upgrade
@@ -134,8 +150,6 @@ try {
     Move-Item -LiteralPath (Join-Path $deploymentStage "backend\app") -Destination (Join-Path $backendTarget "app")
     Remove-InstallChild -InstallRoot $installRoot -ChildPath (Join-Path $frontendTarget "dist")
     Move-Item -LiteralPath (Join-Path $deploymentStage "frontend\dist") -Destination (Join-Path $frontendTarget "dist")
-    Remove-InstallChild -InstallRoot $installRoot -ChildPath (Join-Path $installRoot "knowledge")
-    Move-Item -LiteralPath (Join-Path $deploymentStage "knowledge") -Destination (Join-Path $installRoot "knowledge")
 }
 finally {
     Remove-InstallChild -InstallRoot $installRoot -ChildPath $deploymentStage
@@ -151,13 +165,20 @@ if (-not (Test-Path -LiteralPath $envTarget)) {
     $secret = New-SessionSecret
     $content = Get-Content -LiteralPath $envTarget -Raw
     $content = [regex]::Replace($content, '(?m)^SESSION_SECRET=.*$', "SESSION_SECRET=$secret")
-    $content = [regex]::Replace($content, '(?m)^THREE_DS_KB_PATH=.*$', 'THREE_DS_KB_PATH=../knowledge/3ds/2024x')
-    Set-Content -LiteralPath $envTarget -Value $content -Encoding utf8
     Write-Host "Created backend/.env with a new random SESSION_SECRET." -ForegroundColor Green
 }
 else {
+    $content = Get-Content -LiteralPath $envTarget -Raw
     Write-Host "Preserved the existing backend/.env configuration." -ForegroundColor DarkGray
 }
+$knowledgeSetting = "THREE_DS_KB_PATH=$($knowledgeRoot.Replace('\', '/'))"
+if ([regex]::IsMatch($content, '(?m)^THREE_DS_KB_PATH=.*$')) {
+    $content = [regex]::Replace($content, '(?m)^THREE_DS_KB_PATH=.*$', $knowledgeSetting)
+}
+else {
+    $content = $content.TrimEnd() + [Environment]::NewLine + $knowledgeSetting + [Environment]::NewLine
+}
+Set-Content -LiteralPath $envTarget -Value $content -Encoding utf8
 
 Write-Phase "Installing Python dependencies strictly from the offline wheelhouse"
 if ((Test-Path -LiteralPath $venvPython) -and (Test-PythonInterpreter -Executable $venvPython) -ne "$($manifest.python_major_minor)|$($manifest.architecture)") {
