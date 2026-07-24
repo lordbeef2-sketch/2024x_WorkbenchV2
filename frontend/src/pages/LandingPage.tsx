@@ -17,6 +17,7 @@ import {
   Typography,
 } from "@mui/material";
 import Grid from "@mui/material/GridLegacy";
+import AccountCircleRoundedIcon from "@mui/icons-material/AccountCircleRounded";
 import HttpsRoundedIcon from "@mui/icons-material/HttpsRounded";
 import LoginRoundedIcon from "@mui/icons-material/LoginRounded";
 import MonitorHeartRoundedIcon from "@mui/icons-material/MonitorHeartRounded";
@@ -25,7 +26,7 @@ import VpnKeyRoundedIcon from "@mui/icons-material/VpnKeyRounded";
 import VerifiedUserRoundedIcon from "@mui/icons-material/VerifiedUserRounded";
 
 import WorkbenchBrandMark from "../components/WorkbenchBrandMark";
-import { ServerHealth, TokenLoginRequest } from "../models/api";
+import { ServerHealth, TokenLoginRequest, WorkbenchLocalLoginRequest } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
@@ -52,9 +53,15 @@ export default function LandingPage() {
   const queryClient = useQueryClient();
   const { authOptions, error, session, setSessionSnapshot } = useSession();
   const [tokenDialogOpen, setTokenDialogOpen] = useState(false);
+  const [localDialogOpen, setLocalDialogOpen] = useState(false);
   const [tokenForm, setTokenForm] = useState<TokenLoginRequest>({
     server_id: "",
     token: "",
+  });
+  const [localForm, setLocalForm] = useState<WorkbenchLocalLoginRequest>({
+    server_id: "",
+    username: "",
+    password: "",
   });
   const [banner, setBanner] = useState<{ severity: "success" | "error"; message: string } | null>(null);
 
@@ -80,6 +87,16 @@ export default function LandingPage() {
     onError: (caught) => setBanner({ severity: "error", message: errorMessage(caught) }),
   });
 
+  const localMutation = useMutation({
+    mutationFn: (payload: WorkbenchLocalLoginRequest) =>
+      authOptions?.first_admin_setup_required ? api.setupFirstWorkbenchAdmin(payload) : api.localLogin(payload),
+    onSuccess: (snapshot) => {
+      setSessionSnapshot(snapshot);
+      navigate("/workspace", { replace: true });
+    },
+    onError: (caught) => setBanner({ severity: "error", message: errorMessage(caught) }),
+  });
+
   const healthById = new Map<string, ServerHealth>();
   healthQueries.forEach((query) => {
     if (query.data) {
@@ -92,6 +109,7 @@ export default function LandingPage() {
   const selectedTokenServer = servers.find((server) => server.id === tokenForm.server_id) ?? null;
   const authError = searchParams.get("authError");
   const redirectSignInEnabled = authOptions?.redirect_signin_enabled !== false;
+  const localSignInEnabled = authOptions?.local_signin_enabled !== false;
 
   const openTokenDialog = (serverId: string) => {
     setTokenForm({ server_id: serverId, token: "" });
@@ -101,6 +119,16 @@ export default function LandingPage() {
   const closeTokenDialog = () => {
     setTokenDialogOpen(false);
     setTokenForm((current) => ({ ...current, token: "" }));
+  };
+
+  const openLocalDialog = (serverId: string) => {
+    setLocalForm((current) => ({ ...current, server_id: serverId, password: "" }));
+    setLocalDialogOpen(true);
+  };
+
+  const closeLocalDialog = () => {
+    setLocalDialogOpen(false);
+    setLocalForm((current) => ({ ...current, password: "" }));
   };
 
   return (
@@ -201,14 +229,14 @@ export default function LandingPage() {
                       sx={{ color: "#f8fbff", borderColor: "rgba(255,255,255,0.22)", backgroundColor: "rgba(10, 34, 51, 0.14)" }}
                     />
                     <Chip
-                      label="User-scoped TWC auth"
+                      label="Configurable auth"
                       size="small"
                       variant="outlined"
                       sx={{ color: "#f8fbff", borderColor: "rgba(255,255,255,0.22)", backgroundColor: "rgba(10, 34, 51, 0.14)" }}
                     />
                   </Stack>
                   <Typography variant="body1" sx={{ color: "rgba(244, 249, 255, 0.92)", lineHeight: 1.5 }}>
-                    TWC remains the authentication and authorization authority. Sign in via TWC uses the selected server&apos;s 2024x Refresh3 OpenID Connect discovery and authorization-code flow, while token sign-in remains available as a fallback.
+                    Workbench can use local username/password accounts or delegated TWC sign-in. Project visibility still follows stored TWC Workbench permission snapshots for the selected server.
                   </Typography>
                   <Stack spacing={1.1}>
                     <Stack direction="row" spacing={1.25} alignItems="center">
@@ -242,6 +270,11 @@ export default function LandingPage() {
         {authOptions?.redirect_uri ? (
           <Alert severity="info">
             Register this exact OpenID Connect redirect URI in the TWC Web Application Platform OAuth client: <strong>{authOptions.redirect_uri}</strong>
+          </Alert>
+        ) : null}
+        {authOptions?.first_admin_setup_required ? (
+          <Alert severity="warning">
+            No local Workbench administrator exists yet. Use Workbench Sign-In on any enabled preset server to create the first admin account.
           </Alert>
         ) : null}
         {redirectSignInEnabled && pendingServer ? (
@@ -306,10 +339,20 @@ export default function LandingPage() {
                                 ) : null}
                               </Stack>
                               <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25} sx={{ mt: "auto" }}>
-                                {redirectSignInEnabled ? (
+                                {localSignInEnabled ? (
                                   <Button
                                     fullWidth
                                     variant="contained"
+                                    startIcon={<AccountCircleRoundedIcon />}
+                                    onClick={() => openLocalDialog(server.id)}
+                                  >
+                                    Workbench Sign-In
+                                  </Button>
+                                ) : null}
+                                {redirectSignInEnabled ? (
+                                  <Button
+                                    fullWidth
+                                    variant={localSignInEnabled ? "outlined" : "contained"}
                                     startIcon={<LoginRoundedIcon />}
                                     onClick={() => window.location.assign(api.signInUrl(server.id))}
                                   >
@@ -349,13 +392,16 @@ export default function LandingPage() {
                 <Typography variant="h5">Operational Guidance</Typography>
                 <Stack spacing={1.5} sx={{ mt: 2 }}>
                   <Typography variant="body2" color="text.secondary">
-                    This deployment exposes Teamwork Cloud presets before login so users can choose the configured 2024x server first. Sign in via TWC preserves that selected server until the callback finishes the app session.
+                    This deployment exposes Teamwork Cloud presets before login so users can choose the configured server first. Workbench local users bind to the selected server and see only projects already granted to that username in stored permission snapshots.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Register Workbench under Web Application Platform OAuth clients with this app&apos;s exact callback URI. The app discovers the OIDC endpoints, exchanges the returned code with the generated client ID and secret, then validates the ID token against Teamwork Cloud. SAML may remain upstream of AuthServer, but Workbench itself uses OIDC.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Use TWC Token remains available as a fallback. The backend validates that token against the selected Teamwork Cloud server before opening a workbench session.
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Workbench username/password sign-in is optional and managed in Settings. It does not create TWC API credentials; live TWC API actions still require TWC sign-in.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Preset server definitions are global and admin-managed. Users do not edit `.env` and do not create their own target servers on the landing page.
@@ -411,6 +457,50 @@ export default function LandingPage() {
             }}
           >
             Sign In with Token
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={localDialogOpen} onClose={closeLocalDialog} fullWidth maxWidth="sm">
+        <DialogTitle>{authOptions?.first_admin_setup_required ? "Create First Workbench Admin" : "Workbench Sign-In"}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <Alert severity={authOptions?.first_admin_setup_required ? "warning" : "info"}>
+              {authOptions?.first_admin_setup_required
+                ? "Create the first local Workbench administrator. Use a strong password; there is no default admin password."
+                : "Sign in with a local Workbench account. Project access is still filtered by stored permissions for this username on the selected server."}
+            </Alert>
+            {servers.find((server) => server.id === localForm.server_id) ? (
+              <Typography variant="body2">Server: {servers.find((server) => server.id === localForm.server_id)?.name}</Typography>
+            ) : null}
+            <TextField
+              label="Username"
+              value={localForm.username}
+              onChange={(event) => setLocalForm((current) => ({ ...current, username: event.target.value }))}
+              fullWidth
+            />
+            <TextField
+              label="Password"
+              type="password"
+              value={localForm.password}
+              helperText={authOptions?.first_admin_setup_required ? "Minimum 12 characters." : undefined}
+              onChange={(event) => setLocalForm((current) => ({ ...current, password: event.target.value }))}
+              fullWidth
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3 }}>
+          <Button onClick={closeLocalDialog}>Cancel</Button>
+          <Button
+            variant="contained"
+            startIcon={<AccountCircleRoundedIcon />}
+            disabled={!localForm.server_id || !localForm.username || !localForm.password || localMutation.isPending}
+            onClick={async () => {
+              await localMutation.mutateAsync(localForm);
+              closeLocalDialog();
+            }}
+          >
+            {authOptions?.first_admin_setup_required ? "Create Admin" : "Sign In"}
           </Button>
         </DialogActions>
       </Dialog>

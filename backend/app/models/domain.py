@@ -166,6 +166,7 @@ class UserContext(BaseModel):
     preferred_username: str
     server_id: str
     server_name: str
+    auth_source: Literal["twc", "workbench-local"] = "twc"
 
 
 class Capability(BaseModel):
@@ -245,6 +246,114 @@ class TokenBundle(BaseModel):
 class TokenLoginRequest(BaseModel):
     server_id: str
     token: str
+
+
+class WorkbenchLocalLoginRequest(BaseModel):
+    server_id: str
+    username: str
+    password: str
+
+    @field_validator("server_id", "username", "password", mode="before")
+    @classmethod
+    def normalize_login_fields(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchFirstAdminSetupRequest(WorkbenchLocalLoginRequest):
+    display_name: str = ""
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def normalize_display_name(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchAuthSettings(BaseModel):
+    local_users_enabled: bool = True
+    twc_redirect_enabled: bool = True
+    twc_token_enabled: bool = True
+
+
+class WorkbenchAuthSettingsUpdate(BaseModel):
+    local_users_enabled: bool | None = None
+    twc_redirect_enabled: bool | None = None
+    twc_token_enabled: bool | None = None
+
+
+class WorkbenchUserRole(str, Enum):
+    USER = "user"
+    ADMIN = "admin"
+
+
+class WorkbenchUserRecord(BaseModel):
+    username: str
+    password_hash: str
+    role: WorkbenchUserRole = WorkbenchUserRole.USER
+    enabled: bool = True
+    display_name: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    last_login_at: datetime | None = None
+
+
+class WorkbenchUserSummary(BaseModel):
+    username: str
+    role: WorkbenchUserRole
+    enabled: bool
+    display_name: str = ""
+    created_at: datetime
+    updated_at: datetime
+    last_login_at: datetime | None = None
+    accessible_project_count: int = 0
+    accessible_branch_count: int = 0
+
+
+class WorkbenchUserCreateRequest(BaseModel):
+    username: str
+    password: str
+    role: WorkbenchUserRole = WorkbenchUserRole.USER
+    enabled: bool = True
+    display_name: str = ""
+
+    @field_validator("username", "password", "display_name", mode="before")
+    @classmethod
+    def normalize_user_create_fields(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchUserUpdateRequest(BaseModel):
+    password: str | None = None
+    role: WorkbenchUserRole | None = None
+    enabled: bool | None = None
+    display_name: str | None = None
+
+    @field_validator("password", "display_name", mode="before")
+    @classmethod
+    def normalize_user_update_fields(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+
+class WorkbenchAuthAdminStatus(BaseModel):
+    settings: WorkbenchAuthSettings
+    local_user_count: int = 0
+    first_admin_setup_required: bool = False
+    can_manage_users: bool = False
 
 
 class SessionData(BaseModel):

@@ -34,10 +34,16 @@ import {
   TokenLoginRequest,
   TreeNode,
   OpenWebUIModelEntry,
+  WorkbenchAuthAdminStatus,
   WorkbenchAgentChatRequest,
   WorkbenchAgentChatResponse,
   WorkbenchAgentConfigRequest,
   WorkbenchAgentStatus,
+  WorkbenchFirstAdminSetupRequest,
+  WorkbenchLocalLoginRequest,
+  WorkbenchUserCreateRequest,
+  WorkbenchUserSummary,
+  WorkbenchUserUpdateRequest,
 } from "../models/api";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
@@ -121,6 +127,53 @@ export const api = {
       method: "POST",
       headers: jsonHeaders(),
       body: JSON.stringify(payload),
+    });
+  },
+  localLogin(payload: WorkbenchLocalLoginRequest) {
+    return request<SessionSnapshot>("/auth/local", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(payload),
+    });
+  },
+  setupFirstWorkbenchAdmin(payload: WorkbenchFirstAdminSetupRequest) {
+    return request<SessionSnapshot>("/auth/local/setup-first-admin", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(payload),
+    });
+  },
+  getAuthManagementStatus() {
+    return request<WorkbenchAuthAdminStatus>("/auth/management/status");
+  },
+  updateAuthManagementSettings(payload: Partial<WorkbenchAuthAdminStatus["settings"]>, csrfToken: string) {
+    return request<WorkbenchAuthAdminStatus>("/auth/management/settings", {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  listWorkbenchUsers() {
+    return request<WorkbenchUserSummary[]>("/auth/management/users");
+  },
+  createWorkbenchUser(payload: WorkbenchUserCreateRequest, csrfToken: string) {
+    return request<WorkbenchUserSummary>("/auth/management/users", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  updateWorkbenchUser(username: string, payload: WorkbenchUserUpdateRequest, csrfToken: string) {
+    return request<WorkbenchUserSummary>(`/auth/management/users/${encodeURIComponent(username)}`, {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteWorkbenchUser(username: string, csrfToken: string) {
+    return request<{ ok: boolean }>(`/auth/management/users/${encodeURIComponent(username)}`, {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
     });
   },
   listServers() {

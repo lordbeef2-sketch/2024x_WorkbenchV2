@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import asyncio
 import base64
 import unittest
@@ -10,7 +11,9 @@ import httpx
 
 from app.api.routes import auth, workspace
 from app.auth.twc import build_twc_oidc_authorization_url, exchange_twc_auth_code
-from app.models.domain import ServerProfile
+from app.core.storage import SqliteRepository
+from app.models.domain import ServerProfile, WorkbenchUserCreateRequest, WorkbenchUserRole, WorkbenchUserUpdateRequest
+from app.services.platform import PlatformService
 from app.settings.config import Settings
 
 
@@ -133,6 +136,26 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
         options = auth.get_auth_options(SimpleNamespace(settings=settings))
 
         self.assertEqual(options["redirect_uri"], "https://workbench.example/api/auth/callback")
+
+    def test_workbench_local_users_cannot_remove_last_enabled_admin(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="admin",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.ADMIN,
+                    enabled=True,
+                    display_name="Admin",
+                )
+            )
+
+            with self.assertRaisesRegex(ValueError, "At least one enabled Workbench admin"):
+                service.update_workbench_user("admin", WorkbenchUserUpdateRequest(role=WorkbenchUserRole.USER))
+
+            with self.assertRaisesRegex(ValueError, "At least one enabled Workbench admin"):
+                service.delete_workbench_user("admin")
 
     def test_unsupported_oslc_authentication_routes_are_not_exposed(self) -> None:
         paths = {

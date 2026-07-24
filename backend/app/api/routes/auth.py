@@ -12,9 +12,17 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
-from app.api.deps import get_container, require_csrf
+from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
 from app.auth.twc import build_twc_oidc_signin_url, exchange_twc_auth_code
-from app.models.domain import TokenLoginRequest
+from app.models.domain import (
+    TokenLoginRequest,
+    WorkbenchAuthSettings,
+    WorkbenchAuthSettingsUpdate,
+    WorkbenchFirstAdminSetupRequest,
+    WorkbenchLocalLoginRequest,
+    WorkbenchUserCreateRequest,
+    WorkbenchUserUpdateRequest,
+)
 from app.services.platform import ApplicationContainer
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -198,9 +206,15 @@ async def get_session_snapshot(
 
 @router.get("/options")
 def get_auth_options(container: ApplicationContainer = Depends(get_container)):
+    platform = getattr(container, "platform", None)
+    repo = getattr(container, "repo", None)
+    settings = platform.get_auth_settings() if platform is not None else WorkbenchAuthSettings()
+    user_count = len(repo.list_workbench_users()) if repo is not None else 1
     return {
-        "token_signin_enabled": True,
-        "redirect_signin_enabled": True,
+        "token_signin_enabled": settings.twc_token_enabled,
+        "redirect_signin_enabled": settings.twc_redirect_enabled,
+        "local_signin_enabled": settings.local_users_enabled,
+        "first_admin_setup_required": settings.local_users_enabled and user_count == 0,
         "redirect_signin_message": REDIRECT_SIGNIN_MESSAGE,
         "redirect_uri": container.settings.resolved_twc_auth_callback_url,
         "csrf_header_name": container.settings.csrf_header_name,
@@ -209,6 +223,8 @@ def get_auth_options(container: ApplicationContainer = Depends(get_container)):
 
 @router.get("/signin/{server_id}")
 async def signin(server_id: str, container: ApplicationContainer = Depends(get_container)):
+    if not container.platform.get_auth_settings().twc_redirect_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="TWC redirect sign-in is disabled.")
     server = container.platform.get_server(server_id, include_disabled=False)
     if not server:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
@@ -327,6 +343,8 @@ async def token_login(
     response: Response,
     container: ApplicationContainer = Depends(get_container),
 ):
+    if not container.platform.get_auth_settings().twc_token_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="TWC token sign-in is disabled.")
     logger.info("auth-mode-selected", auth_mode="token", server_id=payload.server_id)
     try:
         session = await container.platform.login_with_token(
@@ -344,6 +362,115 @@ async def token_login(
     set_session_cookie(response, container, session.session_id)
     clear_pending_server_cookie(response, container)
     return container.platform.get_session_snapshot(session.session_id)
+
+
+@router.post("/local")
+def local_login(
+    payload: WorkbenchLocalLoginRequest,
+    response: Response,
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        session = container.platform.login_with_workbench_password(payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found") from exc
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    set_session_cookie(response, container, session.session_id)
+    clear_pending_server_cookie(response, container)
+    clear_auth_state_cookie(response, container)
+    return container.platform.get_session_snapshot(session.session_id)
+
+
+@router.post("/local/setup-first-admin")
+def setup_first_admin(
+    payload: WorkbenchFirstAdminSetupRequest,
+    response: Response,
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        session = container.platform.setup_first_workbench_admin(payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found") from exc
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    set_session_cookie(response, container, session.session_id)
+    clear_pending_server_cookie(response, container)
+    clear_auth_state_cookie(response, container)
+    return container.platform.get_session_snapshot(session.session_id)
+
+
+@router.get("/management/status")
+def auth_management_status(
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.auth_admin_status(session)
+
+
+@router.put("/management/settings")
+def update_auth_management_settings(
+    payload: WorkbenchAuthSettingsUpdate,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        settings = container.platform.update_auth_settings(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return container.platform.auth_admin_status(session).model_copy(update={"settings": settings})
+
+
+@router.get("/management/users")
+def list_workbench_users(
+    session=Depends(require_admin),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.list_workbench_users(session)
+
+
+@router.post("/management/users")
+def create_workbench_user(
+    payload: WorkbenchUserCreateRequest,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.create_workbench_user(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.put("/management/users/{username}")
+def update_workbench_user(
+    username: str,
+    payload: WorkbenchUserUpdateRequest,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.update_workbench_user(username, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workbench user not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.delete("/management/users/{username}")
+def delete_workbench_user(
+    username: str,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    if username.strip().lower() == session.user.preferred_username.strip().lower():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="You cannot delete your own active Workbench user.")
+    try:
+        deleted = container.platform.delete_workbench_user(username)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workbench user not found")
+    return {"ok": True}
 
 
 @router.post("/logout")

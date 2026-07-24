@@ -51,6 +51,7 @@ export interface UserContext {
   preferred_username: string;
   server_id: string;
   server_name: string;
+  auth_source?: "twc" | "workbench-local";
 }
 
 export interface Capability {
@@ -524,9 +525,63 @@ export interface ExportRequest {
 export interface AuthOptions {
   token_signin_enabled: boolean;
   redirect_signin_enabled: boolean;
+  local_signin_enabled?: boolean;
+  first_admin_setup_required?: boolean;
   redirect_signin_message?: string | null;
   redirect_uri: string;
   csrf_header_name: string;
+}
+
+export interface WorkbenchLocalLoginRequest {
+  server_id: string;
+  username: string;
+  password: string;
+}
+
+export interface WorkbenchFirstAdminSetupRequest extends WorkbenchLocalLoginRequest {
+  display_name?: string | null;
+}
+
+export interface WorkbenchAuthSettings {
+  local_users_enabled: boolean;
+  twc_redirect_enabled: boolean;
+  twc_token_enabled: boolean;
+}
+
+export interface WorkbenchAuthAdminStatus {
+  settings: WorkbenchAuthSettings;
+  local_user_count: number;
+  first_admin_setup_required: boolean;
+  can_manage_users: boolean;
+}
+
+export type WorkbenchUserRole = "user" | "admin";
+
+export interface WorkbenchUserSummary {
+  username: string;
+  role: WorkbenchUserRole;
+  enabled: boolean;
+  display_name: string;
+  created_at: string;
+  updated_at: string;
+  last_login_at?: string | null;
+  accessible_project_count: number;
+  accessible_branch_count: number;
+}
+
+export interface WorkbenchUserCreateRequest {
+  username: string;
+  password: string;
+  role: WorkbenchUserRole;
+  enabled: boolean;
+  display_name: string;
+}
+
+export interface WorkbenchUserUpdateRequest {
+  password?: string | null;
+  role?: WorkbenchUserRole | null;
+  enabled?: boolean | null;
+  display_name?: string | null;
 }
 
 export interface CacheIngestTokenStatus {

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import csv
 import hashlib
+import hmac
 import json
 import secrets
 import threading
@@ -117,12 +118,22 @@ from app.models.domain import (
     TWCVersion,
     UserServerState,
     UserContext,
+    WorkbenchAuthAdminStatus,
+    WorkbenchAuthSettings,
+    WorkbenchAuthSettingsUpdate,
     WorkbenchAgentChatRequest,
     WorkbenchAgentChatResponse,
     WorkbenchAgentConfigRequest,
     WorkbenchAgentKnowledgeStatus,
     WorkbenchAgentSecret,
     WorkbenchAgentStatus,
+    WorkbenchFirstAdminSetupRequest,
+    WorkbenchLocalLoginRequest,
+    WorkbenchUserCreateRequest,
+    WorkbenchUserRecord,
+    WorkbenchUserRole,
+    WorkbenchUserSummary,
+    WorkbenchUserUpdateRequest,
     WebhookRegistrationStatus,
     CacheTreeResponse,
     StereotypeElementSearchResponse,
@@ -234,6 +245,194 @@ class PlatformService:
 
     def can_manage_server_presets(self, session: SessionData) -> bool:
         return session.authorization_context.can_manage_server_presets
+
+    def auth_admin_status(self, session: SessionData | None = None) -> WorkbenchAuthAdminStatus:
+        users = self.repo.list_workbench_users()
+        return WorkbenchAuthAdminStatus(
+            settings=self.repo.get_auth_settings(),
+            local_user_count=len(users),
+            first_admin_setup_required=len(users) == 0,
+            can_manage_users=bool(session and self.can_manage_server_presets(session)),
+        )
+
+    def get_auth_settings(self) -> WorkbenchAuthSettings:
+        return self.repo.get_auth_settings()
+
+    def update_auth_settings(self, payload: WorkbenchAuthSettingsUpdate) -> WorkbenchAuthSettings:
+        current = self.repo.get_auth_settings()
+        updated = current.model_copy(update=payload.model_dump(exclude_none=True))
+        if not updated.local_users_enabled and not (updated.twc_redirect_enabled or updated.twc_token_enabled):
+            raise ValueError("At least one authentication method must remain enabled.")
+        return self.repo.set_auth_settings(updated)
+
+    def _normalize_workbench_username(self, username: str) -> str:
+        value = username.strip().lower()
+        if not re.match(r"^[a-z0-9_.@-]{2,128}$", value):
+            raise ValueError("Workbench usernames must be 2-128 characters and may contain letters, numbers, dot, underscore, dash, or @.")
+        return value
+
+    def _hash_workbench_password(self, password: str) -> str:
+        if len(password) < 12:
+            raise ValueError("Workbench passwords must be at least 12 characters.")
+        salt = secrets.token_bytes(16)
+        rounds = 390_000
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+        return f"pbkdf2_sha256${rounds}${base64.b64encode(salt).decode('ascii')}${base64.b64encode(digest).decode('ascii')}"
+
+    def _verify_workbench_password(self, password: str, encoded_hash: str) -> bool:
+        try:
+            algorithm, rounds_raw, salt_raw, digest_raw = encoded_hash.split("$", 3)
+            if algorithm != "pbkdf2_sha256":
+                return False
+            salt = base64.b64decode(salt_raw.encode("ascii"))
+            expected = base64.b64decode(digest_raw.encode("ascii"))
+            digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(rounds_raw))
+            return hmac.compare_digest(digest, expected)
+        except Exception:
+            return False
+
+    def list_workbench_users(self, session: SessionData) -> list[WorkbenchUserSummary]:
+        server_id = session.server.id
+        summaries: list[WorkbenchUserSummary] = []
+        for user in self.repo.list_workbench_users():
+            branch_records = [
+                record
+                for record in self.repo.list_user_branch_access_records(user.username, server_id)
+                if record.accessible
+            ]
+            summaries.append(
+                WorkbenchUserSummary(
+                    username=user.username,
+                    role=user.role,
+                    enabled=user.enabled,
+                    display_name=user.display_name,
+                    created_at=user.created_at,
+                    updated_at=user.updated_at,
+                    last_login_at=user.last_login_at,
+                    accessible_project_count=len({record.project_id for record in branch_records}),
+                    accessible_branch_count=len(branch_records),
+                )
+            )
+        return summaries
+
+    def create_workbench_user(self, payload: WorkbenchUserCreateRequest) -> WorkbenchUserSummary:
+        username = self._normalize_workbench_username(payload.username)
+        if self.repo.get_workbench_user(username):
+            raise ValueError("Workbench user already exists.")
+        user = WorkbenchUserRecord(
+            username=username,
+            password_hash=self._hash_workbench_password(payload.password),
+            role=payload.role,
+            enabled=payload.enabled,
+            display_name=payload.display_name,
+        )
+        stored = self.repo.upsert_workbench_user(user)
+        return WorkbenchUserSummary(
+            username=stored.username,
+            role=stored.role,
+            enabled=stored.enabled,
+            display_name=stored.display_name,
+            created_at=stored.created_at,
+            updated_at=stored.updated_at,
+            last_login_at=stored.last_login_at,
+        )
+
+    def update_workbench_user(self, username: str, payload: WorkbenchUserUpdateRequest) -> WorkbenchUserSummary:
+        normalized = self._normalize_workbench_username(username)
+        user = self.repo.get_workbench_user(normalized)
+        if not user:
+            raise KeyError(normalized)
+        updates: dict[str, Any] = {}
+        if payload.password is not None:
+            updates["password_hash"] = self._hash_workbench_password(payload.password)
+        if payload.role is not None:
+            updates["role"] = payload.role
+        if payload.enabled is not None:
+            updates["enabled"] = payload.enabled
+        if payload.display_name is not None:
+            updates["display_name"] = payload.display_name
+        if user.enabled and user.role == WorkbenchUserRole.ADMIN and (
+            updates.get("enabled") is False or updates.get("role") == WorkbenchUserRole.USER
+        ):
+            other_enabled_admins = [
+                candidate
+                for candidate in self.repo.list_workbench_users()
+                if candidate.username != normalized and candidate.enabled and candidate.role == WorkbenchUserRole.ADMIN
+            ]
+            if not other_enabled_admins:
+                raise ValueError("At least one enabled Workbench admin must remain.")
+        stored = self.repo.upsert_workbench_user(user.model_copy(update=updates))
+        return WorkbenchUserSummary(
+            username=stored.username,
+            role=stored.role,
+            enabled=stored.enabled,
+            display_name=stored.display_name,
+            created_at=stored.created_at,
+            updated_at=stored.updated_at,
+            last_login_at=stored.last_login_at,
+        )
+
+    def delete_workbench_user(self, username: str) -> bool:
+        normalized = self._normalize_workbench_username(username)
+        user = self.repo.get_workbench_user(normalized)
+        if user and user.enabled and user.role == WorkbenchUserRole.ADMIN:
+            other_enabled_admins = [
+                candidate
+                for candidate in self.repo.list_workbench_users()
+                if candidate.username != normalized and candidate.enabled and candidate.role == WorkbenchUserRole.ADMIN
+            ]
+            if not other_enabled_admins:
+                raise ValueError("At least one enabled Workbench admin must remain.")
+        return self.repo.delete_workbench_user(normalized)
+
+    def setup_first_workbench_admin(self, payload: WorkbenchFirstAdminSetupRequest) -> SessionData:
+        if self.repo.list_workbench_users():
+            raise PermissionError("First admin setup is already complete.")
+        settings = self.repo.get_auth_settings()
+        if not settings.local_users_enabled:
+            raise PermissionError("Local Workbench users are disabled.")
+        self.create_workbench_user(
+            WorkbenchUserCreateRequest(
+                username=payload.username,
+                password=payload.password,
+                role=WorkbenchUserRole.ADMIN,
+                enabled=True,
+                display_name=payload.display_name or payload.username,
+            )
+        )
+        return self.login_with_workbench_password(payload)
+
+    def login_with_workbench_password(self, payload: WorkbenchLocalLoginRequest) -> SessionData:
+        settings = self.repo.get_auth_settings()
+        if not settings.local_users_enabled:
+            raise PermissionError("Workbench username/password sign-in is disabled.")
+        server = self._require_server(payload.server_id, include_disabled=False)
+        username = self._normalize_workbench_username(payload.username)
+        user_record = self.repo.get_workbench_user(username)
+        if not user_record or not user_record.enabled or not self._verify_workbench_password(payload.password, user_record.password_hash):
+            raise PermissionError("Invalid Workbench username or password.")
+        user = UserContext(
+            preferred_username=username,
+            server_id=server.id,
+            server_name=server.name,
+            auth_source="workbench-local",
+        )
+        authorization_context = AuthorizationContext(
+            roles=[user_record.role.value],
+            source="workbench-local",
+            can_manage_server_presets=user_record.role == WorkbenchUserRole.ADMIN,
+        )
+        session = self.sessions.create_session(
+            server,
+            user,
+            authorization_context,
+            TokenBundle(token_type="WorkbenchLocal", upstream_user=username),
+            self._snapshot_capabilities(server),
+        )
+        self.repo.upsert_workbench_user(user_record.model_copy(update={"last_login_at": utcnow()}))
+        self._update_user_server_state(user.preferred_username, server.id, session.created_at)
+        logger.info("workbench-local-login-complete", user=username, server_id=server.id)
+        return session
 
     async def health_check(self, server_id: str, *, include_disabled: bool = False) -> ServerHealth:
         server = self._require_server(server_id, include_disabled=include_disabled)
@@ -809,7 +1008,8 @@ class PlatformService:
         # access before applying the cached visibility filter. Without this
         # bootstrap, only the snapshot publisher or users already present in a
         # stored access manifest can ever discover newly shared projects.
-        await self._ensure_plugin_listing_permissions(session, force=refresh)
+        if session.user.auth_source != "workbench-local":
+            await self._ensure_plugin_listing_permissions(session, force=refresh)
         projects = self._project_summaries_from_cache_for_user(session)
         self.repo.delete_user_cache(
             self._user_key(session.user.preferred_username),
@@ -5701,6 +5901,10 @@ class PlatformService:
         return None
 
     def _adapter_for_session(self, session: SessionData) -> TeamworkAdapter:
+        if session.user.auth_source == "workbench-local":
+            raise RuntimeError(
+                "This Workbench username/password session has no delegated TWC credentials. Use cached/plugin-backed project data or sign in with TWC for live TWC API actions."
+            )
         return self._adapter_for_credentials(session.server, self.sessions.get_credentials(session))
 
     def _adapter_for_credentials(self, server: ServerProfile, tokens) -> TeamworkAdapter:

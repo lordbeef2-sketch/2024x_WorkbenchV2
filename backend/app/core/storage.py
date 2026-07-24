@@ -28,6 +28,8 @@ from app.models.domain import (
     ServerPermissionInventoryAuditRecord,
     ServerProfile,
     UserServerState,
+    WorkbenchAuthSettings,
+    WorkbenchUserRecord,
     utcnow,
 )
 
@@ -172,6 +174,30 @@ class SqliteRepository:
                     scope TEXT PRIMARY KEY,
                     payload TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    scope TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workbench_users (
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    display_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_login_at TEXT,
+                    payload TEXT NOT NULL
                 )
                 """
             )
@@ -2313,6 +2339,77 @@ class SqliteRepository:
 
     def _cache_ingest_scope(self) -> str:
         return "cache-ingest-shared"
+
+    def get_auth_settings(self) -> WorkbenchAuthSettings:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM app_settings WHERE scope = ?",
+                ("auth",),
+            ).fetchone()
+        if not row:
+            return WorkbenchAuthSettings()
+        return WorkbenchAuthSettings.model_validate_json(row["payload"])
+
+    def set_auth_settings(self, settings: WorkbenchAuthSettings) -> WorkbenchAuthSettings:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO app_settings (scope, payload, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                ("auth", settings.model_dump_json(), utcnow().isoformat()),
+            )
+            connection.commit()
+        return settings
+
+    def list_workbench_users(self) -> list[WorkbenchUserRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM workbench_users ORDER BY LOWER(username)"
+            ).fetchall()
+        return [WorkbenchUserRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def get_workbench_user(self, username: str) -> WorkbenchUserRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM workbench_users WHERE username = ?",
+                (username.strip().lower(),),
+            ).fetchone()
+        return WorkbenchUserRecord.model_validate_json(row["payload"]) if row else None
+
+    def upsert_workbench_user(self, user: WorkbenchUserRecord) -> WorkbenchUserRecord:
+        stored = user.model_copy(update={"username": user.username.strip().lower(), "updated_at": utcnow()})
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO workbench_users (
+                    username, password_hash, role, enabled, display_name,
+                    created_at, updated_at, last_login_at, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored.username,
+                    stored.password_hash,
+                    stored.role.value,
+                    int(stored.enabled),
+                    stored.display_name,
+                    stored.created_at.isoformat(),
+                    stored.updated_at.isoformat(),
+                    stored.last_login_at.isoformat() if stored.last_login_at else None,
+                    stored.model_dump_json(),
+                ),
+            )
+            connection.commit()
+        return stored
+
+    def delete_workbench_user(self, username: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM workbench_users WHERE username = ?",
+                (username.strip().lower(),),
+            )
+            connection.commit()
+        return cursor.rowcount > 0
 
     def list_jobs(self, owner: str | None = None) -> list[JobRecord]:
         query = "SELECT payload FROM jobs"

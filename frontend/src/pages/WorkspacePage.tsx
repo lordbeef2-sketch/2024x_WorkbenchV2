@@ -70,6 +70,9 @@ import {
   TreeNode,
   WorkbenchAgentChatMessage,
   WorkbenchAgentKnowledgeStatus,
+  WorkbenchAuthSettings,
+  WorkbenchUserCreateRequest,
+  WorkbenchUserUpdateRequest,
 } from "../models/api";
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
@@ -1752,6 +1755,19 @@ export default function WorkspacePage() {
   const [newCacheApiKeyLabel, setNewCacheApiKeyLabel] = useState("");
   const [revealedCacheApiKey, setRevealedCacheApiKey] = useState("");
   const [newCacheApiKeyScopes, setNewCacheApiKeyScopes] = useState<CacheApiKeyScope[]>(["read"]);
+  const [authSettingsDraft, setAuthSettingsDraft] = useState<WorkbenchAuthSettings>({
+    local_users_enabled: true,
+    twc_redirect_enabled: true,
+    twc_token_enabled: true,
+  });
+  const [newWorkbenchUser, setNewWorkbenchUser] = useState<WorkbenchUserCreateRequest>({
+    username: "",
+    password: "",
+    role: "user",
+    enabled: true,
+    display_name: "",
+  });
+  const [workbenchPasswordResets, setWorkbenchPasswordResets] = useState<Record<string, string>>({});
   const [agentBaseUrlDraft, setAgentBaseUrlDraft] = useState("");
   const [agentApiKeyDraft, setAgentApiKeyDraft] = useState("");
   const [agentSelectedModelId, setAgentSelectedModelId] = useState("");
@@ -1798,6 +1814,22 @@ export default function WorkspacePage() {
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
   });
+  const authManagementStatusQuery = useQuery({
+    queryKey: ["auth-management-status", ...sessionCacheKey],
+    queryFn: api.getAuthManagementStatus,
+    enabled: isAdmin,
+    staleTime: 10_000,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const workbenchUsersQuery = useQuery({
+    queryKey: ["workbench-users", ...sessionCacheKey],
+    queryFn: api.listWorkbenchUsers,
+    enabled: isAdmin,
+    staleTime: 10_000,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
   const permissionInventoryStatusQuery = useQuery({
     queryKey: ["workspace-permission-inventory-status", ...sessionCacheKey],
     queryFn: api.getPermissionInventoryStatus,
@@ -1822,6 +1854,12 @@ export default function WorkspacePage() {
     staleTime: 30_000,
     gcTime: cacheTimeMs,
   });
+
+  useEffect(() => {
+    if (authManagementStatusQuery.data?.settings) {
+      setAuthSettingsDraft(authManagementStatusQuery.data.settings);
+    }
+  }, [authManagementStatusQuery.data?.settings]);
   const cacheApiKeysQuery = useQuery({
     queryKey: ["workspace-cache-api-keys", ...sessionCacheKey],
     queryFn: api.listCacheApiKeys,
@@ -2933,6 +2971,56 @@ export default function WorkspacePage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["workspace-permission-inventory-status", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "The TWC permission inventory refresh was queued in the background." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const updateAuthSettingsMutation = useMutation({
+    mutationFn: (payload: Partial<WorkbenchAuthSettings>) => api.updateAuthManagementSettings(payload, csrfToken),
+    onSuccess: async (status) => {
+      setAuthSettingsDraft(status.settings);
+      queryClient.setQueryData(["auth-management-status", ...sessionCacheKey], status);
+      setNotice({ severity: "success", message: "Workbench authentication settings were saved." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const createWorkbenchUserMutation = useMutation({
+    mutationFn: (payload: WorkbenchUserCreateRequest) => api.createWorkbenchUser(payload, csrfToken),
+    onSuccess: async () => {
+      setNewWorkbenchUser({ username: "", password: "", role: "user", enabled: true, display_name: "" });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["workbench-users", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["auth-management-status", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: "Workbench user created." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const updateWorkbenchUserMutation = useMutation({
+    mutationFn: ({ username, payload }: { username: string; payload: WorkbenchUserUpdateRequest }) =>
+      api.updateWorkbenchUser(username, payload, csrfToken),
+    onSuccess: async (user) => {
+      setWorkbenchPasswordResets((current) => {
+        const next = { ...current };
+        delete next[user.username];
+        return next;
+      });
+      await queryClient.invalidateQueries({ queryKey: ["workbench-users", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: `Workbench user ${user.username} updated.` });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const deleteWorkbenchUserMutation = useMutation({
+    mutationFn: (username: string) => api.deleteWorkbenchUser(username, csrfToken),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["workbench-users", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["auth-management-status", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: "Workbench user deleted." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -5019,6 +5107,266 @@ export default function WorkspacePage() {
     </Paper>
   );
 
+  const renderWorkbenchUserManagement = () => {
+    const status = authManagementStatusQuery.data;
+    const users = workbenchUsersQuery.data ?? [];
+    const settingsBusy = updateAuthSettingsMutation.isPending || authManagementStatusQuery.isFetching;
+    const userBusy = createWorkbenchUserMutation.isPending || updateWorkbenchUserMutation.isPending || deleteWorkbenchUserMutation.isPending;
+    const localAuthOnlyDisabled =
+      !authSettingsDraft.local_users_enabled && !authSettingsDraft.twc_redirect_enabled && !authSettingsDraft.twc_token_enabled;
+
+    return (
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+            <Box>
+              <Typography variant="h5">Workbench User Management</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Configure Workbench username/password access, keep TWC sign-in optional, and manage local app users from this settings window.
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip label={`${status?.local_user_count ?? users.length} local users`} variant="outlined" />
+              <Chip
+                label={status?.first_admin_setup_required ? "First admin required" : "Admin path ready"}
+                color={status?.first_admin_setup_required ? "warning" : "success"}
+                variant="outlined"
+              />
+            </Stack>
+          </Stack>
+
+          <Alert severity="info">
+            Local Workbench users do not receive live TWC credentials. Their visible projects and branches come from the stored/plugin permission snapshots for the same username and selected server. Live TWC API actions still require TWC sign-in.
+          </Alert>
+          {authManagementStatusQuery.error ? <Alert severity="error">{errorMessage(authManagementStatusQuery.error)}</Alert> : null}
+          {workbenchUsersQuery.error ? <Alert severity="error">{errorMessage(workbenchUsersQuery.error)}</Alert> : null}
+
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Stack spacing={1.5}>
+              <Typography variant="subtitle1">Authentication modes</Typography>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} useFlexGap flexWrap="wrap">
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={authSettingsDraft.local_users_enabled}
+                      onChange={(event) => setAuthSettingsDraft((current) => ({ ...current, local_users_enabled: event.target.checked }))}
+                    />
+                  }
+                  label="Workbench username/password"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={authSettingsDraft.twc_redirect_enabled}
+                      onChange={(event) => setAuthSettingsDraft((current) => ({ ...current, twc_redirect_enabled: event.target.checked }))}
+                    />
+                  }
+                  label="TWC browser sign-in"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={authSettingsDraft.twc_token_enabled}
+                      onChange={(event) => setAuthSettingsDraft((current) => ({ ...current, twc_token_enabled: event.target.checked }))}
+                    />
+                  }
+                  label="TWC token sign-in"
+                />
+              </Stack>
+              {localAuthOnlyDisabled ? <Alert severity="warning">At least one sign-in method must stay enabled.</Alert> : null}
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+                <Button
+                  variant="contained"
+                  disabled={!csrfToken || localAuthOnlyDisabled || settingsBusy}
+                  onClick={() => updateAuthSettingsMutation.mutate(authSettingsDraft)}
+                >
+                  Save Authentication Settings
+                </Button>
+                <Button
+                  variant="outlined"
+                  startIcon={<RefreshRoundedIcon />}
+                  onClick={() => {
+                    void authManagementStatusQuery.refetch();
+                    void workbenchUsersQuery.refetch();
+                  }}
+                >
+                  Refresh Users
+                </Button>
+                {settingsBusy ? <CircularProgress size={22} /> : null}
+              </Stack>
+            </Stack>
+          </Paper>
+
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Stack spacing={1.5}>
+              <Typography variant="subtitle1">Create local Workbench user</Typography>
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    label="Username"
+                    value={newWorkbenchUser.username}
+                    onChange={(event) => setNewWorkbenchUser((current) => ({ ...current, username: event.target.value }))}
+                    helperText="Match the TWC username for project permissions."
+                    fullWidth
+                  />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    label="Display name"
+                    value={newWorkbenchUser.display_name}
+                    onChange={(event) => setNewWorkbenchUser((current) => ({ ...current, display_name: event.target.value }))}
+                    fullWidth
+                  />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    label="Temporary password"
+                    type="password"
+                    value={newWorkbenchUser.password}
+                    onChange={(event) => setNewWorkbenchUser((current) => ({ ...current, password: event.target.value }))}
+                    helperText="Minimum 12 characters."
+                    fullWidth
+                  />
+                </Grid>
+                <Grid item xs={12} md={2}>
+                  <TextField
+                    select
+                    label="Role"
+                    value={newWorkbenchUser.role}
+                    onChange={(event) => setNewWorkbenchUser((current) => ({ ...current, role: event.target.value as WorkbenchUserCreateRequest["role"] }))}
+                    fullWidth
+                  >
+                    <MenuItem value="user">User</MenuItem>
+                    <MenuItem value="admin">Admin</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} md={1}>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={newWorkbenchUser.enabled}
+                        onChange={(event) => setNewWorkbenchUser((current) => ({ ...current, enabled: event.target.checked }))}
+                      />
+                    }
+                    label="Enabled"
+                  />
+                </Grid>
+              </Grid>
+              <Button
+                variant="contained"
+                startIcon={<AccountCircleRoundedIcon />}
+                disabled={
+                  !csrfToken ||
+                  !newWorkbenchUser.username.trim() ||
+                  newWorkbenchUser.password.length < 12 ||
+                  createWorkbenchUserMutation.isPending
+                }
+                onClick={() => createWorkbenchUserMutation.mutate(newWorkbenchUser)}
+              >
+                Create Workbench User
+              </Button>
+            </Stack>
+          </Paper>
+
+          {workbenchUsersQuery.isLoading ? <CircularProgress size={28} /> : null}
+          <Stack spacing={1.5}>
+            {users.length ? (
+              users.map((user) => {
+                const resetPassword = workbenchPasswordResets[user.username] ?? "";
+                const isCurrentUser = user.username.toLowerCase() === (session?.user?.preferred_username ?? "").toLowerCase();
+                return (
+                  <Paper key={user.username} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                    <Stack spacing={1.5}>
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+                        <Box>
+                          <Typography variant="subtitle1">{user.display_name || user.username}</Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {user.username} · created {new Date(user.created_at).toLocaleString()}
+                            {user.last_login_at ? ` · last login ${new Date(user.last_login_at).toLocaleString()}` : " · never logged in"}
+                          </Typography>
+                        </Box>
+                        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                          <Chip label={user.role} color={user.role === "admin" ? "secondary" : "default"} />
+                          <Chip label={user.enabled ? "enabled" : "disabled"} color={user.enabled ? "success" : "warning"} variant="outlined" />
+                          <Chip label={`${user.accessible_project_count} projects`} variant="outlined" />
+                          <Chip label={`${user.accessible_branch_count} branches`} variant="outlined" />
+                        </Stack>
+                      </Stack>
+                      <Grid container spacing={1.5} alignItems="center">
+                        <Grid item xs={12} md={4}>
+                          <TextField
+                            label="Reset password"
+                            type="password"
+                            value={resetPassword}
+                            onChange={(event) =>
+                              setWorkbenchPasswordResets((current) => ({ ...current, [user.username]: event.target.value }))
+                            }
+                            helperText="Leave blank unless rotating this user's password."
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid item xs={12} md={8}>
+                          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} useFlexGap flexWrap="wrap">
+                            <Button
+                              variant="outlined"
+                              disabled={!csrfToken || userBusy}
+                              onClick={() =>
+                                updateWorkbenchUserMutation.mutate({
+                                  username: user.username,
+                                  payload: { enabled: !user.enabled },
+                                })
+                              }
+                            >
+                              {user.enabled ? "Disable" : "Enable"}
+                            </Button>
+                            <Button
+                              variant="outlined"
+                              disabled={!csrfToken || userBusy}
+                              onClick={() =>
+                                updateWorkbenchUserMutation.mutate({
+                                  username: user.username,
+                                  payload: { role: user.role === "admin" ? "user" : "admin" },
+                                })
+                              }
+                            >
+                              Make {user.role === "admin" ? "User" : "Admin"}
+                            </Button>
+                            <Button
+                              variant="outlined"
+                              disabled={!csrfToken || resetPassword.length < 12 || userBusy}
+                              onClick={() =>
+                                updateWorkbenchUserMutation.mutate({
+                                  username: user.username,
+                                  payload: { password: resetPassword },
+                                })
+                              }
+                            >
+                              Reset Password
+                            </Button>
+                            <Button
+                              variant="text"
+                              color="warning"
+                              disabled={!csrfToken || isCurrentUser || userBusy}
+                              onClick={() => deleteWorkbenchUserMutation.mutate(user.username)}
+                            >
+                              Delete
+                            </Button>
+                          </Stack>
+                        </Grid>
+                      </Grid>
+                    </Stack>
+                  </Paper>
+                );
+              })
+            ) : (
+              <Typography color="text.secondary">No local Workbench users exist yet.</Typography>
+            )}
+          </Stack>
+        </Stack>
+      </Paper>
+    );
+  };
+
   const renderCacheIngestToken = () => {
     const sourceLabel =
       cacheIngestTokenStatus?.source === "shared"
@@ -5267,6 +5615,7 @@ export default function WorkspacePage() {
 
   const renderAdminSettings = () => (
     <Stack spacing={2}>
+      {renderWorkbenchUserManagement()}
       {renderPermissionInventoryStatus()}
       {renderTombstoneAudit()}
       {renderCacheIngestToken()}
