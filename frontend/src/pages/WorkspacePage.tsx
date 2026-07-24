@@ -1756,9 +1756,10 @@ export default function WorkspacePage() {
   const [revealedCacheApiKey, setRevealedCacheApiKey] = useState("");
   const [newCacheApiKeyScopes, setNewCacheApiKeyScopes] = useState<CacheApiKeyScope[]>(["read"]);
   const [authSettingsDraft, setAuthSettingsDraft] = useState<WorkbenchAuthSettings>({
+    user_management_mode: "local",
     local_users_enabled: true,
-    twc_redirect_enabled: true,
-    twc_token_enabled: true,
+    twc_redirect_enabled: false,
+    twc_token_enabled: false,
   });
   const [newWorkbenchUser, setNewWorkbenchUser] = useState<WorkbenchUserCreateRequest>({
     username: "",
@@ -5110,10 +5111,11 @@ export default function WorkspacePage() {
   const renderWorkbenchUserManagement = () => {
     const status = authManagementStatusQuery.data;
     const users = workbenchUsersQuery.data ?? [];
+    const userManagementMode = authSettingsDraft.user_management_mode;
     const settingsBusy = updateAuthSettingsMutation.isPending || authManagementStatusQuery.isFetching;
     const userBusy = createWorkbenchUserMutation.isPending || updateWorkbenchUserMutation.isPending || deleteWorkbenchUserMutation.isPending;
     const localAuthOnlyDisabled =
-      !authSettingsDraft.local_users_enabled && !authSettingsDraft.twc_redirect_enabled && !authSettingsDraft.twc_token_enabled;
+      userManagementMode === "twc" && !authSettingsDraft.twc_redirect_enabled && !authSettingsDraft.twc_token_enabled;
 
     return (
       <Paper sx={{ p: 3, borderRadius: 2 }}>
@@ -5128,7 +5130,12 @@ export default function WorkspacePage() {
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
               <Chip label={`${status?.local_user_count ?? users.length} local users`} variant="outlined" />
               <Chip
-                label={status?.first_admin_setup_required ? "First admin required" : "Admin path ready"}
+                label={userManagementMode === "local" ? "ENV mode: local users" : "ENV mode: TWC users"}
+                color={userManagementMode === "local" ? "secondary" : "primary"}
+                variant="outlined"
+              />
+              <Chip
+                label={status?.first_admin_setup_required ? "First admin required" : "Auth path ready"}
                 color={status?.first_admin_setup_required ? "warning" : "success"}
                 variant="outlined"
               />
@@ -5136,8 +5143,17 @@ export default function WorkspacePage() {
           </Stack>
 
           <Alert severity="info">
-            Local Workbench users do not receive live TWC credentials. Their visible projects and branches come from the stored/plugin permission snapshots for the same username and selected server. Live TWC API actions still require TWC sign-in.
+            User-management mode is controlled by <code>WORKBENCH_USER_MANAGEMENT_MODE</code>. Use <code>local</code> for Workbench-managed username/password users, or <code>twc</code> for TWC-managed users. Workbench will not enable both modes at the same time.
           </Alert>
+          {userManagementMode === "local" ? (
+            <Alert severity="warning">
+              Local Workbench users do not receive live TWC credentials. Their visible projects and branches come from stored/plugin permission snapshots for the same username and selected server. Live TWC API actions remain unavailable in local mode.
+            </Alert>
+          ) : (
+            <Alert severity="info">
+              TWC user-management mode disables local username/password sign-in. Users must authenticate through TWC, and Workbench refreshes project access from the TWC-backed permission workflow.
+            </Alert>
+          )}
           {authManagementStatusQuery.error ? <Alert severity="error">{errorMessage(authManagementStatusQuery.error)}</Alert> : null}
           {workbenchUsersQuery.error ? <Alert severity="error">{errorMessage(workbenchUsersQuery.error)}</Alert> : null}
 
@@ -5149,15 +5165,17 @@ export default function WorkspacePage() {
                   control={
                     <Checkbox
                       checked={authSettingsDraft.local_users_enabled}
+                      disabled={userManagementMode === "twc"}
                       onChange={(event) => setAuthSettingsDraft((current) => ({ ...current, local_users_enabled: event.target.checked }))}
                     />
                   }
-                  label="Workbench username/password"
+                  label="Workbench username/password users"
                 />
                 <FormControlLabel
                   control={
                     <Checkbox
                       checked={authSettingsDraft.twc_redirect_enabled}
+                      disabled={userManagementMode === "local"}
                       onChange={(event) => setAuthSettingsDraft((current) => ({ ...current, twc_redirect_enabled: event.target.checked }))}
                     />
                   }
@@ -5167,13 +5185,14 @@ export default function WorkspacePage() {
                   control={
                     <Checkbox
                       checked={authSettingsDraft.twc_token_enabled}
+                      disabled={userManagementMode === "local"}
                       onChange={(event) => setAuthSettingsDraft((current) => ({ ...current, twc_token_enabled: event.target.checked }))}
                     />
                   }
                   label="TWC token sign-in"
                 />
               </Stack>
-              {localAuthOnlyDisabled ? <Alert severity="warning">At least one sign-in method must stay enabled.</Alert> : null}
+              {localAuthOnlyDisabled ? <Alert severity="warning">At least one TWC sign-in method must stay enabled in TWC user-management mode.</Alert> : null}
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
                 <Button
                   variant="contained"

@@ -12,7 +12,13 @@ import httpx
 from app.api.routes import auth, workspace
 from app.auth.twc import build_twc_oidc_authorization_url, exchange_twc_auth_code
 from app.core.storage import SqliteRepository
-from app.models.domain import ServerProfile, WorkbenchUserCreateRequest, WorkbenchUserRole, WorkbenchUserUpdateRequest
+from app.models.domain import (
+    ServerProfile,
+    WorkbenchAuthSettingsUpdate,
+    WorkbenchUserCreateRequest,
+    WorkbenchUserRole,
+    WorkbenchUserUpdateRequest,
+)
 from app.services.platform import PlatformService
 from app.settings.config import Settings
 
@@ -156,6 +162,37 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "At least one enabled Workbench admin"):
                 service.delete_workbench_user("admin")
+
+    def test_workbench_user_management_mode_local_disables_twc_auth_paths(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.settings = Settings(workbench_user_management_mode="local")
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+
+            settings = service.get_auth_settings()
+
+            self.assertEqual(settings.user_management_mode, "local")
+            self.assertTrue(settings.local_users_enabled)
+            self.assertFalse(settings.twc_redirect_enabled)
+            self.assertFalse(settings.twc_token_enabled)
+
+    def test_workbench_user_management_mode_twc_disables_local_auth_path(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.settings = Settings(workbench_user_management_mode="twc")
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+
+            settings = service.get_auth_settings()
+
+            self.assertEqual(settings.user_management_mode, "twc")
+            self.assertFalse(settings.local_users_enabled)
+            self.assertTrue(settings.twc_redirect_enabled)
+            self.assertTrue(settings.twc_token_enabled)
+
+            with self.assertRaisesRegex(ValueError, "At least one TWC sign-in method"):
+                service.update_auth_settings(
+                    WorkbenchAuthSettingsUpdate(twc_redirect_enabled=False, twc_token_enabled=False)
+                )
 
     def test_unsupported_oslc_authentication_routes_are_not_exposed(self) -> None:
         paths = {

@@ -249,20 +249,41 @@ class PlatformService:
     def auth_admin_status(self, session: SessionData | None = None) -> WorkbenchAuthAdminStatus:
         users = self.repo.list_workbench_users()
         return WorkbenchAuthAdminStatus(
-            settings=self.repo.get_auth_settings(),
+            settings=self.get_auth_settings(),
             local_user_count=len(users),
-            first_admin_setup_required=len(users) == 0,
+            first_admin_setup_required=self.settings.workbench_user_management_mode == "local" and len(users) == 0,
             can_manage_users=bool(session and self.can_manage_server_presets(session)),
         )
 
     def get_auth_settings(self) -> WorkbenchAuthSettings:
-        return self.repo.get_auth_settings()
+        stored = self.repo.get_auth_settings()
+        if self.settings.workbench_user_management_mode == "local":
+            return stored.model_copy(
+                update={
+                    "user_management_mode": "local",
+                    "local_users_enabled": True,
+                    "twc_redirect_enabled": False,
+                    "twc_token_enabled": False,
+                }
+            )
+        return stored.model_copy(update={"user_management_mode": "twc", "local_users_enabled": False})
 
     def update_auth_settings(self, payload: WorkbenchAuthSettingsUpdate) -> WorkbenchAuthSettings:
-        current = self.repo.get_auth_settings()
+        current = self.get_auth_settings()
         updated = current.model_copy(update=payload.model_dump(exclude_none=True))
-        if not updated.local_users_enabled and not (updated.twc_redirect_enabled or updated.twc_token_enabled):
-            raise ValueError("At least one authentication method must remain enabled.")
+        if self.settings.workbench_user_management_mode == "local":
+            updated = updated.model_copy(
+                update={
+                    "user_management_mode": "local",
+                    "local_users_enabled": True,
+                    "twc_redirect_enabled": False,
+                    "twc_token_enabled": False,
+                }
+            )
+        else:
+            updated = updated.model_copy(update={"user_management_mode": "twc", "local_users_enabled": False})
+            if not (updated.twc_redirect_enabled or updated.twc_token_enabled):
+                raise ValueError("At least one TWC sign-in method must remain enabled in TWC user management mode.")
         return self.repo.set_auth_settings(updated)
 
     def _normalize_workbench_username(self, username: str) -> str:

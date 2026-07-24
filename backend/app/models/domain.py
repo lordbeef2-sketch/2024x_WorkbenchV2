@@ -277,6 +277,7 @@ class WorkbenchFirstAdminSetupRequest(WorkbenchLocalLoginRequest):
 
 
 class WorkbenchAuthSettings(BaseModel):
+    user_management_mode: Literal["local", "twc"] = "local"
     local_users_enabled: bool = True
     twc_redirect_enabled: bool = True
     twc_token_enabled: bool = True

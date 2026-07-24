@@ -78,6 +78,7 @@ Important settings:
 - `FRONTEND_ORIGIN`: allowed browser origin for local development or deployment.
 - `APP_ORIGIN`: optional public origin of this app when it is served behind a reverse proxy. Defaults to `FRONTEND_ORIGIN` when left empty. Set this in deployed environments if you want the app to auto-register Teamwork Cloud 2024x branch webhooks for cache refresh.
 - `SESSION_SECRET`: replace with a long random secret in every non-local environment. It encrypts stored per-user delegated credentials inside the app session.
+- `WORKBENCH_USER_MANAGEMENT_MODE`: choose exactly one user-management authority. Use `local` for Workbench-managed username/password users, or `twc` for TWC-managed users. Workbench enforces the mode at runtime so both are not active at the same time.
 - `TWC_PRESET_SERVERS`: JSON array of preset Teamwork Cloud servers loaded at startup for pre-login discovery.
 - `SECURE_COOKIES=true`: required when running behind HTTPS.
 - `UPSTREAM_AUTH_COOKIE_NAMES`: optional JSON array of TWC cookie names to forward. Leave empty to forward all incoming cookies except the app's own session cookie.

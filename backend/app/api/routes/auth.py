@@ -211,6 +211,7 @@ def get_auth_options(container: ApplicationContainer = Depends(get_container)):
     settings = platform.get_auth_settings() if platform is not None else WorkbenchAuthSettings()
     user_count = len(repo.list_workbench_users()) if repo is not None else 1
     return {
+        "user_management_mode": settings.user_management_mode,
         "token_signin_enabled": settings.twc_token_enabled,
         "redirect_signin_enabled": settings.twc_redirect_enabled,
         "local_signin_enabled": settings.local_users_enabled,
@@ -223,7 +224,7 @@ def get_auth_options(container: ApplicationContainer = Depends(get_container)):
 
 @router.get("/signin/{server_id}")
 async def signin(server_id: str, container: ApplicationContainer = Depends(get_container)):
-    if not container.platform.get_auth_settings().twc_redirect_enabled:
+    if container.settings.workbench_user_management_mode != "twc" or not container.platform.get_auth_settings().twc_redirect_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="TWC redirect sign-in is disabled.")
     server = container.platform.get_server(server_id, include_disabled=False)
     if not server:
@@ -343,7 +344,7 @@ async def token_login(
     response: Response,
     container: ApplicationContainer = Depends(get_container),
 ):
-    if not container.platform.get_auth_settings().twc_token_enabled:
+    if container.settings.workbench_user_management_mode != "twc" or not container.platform.get_auth_settings().twc_token_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="TWC token sign-in is disabled.")
     logger.info("auth-mode-selected", auth_mode="token", server_id=payload.server_id)
     try:

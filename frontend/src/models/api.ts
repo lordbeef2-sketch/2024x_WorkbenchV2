@@ -523,6 +523,7 @@ export interface ExportRequest {
 }
 
 export interface AuthOptions {
+  user_management_mode?: "local" | "twc";
   token_signin_enabled: boolean;
   redirect_signin_enabled: boolean;
   local_signin_enabled?: boolean;
@@ -543,6 +544,7 @@ export interface WorkbenchFirstAdminSetupRequest extends WorkbenchLocalLoginRequ
 }
 
 export interface WorkbenchAuthSettings {
+  user_management_mode: "local" | "twc";
   local_users_enabled: boolean;
   twc_redirect_enabled: boolean;
   twc_token_enabled: boolean;

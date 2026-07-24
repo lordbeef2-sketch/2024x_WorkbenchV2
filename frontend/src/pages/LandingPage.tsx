@@ -108,6 +108,7 @@ export default function LandingPage() {
   const pendingServer = session?.pending_server ?? null;
   const selectedTokenServer = servers.find((server) => server.id === tokenForm.server_id) ?? null;
   const authError = searchParams.get("authError");
+  const userManagementMode = authOptions?.user_management_mode ?? "local";
   const redirectSignInEnabled = authOptions?.redirect_signin_enabled !== false;
   const localSignInEnabled = authOptions?.local_signin_enabled !== false;
 
@@ -324,7 +325,7 @@ export default function LandingPage() {
                               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                                 <Chip label={`Version ${health?.version_hint ?? "2024x"}`} variant="outlined" />
                                 <Chip label={`Order ${server.display_order}`} variant="outlined" />
-                                <Chip label="TWC user auth" variant="outlined" />
+                                <Chip label={userManagementMode === "local" ? "Workbench user auth" : "TWC user auth"} variant="outlined" />
                                 <Chip label={health?.status ?? "probing"} color={healthColor(health?.status)} />
                                 <Chip label={server.verify_tls ? "TLS verified" : "TLS relaxed"} variant="outlined" />
                               </Stack>

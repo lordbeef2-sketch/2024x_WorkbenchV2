@@ -127,6 +127,7 @@ class Settings(BaseSettings):
     session_ttl_minutes: int = 480
     permission_snapshot_refresh_minutes: int = Field(default=30, ge=1)
     permission_inventory_refresh_hours: int = Field(default=6, ge=1)
+    workbench_user_management_mode: Literal["local", "twc"] = "local"
     job_retention_days: int = Field(default=30, ge=1, le=3650)
     fallback_cache_sync_time: str = "00:00"
     fallback_cache_sync_timezone: str = "America/New_York"
@@ -264,6 +265,26 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("workbench_user_management_mode", mode="before")
+    @classmethod
+    def normalize_workbench_user_management_mode(cls, value: object) -> str:
+        if value is None:
+            return "local"
+        text = str(value).strip().lower().replace("-", "_")
+        aliases = {
+            "local": "local",
+            "workbench": "local",
+            "workbench_local": "local",
+            "local_user_management": "local",
+            "twc": "twc",
+            "teamwork": "twc",
+            "teamwork_cloud": "twc",
+            "twc_user_management": "twc",
+        }
+        if text not in aliases:
+            raise ValueError("WORKBENCH_USER_MANAGEMENT_MODE must be either 'local' or 'twc'")
+        return aliases[text]
 
     @field_validator("twc_oidc_port", mode="before")
     @classmethod
