@@ -22,6 +22,7 @@ import HttpsRoundedIcon from "@mui/icons-material/HttpsRounded";
 import LoginRoundedIcon from "@mui/icons-material/LoginRounded";
 import MonitorHeartRoundedIcon from "@mui/icons-material/MonitorHeartRounded";
 import PublicRoundedIcon from "@mui/icons-material/PublicRounded";
+import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
 import VpnKeyRoundedIcon from "@mui/icons-material/VpnKeyRounded";
 import VerifiedUserRoundedIcon from "@mui/icons-material/VerifiedUserRounded";
 
@@ -91,7 +92,7 @@ export default function LandingPage() {
     mutationFn: (payload: WorkbenchLocalLoginRequest) => api.localLogin(payload),
     onSuccess: (snapshot) => {
       setSessionSnapshot(snapshot);
-      navigate("/workspace", { replace: true });
+      navigate(servers.length ? "/workspace" : "/workspace?tab=settings", { replace: true });
     },
     onError: (caught) => setBanner({ severity: "error", message: errorMessage(caught) }),
   });
@@ -106,10 +107,15 @@ export default function LandingPage() {
   const servers = serversQuery.data ?? [];
   const pendingServer = session?.pending_server ?? null;
   const selectedTokenServer = servers.find((server) => server.id === tokenForm.server_id) ?? null;
+  const selectedLocalServer = servers.find((server) => server.id === localForm.server_id) ?? null;
   const authError = searchParams.get("authError");
   const userManagementMode = authOptions?.user_management_mode ?? "local";
   const redirectSignInEnabled = authOptions?.redirect_signin_enabled !== false;
   const localSignInEnabled = authOptions?.local_signin_enabled !== false;
+  const canSubmitLocalLogin =
+    Boolean(localForm.username && localForm.password) &&
+    (!servers.length || Boolean(localForm.server_id)) &&
+    !localMutation.isPending;
 
   const openTokenDialog = (serverId: string) => {
     setTokenForm({ server_id: serverId, token: "" });
@@ -129,6 +135,11 @@ export default function LandingPage() {
   const closeLocalDialog = () => {
     setLocalDialogOpen(false);
     setLocalForm((current) => ({ ...current, password: "" }));
+  };
+
+  const openBootstrapDialog = () => {
+    setLocalForm({ server_id: "", username: "admin", password: "" });
+    setLocalDialogOpen(true);
   };
 
   return (
@@ -274,7 +285,7 @@ export default function LandingPage() {
         ) : null}
         {authOptions?.first_admin_setup_required ? (
           <Alert severity="warning">
-            No local Workbench administrator exists yet. Use Workbench Sign-In on any enabled preset server to create the first admin account.
+            No local Workbench administrator exists yet. Use bootstrap sign-in with <strong>admin</strong> / <strong>admin</strong>, then rotate the password immediately in Settings.
           </Alert>
         ) : null}
         {redirectSignInEnabled && pendingServer ? (
@@ -380,8 +391,18 @@ export default function LandingPage() {
                 <Paper sx={{ p: 5, borderRadius: 5, textAlign: "center" }}>
                   <Typography variant="h5">No preset servers available</Typography>
                   <Typography variant="body1" color="text.secondary" sx={{ mt: 1 }}>
-                    An administrator needs to publish at least one enabled Teamwork Cloud preset before users can sign in.
+                    Bootstrap into Workbench Settings to add the first Teamwork Cloud server preset.
                   </Typography>
+                  {localSignInEnabled ? (
+                    <Button
+                      variant="contained"
+                      startIcon={<SettingsRoundedIcon />}
+                      onClick={openBootstrapDialog}
+                      sx={{ mt: 3 }}
+                    >
+                      Open Workbench Settings
+                    </Button>
+                  ) : null}
                 </Paper>
               )}
             </Stack>
@@ -467,12 +488,14 @@ export default function LandingPage() {
           <Stack spacing={2} sx={{ mt: 1 }}>
             <Alert severity={authOptions?.first_admin_setup_required ? "warning" : "info"}>
               {authOptions?.first_admin_setup_required
-                ? "Create the first local Workbench administrator. Use a strong password; there is no default admin password."
+                ? "First-run bootstrap uses admin/admin when no Workbench users exist. Rotate the password immediately in Settings."
                 : "Sign in with a local Workbench account. Project access is still filtered by stored permissions for this username on the selected server."}
             </Alert>
-            {servers.find((server) => server.id === localForm.server_id) ? (
-              <Typography variant="body2">Server: {servers.find((server) => server.id === localForm.server_id)?.name}</Typography>
-            ) : null}
+            {localForm.server_id ? (
+              selectedLocalServer ? <Typography variant="body2">Server: {selectedLocalServer.name}</Typography> : null
+            ) : (
+              <Typography variant="body2">Mode: Workbench setup, no TWC server selected yet.</Typography>
+            )}
             <TextField
               label="Username"
               value={localForm.username}
@@ -483,7 +506,7 @@ export default function LandingPage() {
               label="Password"
               type="password"
               value={localForm.password}
-              helperText={authOptions?.first_admin_setup_required ? "Minimum 12 characters." : undefined}
+              helperText={authOptions?.first_admin_setup_required ? "Default bootstrap password is admin. Rotate after login." : undefined}
               onChange={(event) => setLocalForm((current) => ({ ...current, password: event.target.value }))}
               fullWidth
             />
@@ -494,13 +517,13 @@ export default function LandingPage() {
           <Button
             variant="contained"
             startIcon={<AccountCircleRoundedIcon />}
-            disabled={!localForm.server_id || !localForm.username || !localForm.password || localMutation.isPending}
+            disabled={!canSubmitLocalLogin}
             onClick={async () => {
               await localMutation.mutateAsync(localForm);
               closeLocalDialog();
             }}
           >
-            {authOptions?.first_admin_setup_required ? "Create Admin" : "Sign In"}
+            {authOptions?.first_admin_setup_required ? "Bootstrap Settings" : "Sign In"}
           </Button>
         </DialogActions>
       </Dialog>

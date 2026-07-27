@@ -438,9 +438,9 @@ class PlatformService:
         settings = self.get_auth_settings()
         if not settings.local_users_enabled:
             raise PermissionError("Workbench username/password sign-in is disabled.")
-        server = self._require_server(payload.server_id, include_disabled=False)
         username = self._normalize_workbench_username(payload.username)
         self._bootstrap_default_workbench_admin_if_needed(username, payload.password)
+        server = self._server_for_workbench_local_login(payload.server_id)
         user_record = self.repo.get_workbench_user(username)
         if not user_record or not user_record.enabled or not self._verify_workbench_password(payload.password, user_record.password_hash):
             raise PermissionError("Invalid Workbench username or password.")
@@ -466,6 +466,19 @@ class PlatformService:
         self._update_user_server_state(user.preferred_username, server.id, session.created_at)
         logger.info("workbench-local-login-complete", user=username, server_id=server.id)
         return session
+
+    def _server_for_workbench_local_login(self, server_id: str) -> ServerProfile:
+        if server_id:
+            return self._require_server(server_id, include_disabled=False)
+        servers = self.repo.list_servers()
+        if servers:
+            return servers[0]
+        return ServerProfile(
+            id="workbench-setup",
+            name="Workbench Setup",
+            base_url="http://workbench.local",
+            enabled=True,
+        )
 
     def _bootstrap_default_workbench_admin_if_needed(self, username: str, password: str) -> None:
         if self.repo.list_workbench_users():

@@ -229,6 +229,30 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
             self.assertEqual(user.role, WorkbenchUserRole.ADMIN)
             self.assertTrue(user.password_change_required)
 
+    def test_default_admin_bootstrap_allows_setup_login_without_presets(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.settings = Settings()
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.sessions = SimpleNamespace(
+                create_session=lambda server, user, authorization_context, token_bundle, capabilities: SimpleNamespace(
+                    session_id="session",
+                    server=server,
+                    user=user,
+                    authorization_context=authorization_context,
+                    created_at=datetime.now().astimezone(),
+                )
+            )
+            service._snapshot_capabilities = lambda server: SimpleNamespace(capabilities={})
+            service._update_user_server_state = lambda *args, **kwargs: None
+
+            session = service.login_with_workbench_password(
+                auth.WorkbenchLocalLoginRequest(server_id="", username="admin", password="admin")
+            )
+
+            self.assertEqual(session.server.id, "workbench-setup")
+            self.assertEqual(session.user.auth_source, "workbench-local")
+
     def test_empty_env_preset_catalog_does_not_delete_app_managed_servers(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             database_path = Path(directory) / "workbench.db"
