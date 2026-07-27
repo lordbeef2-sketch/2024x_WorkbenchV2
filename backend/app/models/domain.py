@@ -284,6 +284,7 @@ class WorkbenchAuthSettings(BaseModel):
 
 
 class WorkbenchAuthSettingsUpdate(BaseModel):
+    user_management_mode: Literal["local", "twc"] | None = None
     local_users_enabled: bool | None = None
     twc_redirect_enabled: bool | None = None
     twc_token_enabled: bool | None = None
@@ -303,6 +304,7 @@ class WorkbenchUserRecord(BaseModel):
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     last_login_at: datetime | None = None
+    password_change_required: bool = False
 
 
 class WorkbenchUserSummary(BaseModel):
@@ -315,6 +317,7 @@ class WorkbenchUserSummary(BaseModel):
     last_login_at: datetime | None = None
     accessible_project_count: int = 0
     accessible_branch_count: int = 0
+    password_change_required: bool = False
 
 
 class WorkbenchUserCreateRequest(BaseModel):

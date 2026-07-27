@@ -569,6 +569,7 @@ export interface WorkbenchUserSummary {
   last_login_at?: string | null;
   accessible_project_count: number;
   accessible_branch_count: number;
+  password_change_required?: boolean;
 }
 
 export interface WorkbenchUserCreateRequest {

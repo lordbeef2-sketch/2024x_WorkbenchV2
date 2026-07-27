@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from datetime import datetime
 import asyncio
 import base64
 import unittest
@@ -193,6 +194,52 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
                 service.update_auth_settings(
                     WorkbenchAuthSettingsUpdate(twc_redirect_enabled=False, twc_token_enabled=False)
                 )
+
+    def test_default_admin_bootstrap_creates_rotatable_local_admin(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.settings = Settings(
+                workbench_default_admin_username="admin",
+                workbench_default_admin_password="admin",
+            )
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.sessions = SimpleNamespace(
+                create_session=lambda server, user, authorization_context, token_bundle, capabilities: SimpleNamespace(
+                    session_id="session",
+                    server=server,
+                    user=user,
+                    authorization_context=authorization_context,
+                    created_at=datetime.now().astimezone(),
+                )
+            )
+            service._require_server = lambda server_id, include_disabled=False: ServerProfile(
+                id=server_id,
+                name="TWC",
+                base_url="https://twc.example",
+            )
+            service._snapshot_capabilities = lambda server: SimpleNamespace(capabilities={})
+            service._update_user_server_state = lambda *args, **kwargs: None
+
+            service.login_with_workbench_password(
+                auth.WorkbenchLocalLoginRequest(server_id="twc", username="admin", password="admin")
+            )
+
+            user = service.repo.get_workbench_user("admin")
+            self.assertIsNotNone(user)
+            self.assertEqual(user.role, WorkbenchUserRole.ADMIN)
+            self.assertTrue(user.password_change_required)
+
+    def test_empty_env_preset_catalog_does_not_delete_app_managed_servers(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            database_path = Path(directory) / "workbench.db"
+            repo = SqliteRepository(database_path)
+            repo.upsert_server(ServerProfile(name="Managed", base_url="https://twc.example"))
+
+            from app.services.platform import ApplicationContainer
+
+            ApplicationContainer(Settings(database_path=database_path, twc_preset_servers=[]))
+
+            self.assertEqual(len(SqliteRepository(database_path).list_servers(include_disabled=True)), 1)
 
     def test_unsupported_oslc_authentication_routes_are_not_exposed(self) -> None:
         paths = {

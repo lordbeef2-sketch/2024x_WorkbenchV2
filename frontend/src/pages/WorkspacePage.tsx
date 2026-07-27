@@ -60,6 +60,8 @@ import {
   ProjectSummary,
   ProjectTombstoneRecord,
   ProjectUsageResponse,
+  ServerProfile,
+  ServerProfileInput,
   ServerPermissionInventoryStatus,
   SessionPreferences,
   StereotypeElementSearchResponse,
@@ -1769,6 +1771,16 @@ export default function WorkspacePage() {
     display_name: "",
   });
   const [workbenchPasswordResets, setWorkbenchPasswordResets] = useState<Record<string, string>>({});
+  const [newServerPreset, setNewServerPreset] = useState<ServerProfileInput>({
+    name: "",
+    base_url: "",
+    version: "2024x",
+    verify_tls: true,
+    ca_bundle_path: null,
+    enabled: true,
+    display_order: 0,
+  });
+  const [serverPresetDrafts, setServerPresetDrafts] = useState<Record<string, ServerProfileInput>>({});
   const [agentBaseUrlDraft, setAgentBaseUrlDraft] = useState("");
   const [agentApiKeyDraft, setAgentApiKeyDraft] = useState("");
   const [agentSelectedModelId, setAgentSelectedModelId] = useState("");
@@ -1831,6 +1843,14 @@ export default function WorkspacePage() {
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
   });
+  const managedServersQuery = useQuery({
+    queryKey: ["managed-servers", ...sessionCacheKey],
+    queryFn: api.listManagedServers,
+    enabled: isAdmin,
+    staleTime: 10_000,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
   const permissionInventoryStatusQuery = useQuery({
     queryKey: ["workspace-permission-inventory-status", ...sessionCacheKey],
     queryFn: api.getPermissionInventoryStatus,
@@ -1861,6 +1881,27 @@ export default function WorkspacePage() {
       setAuthSettingsDraft(authManagementStatusQuery.data.settings);
     }
   }, [authManagementStatusQuery.data?.settings]);
+
+  useEffect(() => {
+    if (!managedServersQuery.data) {
+      return;
+    }
+    setServerPresetDrafts((current) => {
+      const next: Record<string, ServerProfileInput> = {};
+      for (const server of managedServersQuery.data) {
+        next[server.id] = current[server.id] ?? {
+          name: server.name,
+          base_url: server.base_url,
+          version: server.version,
+          verify_tls: server.verify_tls,
+          ca_bundle_path: server.ca_bundle_path,
+          enabled: server.enabled,
+          display_order: server.display_order,
+        };
+      }
+      return next;
+    });
+  }, [managedServersQuery.data]);
   const cacheApiKeysQuery = useQuery({
     queryKey: ["workspace-cache-api-keys", ...sessionCacheKey],
     queryFn: api.listCacheApiKeys,
@@ -3022,6 +3063,52 @@ export default function WorkspacePage() {
         queryClient.invalidateQueries({ queryKey: ["auth-management-status", ...sessionCacheKey] }),
       ]);
       setNotice({ severity: "success", message: "Workbench user deleted." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const createServerMutation = useMutation({
+    mutationFn: (payload: ServerProfileInput) => api.createServer(payload, csrfToken),
+    onSuccess: async () => {
+      setNewServerPreset({
+        name: "",
+        base_url: "",
+        version: "2024x",
+        verify_tls: true,
+        ca_bundle_path: null,
+        enabled: true,
+        display_order: 0,
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["managed-servers", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-projects", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: "TWC server preset created in Workbench Settings." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const updateServerMutation = useMutation({
+    mutationFn: ({ serverId, payload }: { serverId: string; payload: Partial<ServerProfileInput> }) =>
+      api.updateServer(serverId, payload, csrfToken),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["managed-servers", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-projects", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: "TWC server preset updated." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const deleteServerMutation = useMutation({
+    mutationFn: (serverId: string) => api.deleteServer(serverId, csrfToken),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["managed-servers", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-projects", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: "TWC server preset deleted." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -5108,6 +5195,231 @@ export default function WorkspacePage() {
     </Paper>
   );
 
+  const renderServerPresetManagement = () => {
+    const servers = managedServersQuery.data ?? [];
+    const serverBusy = createServerMutation.isPending || updateServerMutation.isPending || deleteServerMutation.isPending;
+
+    return (
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+            <Box>
+              <Typography variant="h5">TWC Server Presets</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Manage the Teamwork Cloud servers from Workbench Settings. <code>TWC_PRESET_SERVERS</code> is now only an optional seed path, not the normal admin workflow.
+              </Typography>
+            </Box>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              onClick={() => void managedServersQuery.refetch()}
+              disabled={managedServersQuery.isFetching}
+            >
+              Refresh Servers
+            </Button>
+          </Stack>
+          {managedServersQuery.error ? <Alert severity="error">{errorMessage(managedServersQuery.error)}</Alert> : null}
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Stack spacing={1.5}>
+              <Typography variant="subtitle1">Add TWC server</Typography>
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    label="Name"
+                    value={newServerPreset.name}
+                    onChange={(event) => setNewServerPreset((current) => ({ ...current, name: event.target.value }))}
+                    fullWidth
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    label="Base URL"
+                    value={newServerPreset.base_url}
+                    onChange={(event) => setNewServerPreset((current) => ({ ...current, base_url: event.target.value }))}
+                    helperText="Example: https://twc2024.company.com:8111"
+                    fullWidth
+                  />
+                </Grid>
+                <Grid item xs={12} md={2}>
+                  <TextField
+                    select
+                    label="Version"
+                    value={newServerPreset.version}
+                    onChange={(event) => setNewServerPreset((current) => ({ ...current, version: event.target.value as ServerProfileInput["version"] }))}
+                    fullWidth
+                  >
+                    <MenuItem value="2024x">2024x</MenuItem>
+                    <MenuItem value="2022x">2022x</MenuItem>
+                    <MenuItem value="auto">Auto</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} md={2}>
+                  <TextField
+                    label="CA bundle path"
+                    value={newServerPreset.ca_bundle_path ?? ""}
+                    onChange={(event) => setNewServerPreset((current) => ({ ...current, ca_bundle_path: event.target.value || null }))}
+                    fullWidth
+                  />
+                </Grid>
+                <Grid item xs={12} md={1}>
+                  <Stack>
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={newServerPreset.verify_tls}
+                          onChange={(event) => setNewServerPreset((current) => ({ ...current, verify_tls: event.target.checked }))}
+                        />
+                      }
+                      label="TLS"
+                    />
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={newServerPreset.enabled}
+                          onChange={(event) => setNewServerPreset((current) => ({ ...current, enabled: event.target.checked }))}
+                        />
+                      }
+                      label="On"
+                    />
+                  </Stack>
+                </Grid>
+              </Grid>
+              <Button
+                variant="contained"
+                disabled={!csrfToken || !newServerPreset.name.trim() || !newServerPreset.base_url.trim() || createServerMutation.isPending}
+                onClick={() => createServerMutation.mutate({ ...newServerPreset, display_order: servers.length })}
+              >
+                Add Server Preset
+              </Button>
+            </Stack>
+          </Paper>
+
+          {managedServersQuery.isLoading ? <CircularProgress size={28} /> : null}
+          <Stack spacing={1.5}>
+            {servers.length ? (
+              servers.map((server: ServerProfile) => {
+                const draft = serverPresetDrafts[server.id] ?? {
+                  name: server.name,
+                  base_url: server.base_url,
+                  version: server.version,
+                  verify_tls: server.verify_tls,
+                  ca_bundle_path: server.ca_bundle_path,
+                  enabled: server.enabled,
+                  display_order: server.display_order,
+                };
+                return (
+                  <Paper key={server.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                    <Stack spacing={1.5}>
+                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                        <Chip label={server.id} variant="outlined" />
+                        <Chip label={draft.enabled ? "enabled" : "disabled"} color={draft.enabled ? "success" : "warning"} variant="outlined" />
+                        <Chip label={draft.verify_tls ? "TLS verified" : "TLS relaxed"} variant="outlined" />
+                      </Stack>
+                      <Grid container spacing={1.5}>
+                        <Grid item xs={12} md={3}>
+                          <TextField
+                            label="Name"
+                            value={draft.name}
+                            onChange={(event) =>
+                              setServerPresetDrafts((current) => ({ ...current, [server.id]: { ...draft, name: event.target.value } }))
+                            }
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid item xs={12} md={4}>
+                          <TextField
+                            label="Base URL"
+                            value={draft.base_url}
+                            onChange={(event) =>
+                              setServerPresetDrafts((current) => ({ ...current, [server.id]: { ...draft, base_url: event.target.value } }))
+                            }
+                            fullWidth
+                          />
+                        </Grid>
+                        <Grid item xs={12} md={2}>
+                          <TextField
+                            select
+                            label="Version"
+                            value={draft.version}
+                            onChange={(event) =>
+                              setServerPresetDrafts((current) => ({
+                                ...current,
+                                [server.id]: { ...draft, version: event.target.value as ServerProfileInput["version"] },
+                              }))
+                            }
+                            fullWidth
+                          >
+                            <MenuItem value="2024x">2024x</MenuItem>
+                            <MenuItem value="2022x">2022x</MenuItem>
+                            <MenuItem value="auto">Auto</MenuItem>
+                          </TextField>
+                        </Grid>
+                        <Grid item xs={12} md={3}>
+                          <TextField
+                            label="CA bundle path"
+                            value={draft.ca_bundle_path ?? ""}
+                            onChange={(event) =>
+                              setServerPresetDrafts((current) => ({
+                                ...current,
+                                [server.id]: { ...draft, ca_bundle_path: event.target.value || null },
+                              }))
+                            }
+                            fullWidth
+                          />
+                        </Grid>
+                      </Grid>
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} useFlexGap flexWrap="wrap" alignItems={{ xs: "stretch", sm: "center" }}>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={draft.verify_tls}
+                              onChange={(event) =>
+                                setServerPresetDrafts((current) => ({ ...current, [server.id]: { ...draft, verify_tls: event.target.checked } }))
+                              }
+                            />
+                          }
+                          label="Verify TLS"
+                        />
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={draft.enabled}
+                              onChange={(event) =>
+                                setServerPresetDrafts((current) => ({ ...current, [server.id]: { ...draft, enabled: event.target.checked } }))
+                              }
+                            />
+                          }
+                          label="Enabled"
+                        />
+                        <Button
+                          variant="contained"
+                          disabled={!csrfToken || !draft.name.trim() || !draft.base_url.trim() || serverBusy}
+                          onClick={() => updateServerMutation.mutate({ serverId: server.id, payload: draft })}
+                        >
+                          Save Server
+                        </Button>
+                        <Button
+                          variant="text"
+                          color="warning"
+                          disabled={!csrfToken || serverBusy}
+                          onClick={() => deleteServerMutation.mutate(server.id)}
+                        >
+                          Delete Server
+                        </Button>
+                      </Stack>
+                    </Stack>
+                  </Paper>
+                );
+              })
+            ) : (
+              <Typography color="text.secondary">No TWC server presets have been created yet.</Typography>
+            )}
+          </Stack>
+        </Stack>
+      </Paper>
+    );
+  };
+
   const renderWorkbenchUserManagement = () => {
     const status = authManagementStatusQuery.data;
     const users = workbenchUsersQuery.data ?? [];
@@ -5124,13 +5436,13 @@ export default function WorkspacePage() {
             <Box>
               <Typography variant="h5">Workbench User Management</Typography>
               <Typography variant="body2" color="text.secondary">
-                Configure Workbench username/password access, keep TWC sign-in optional, and manage local app users from this settings window.
+                Choose one user authority for this Workbench instance and manage local app users when local mode is active.
               </Typography>
             </Box>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
               <Chip label={`${status?.local_user_count ?? users.length} local users`} variant="outlined" />
               <Chip
-                label={userManagementMode === "local" ? "ENV mode: local users" : "ENV mode: TWC users"}
+                label={userManagementMode === "local" ? "Settings mode: local users" : "Settings mode: TWC users"}
                 color={userManagementMode === "local" ? "secondary" : "primary"}
                 variant="outlined"
               />
@@ -5143,8 +5455,13 @@ export default function WorkspacePage() {
           </Stack>
 
           <Alert severity="info">
-            User-management mode is controlled by <code>WORKBENCH_USER_MANAGEMENT_MODE</code>. Use <code>local</code> for Workbench-managed username/password users, or <code>twc</code> for TWC-managed users. Workbench will not enable both modes at the same time.
+            This page is the authority after bootstrap. Use local mode for Workbench-managed username/password users, or TWC mode for TWC-managed users. Workbench will not enable both modes at the same time.
           </Alert>
+          {status?.first_admin_setup_required ? (
+            <Alert severity="warning">
+              No local users exist yet. The bootstrap login is <code>admin</code> / <code>admin</code> unless changed in bootstrap env. Rotate that password immediately after first login.
+            </Alert>
+          ) : null}
           {userManagementMode === "local" ? (
             <Alert severity="warning">
               Local Workbench users do not receive live TWC credentials. Their visible projects and branches come from stored/plugin permission snapshots for the same username and selected server. Live TWC API actions remain unavailable in local mode.
@@ -5159,7 +5476,37 @@ export default function WorkspacePage() {
 
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.5}>
-              <Typography variant="subtitle1">Authentication modes</Typography>
+              <Typography variant="subtitle1">Authentication mode</Typography>
+              <TextField
+                select
+                label="User-management authority"
+                value={userManagementMode}
+                onChange={(event) => {
+                  const mode = event.target.value as WorkbenchAuthSettings["user_management_mode"];
+                  setAuthSettingsDraft((current) =>
+                    mode === "local"
+                      ? {
+                          ...current,
+                          user_management_mode: "local",
+                          local_users_enabled: true,
+                          twc_redirect_enabled: false,
+                          twc_token_enabled: false,
+                        }
+                      : {
+                          ...current,
+                          user_management_mode: "twc",
+                          local_users_enabled: false,
+                          twc_redirect_enabled: current.twc_redirect_enabled || true,
+                          twc_token_enabled: current.twc_token_enabled,
+                        },
+                  );
+                }}
+                helperText="Only one authority is active at a time."
+                fullWidth
+              >
+                <MenuItem value="local">Workbench local users</MenuItem>
+                <MenuItem value="twc">TWC users</MenuItem>
+              </TextField>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} useFlexGap flexWrap="wrap">
                 <FormControlLabel
                   control={
@@ -5307,6 +5654,7 @@ export default function WorkspacePage() {
                         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                           <Chip label={user.role} color={user.role === "admin" ? "secondary" : "default"} />
                           <Chip label={user.enabled ? "enabled" : "disabled"} color={user.enabled ? "success" : "warning"} variant="outlined" />
+                          {user.password_change_required ? <Chip label="rotate password" color="warning" /> : null}
                           <Chip label={`${user.accessible_project_count} projects`} variant="outlined" />
                           <Chip label={`${user.accessible_branch_count} branches`} variant="outlined" />
                         </Stack>
@@ -5634,6 +5982,7 @@ export default function WorkspacePage() {
 
   const renderAdminSettings = () => (
     <Stack spacing={2}>
+      {renderServerPresetManagement()}
       {renderWorkbenchUserManagement()}
       {renderPermissionInventoryStatus()}
       {renderTombstoneAudit()}

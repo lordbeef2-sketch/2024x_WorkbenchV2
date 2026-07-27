@@ -248,42 +248,48 @@ class PlatformService:
 
     def auth_admin_status(self, session: SessionData | None = None) -> WorkbenchAuthAdminStatus:
         users = self.repo.list_workbench_users()
+        settings = self.get_auth_settings()
         return WorkbenchAuthAdminStatus(
-            settings=self.get_auth_settings(),
+            settings=settings,
             local_user_count=len(users),
-            first_admin_setup_required=self.settings.workbench_user_management_mode == "local" and len(users) == 0,
+            first_admin_setup_required=settings.user_management_mode == "local" and len(users) == 0,
             can_manage_users=bool(session and self.can_manage_server_presets(session)),
         )
 
     def get_auth_settings(self) -> WorkbenchAuthSettings:
         stored = self.repo.get_auth_settings()
-        if self.settings.workbench_user_management_mode == "local":
-            return stored.model_copy(
+        if not self.repo.has_auth_settings():
+            stored = stored.model_copy(update={"user_management_mode": self.settings.workbench_user_management_mode})
+        return self._normalize_auth_settings(stored)
+
+    def _normalize_auth_settings(self, settings: WorkbenchAuthSettings) -> WorkbenchAuthSettings:
+        if settings.user_management_mode == "local":
+            return settings.model_copy(
                 update={
-                    "user_management_mode": "local",
                     "local_users_enabled": True,
                     "twc_redirect_enabled": False,
                     "twc_token_enabled": False,
                 }
             )
-        return stored.model_copy(update={"user_management_mode": "twc", "local_users_enabled": False})
+        twc_redirect_enabled = settings.twc_redirect_enabled
+        twc_token_enabled = settings.twc_token_enabled
+        if not twc_redirect_enabled and not twc_token_enabled:
+            twc_redirect_enabled = True
+            twc_token_enabled = True
+        return settings.model_copy(
+            update={
+                "local_users_enabled": False,
+                "twc_redirect_enabled": twc_redirect_enabled,
+                "twc_token_enabled": twc_token_enabled,
+            }
+        )
 
     def update_auth_settings(self, payload: WorkbenchAuthSettingsUpdate) -> WorkbenchAuthSettings:
         current = self.get_auth_settings()
-        updated = current.model_copy(update=payload.model_dump(exclude_none=True))
-        if self.settings.workbench_user_management_mode == "local":
-            updated = updated.model_copy(
-                update={
-                    "user_management_mode": "local",
-                    "local_users_enabled": True,
-                    "twc_redirect_enabled": False,
-                    "twc_token_enabled": False,
-                }
-            )
-        else:
-            updated = updated.model_copy(update={"user_management_mode": "twc", "local_users_enabled": False})
-            if not (updated.twc_redirect_enabled or updated.twc_token_enabled):
-                raise ValueError("At least one TWC sign-in method must remain enabled in TWC user management mode.")
+        candidate = current.model_copy(update=payload.model_dump(exclude_none=True))
+        if candidate.user_management_mode == "twc" and not (candidate.twc_redirect_enabled or candidate.twc_token_enabled):
+            raise ValueError("At least one TWC sign-in method must remain enabled in TWC user management mode.")
+        updated = self._normalize_auth_settings(candidate)
         return self.repo.set_auth_settings(updated)
 
     def _normalize_workbench_username(self, username: str) -> str:
@@ -292,8 +298,8 @@ class PlatformService:
             raise ValueError("Workbench usernames must be 2-128 characters and may contain letters, numbers, dot, underscore, dash, or @.")
         return value
 
-    def _hash_workbench_password(self, password: str) -> str:
-        if len(password) < 12:
+    def _hash_workbench_password(self, password: str, *, allow_weak: bool = False) -> str:
+        if not allow_weak and len(password) < 12:
             raise ValueError("Workbench passwords must be at least 12 characters.")
         salt = secrets.token_bytes(16)
         rounds = 390_000
@@ -332,6 +338,7 @@ class PlatformService:
                     last_login_at=user.last_login_at,
                     accessible_project_count=len({record.project_id for record in branch_records}),
                     accessible_branch_count=len(branch_records),
+                    password_change_required=user.password_change_required,
                 )
             )
         return summaries
@@ -346,6 +353,7 @@ class PlatformService:
             role=payload.role,
             enabled=payload.enabled,
             display_name=payload.display_name,
+            password_change_required=False,
         )
         stored = self.repo.upsert_workbench_user(user)
         return WorkbenchUserSummary(
@@ -356,6 +364,7 @@ class PlatformService:
             created_at=stored.created_at,
             updated_at=stored.updated_at,
             last_login_at=stored.last_login_at,
+            password_change_required=stored.password_change_required,
         )
 
     def update_workbench_user(self, username: str, payload: WorkbenchUserUpdateRequest) -> WorkbenchUserSummary:
@@ -366,6 +375,7 @@ class PlatformService:
         updates: dict[str, Any] = {}
         if payload.password is not None:
             updates["password_hash"] = self._hash_workbench_password(payload.password)
+            updates["password_change_required"] = False
         if payload.role is not None:
             updates["role"] = payload.role
         if payload.enabled is not None:
@@ -391,6 +401,7 @@ class PlatformService:
             created_at=stored.created_at,
             updated_at=stored.updated_at,
             last_login_at=stored.last_login_at,
+            password_change_required=stored.password_change_required,
         )
 
     def delete_workbench_user(self, username: str) -> bool:
@@ -409,7 +420,7 @@ class PlatformService:
     def setup_first_workbench_admin(self, payload: WorkbenchFirstAdminSetupRequest) -> SessionData:
         if self.repo.list_workbench_users():
             raise PermissionError("First admin setup is already complete.")
-        settings = self.repo.get_auth_settings()
+        settings = self.get_auth_settings()
         if not settings.local_users_enabled:
             raise PermissionError("Local Workbench users are disabled.")
         self.create_workbench_user(
@@ -424,11 +435,12 @@ class PlatformService:
         return self.login_with_workbench_password(payload)
 
     def login_with_workbench_password(self, payload: WorkbenchLocalLoginRequest) -> SessionData:
-        settings = self.repo.get_auth_settings()
+        settings = self.get_auth_settings()
         if not settings.local_users_enabled:
             raise PermissionError("Workbench username/password sign-in is disabled.")
         server = self._require_server(payload.server_id, include_disabled=False)
         username = self._normalize_workbench_username(payload.username)
+        self._bootstrap_default_workbench_admin_if_needed(username, payload.password)
         user_record = self.repo.get_workbench_user(username)
         if not user_record or not user_record.enabled or not self._verify_workbench_password(payload.password, user_record.password_hash):
             raise PermissionError("Invalid Workbench username or password.")
@@ -454,6 +466,24 @@ class PlatformService:
         self._update_user_server_state(user.preferred_username, server.id, session.created_at)
         logger.info("workbench-local-login-complete", user=username, server_id=server.id)
         return session
+
+    def _bootstrap_default_workbench_admin_if_needed(self, username: str, password: str) -> None:
+        if self.repo.list_workbench_users():
+            return
+        default_username = self._normalize_workbench_username(self.settings.workbench_default_admin_username or "admin")
+        default_password = self.settings.workbench_default_admin_password or "admin"
+        if username != default_username or password != default_password:
+            return
+        user = WorkbenchUserRecord(
+            username=default_username,
+            password_hash=self._hash_workbench_password(default_password, allow_weak=True),
+            role=WorkbenchUserRole.ADMIN,
+            enabled=True,
+            display_name="Workbench Administrator",
+            password_change_required=True,
+        )
+        self.repo.upsert_workbench_user(user)
+        logger.warning("workbench-default-admin-bootstrapped", user=default_username)
 
     async def health_check(self, server_id: str, *, include_disabled: bool = False) -> ServerHealth:
         server = self._require_server(server_id, include_disabled=include_disabled)
@@ -8609,7 +8639,8 @@ class ApplicationContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.repo = SqliteRepository(settings.resolved_database_path)
-        self.repo.sync_servers(settings.twc_preset_servers)
+        if settings.twc_preset_servers:
+            self.repo.sync_servers(settings.twc_preset_servers)
         self.sessions = SessionManager(settings)
         self.jobs = JobCoordinator(self.repo)
         self.publisher = build_publisher(settings)

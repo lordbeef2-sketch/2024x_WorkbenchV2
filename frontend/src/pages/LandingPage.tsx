@@ -88,8 +88,7 @@ export default function LandingPage() {
   });
 
   const localMutation = useMutation({
-    mutationFn: (payload: WorkbenchLocalLoginRequest) =>
-      authOptions?.first_admin_setup_required ? api.setupFirstWorkbenchAdmin(payload) : api.localLogin(payload),
+    mutationFn: (payload: WorkbenchLocalLoginRequest) => api.localLogin(payload),
     onSuccess: (snapshot) => {
       setSessionSnapshot(snapshot);
       navigate("/workspace", { replace: true });

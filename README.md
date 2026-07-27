@@ -61,10 +61,9 @@ powershell -ExecutionPolicy Bypass -File .\launch.ps1
 
 Copy `backend/.env.example` to `backend/.env` and set values appropriate for your environment.
 
-`backend/.env` remains the app runtime configuration file, and it also carries the preset Teamwork Cloud catalog through `TWC_PRESET_SERVERS`.
-`TWC_PRESET_SERVERS` is the authoritative JSON catalog for pre-login Teamwork Cloud discovery. Each preset includes `id`, `name`, `base_url`, `version`, `verify_tls`, `ca_bundle_path`, `enabled`, and `display_order`.
-The backend loads that catalog at startup and exposes enabled presets on the landing page before authentication. Users do not create their own target servers just to connect; the app persists only each user’s selected and last-used server state separately.
-To change the pre-login preset catalog, edit `TWC_PRESET_SERVERS` and restart the backend.
+`backend/.env` is now a small bootstrap file. Normal administration happens in Workbench Settings.
+TWC server presets are created, edited, enabled, disabled, and deleted from the Settings page. `TWC_PRESET_SERVERS` remains only an optional startup seed/import path; leaving it empty no longer wipes app-managed presets.
+User-management mode is also saved from Settings. The env value only picks the initial mode when no app setting exists yet.
 `Sign In via TWC` is the primary sign-in path. It uses the official Teamwork Cloud 2024x Refresh3 OpenID Connect authorization-code flow. Workbench reads `https://<selected-twc-host>:8443/authentication/.well-known/oidc-configuration`, redirects to its `authorization_endpoint`, exchanges the code at its `token_endpoint` using `client_secret_basic`, requests `scope=openid`, refreshes the ID token when a refresh token is returned, and validates the user through `/osmc/admin/currentUser`. SAML may remain the Authentication Server's upstream identity provider, but it is not the protocol between Workbench and the Authentication Server. `Use TWC Token` remains the explicit fallback.
 The supplied launchers disable Uvicorn access logging so the authorization code
 in the callback query string is not copied into console logs. Application audit
@@ -78,8 +77,9 @@ Important settings:
 - `FRONTEND_ORIGIN`: allowed browser origin for local development or deployment.
 - `APP_ORIGIN`: optional public origin of this app when it is served behind a reverse proxy. Defaults to `FRONTEND_ORIGIN` when left empty. Set this in deployed environments if you want the app to auto-register Teamwork Cloud 2024x branch webhooks for cache refresh.
 - `SESSION_SECRET`: replace with a long random secret in every non-local environment. It encrypts stored per-user delegated credentials inside the app session.
-- `WORKBENCH_USER_MANAGEMENT_MODE`: choose exactly one user-management authority. Use `local` for Workbench-managed username/password users, or `twc` for TWC-managed users. Workbench enforces the mode at runtime so both are not active at the same time.
-- `TWC_PRESET_SERVERS`: JSON array of preset Teamwork Cloud servers loaded at startup for pre-login discovery.
+- `WORKBENCH_DEFAULT_ADMIN_USERNAME` / `WORKBENCH_DEFAULT_ADMIN_PASSWORD`: first local-mode bootstrap login when no Workbench users exist. Defaults are `admin` / `admin`; rotate immediately in Settings.
+- `WORKBENCH_USER_MANAGEMENT_MODE`: initial user-management authority only. Settings owns it afterward.
+- `TWC_PRESET_SERVERS`: optional JSON array used only to seed/import preset Teamwork Cloud servers at startup.
 - `SECURE_COOKIES=true`: required when running behind HTTPS.
 - `UPSTREAM_AUTH_COOKIE_NAMES`: optional JSON array of TWC cookie names to forward. Leave empty to forward all incoming cookies except the app's own session cookie.
 - `UPSTREAM_USER_HEADERS`: optional JSON array of trusted reverse-proxy user headers.
@@ -106,7 +106,7 @@ Important settings:
 - `PERMISSION_ALERT_WEBHOOK_URL`: optional endpoint for sanitized repeated inventory-refresh failure alerts.
 - `PERMISSION_SNAPSHOT_STALE_WARNING_MINUTES`: age of the last valid snapshot before a persistent warning; defaults to `120`.
 - `REDIS_URL`: optional, enables Redis-backed sessions.
-Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through `TWC_PRESET_SERVERS`, not through `HOST`.
+Teamwork Cloud base URLs, version hints, certificate settings, and preset ordering are configured through Workbench Settings, not through `HOST`.
 
 The launch scripts read `HOST` and `PORT` from `backend/.env` by default. Command-line launch options override them when provided.
 

@@ -2350,6 +2350,14 @@ class SqliteRepository:
             return WorkbenchAuthSettings()
         return WorkbenchAuthSettings.model_validate_json(row["payload"])
 
+    def has_auth_settings(self) -> bool:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM app_settings WHERE scope = ?",
+                ("auth",),
+            ).fetchone()
+        return row is not None
+
     def set_auth_settings(self, settings: WorkbenchAuthSettings) -> WorkbenchAuthSettings:
         with self._lock, self._connect() as connection:
             connection.execute(

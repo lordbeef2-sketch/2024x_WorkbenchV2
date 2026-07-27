@@ -224,7 +224,7 @@ def get_auth_options(container: ApplicationContainer = Depends(get_container)):
 
 @router.get("/signin/{server_id}")
 async def signin(server_id: str, container: ApplicationContainer = Depends(get_container)):
-    if container.settings.workbench_user_management_mode != "twc" or not container.platform.get_auth_settings().twc_redirect_enabled:
+    if not container.platform.get_auth_settings().twc_redirect_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="TWC redirect sign-in is disabled.")
     server = container.platform.get_server(server_id, include_disabled=False)
     if not server:
@@ -344,7 +344,7 @@ async def token_login(
     response: Response,
     container: ApplicationContainer = Depends(get_container),
 ):
-    if container.settings.workbench_user_management_mode != "twc" or not container.platform.get_auth_settings().twc_token_enabled:
+    if not container.platform.get_auth_settings().twc_token_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="TWC token sign-in is disabled.")
     logger.info("auth-mode-selected", auth_mode="token", server_id=payload.server_id)
     try:
