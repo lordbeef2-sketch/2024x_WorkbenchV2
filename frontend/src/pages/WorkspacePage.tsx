@@ -23,6 +23,7 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Slider,
   Stack,
   TextField,
   ToggleButton,
@@ -43,7 +44,6 @@ import AccountCircleRoundedIcon from "@mui/icons-material/AccountCircleRounded";
 
 import CapabilityBadges from "../components/CapabilityBadges";
 import ProjectTree from "../components/ProjectTree";
-import SettingsDialog from "../components/SettingsDialog";
 import WorkbenchBrandMark from "../components/WorkbenchBrandMark";
 import {
   BranchAccessManifestStatus,
@@ -70,6 +70,7 @@ import {
   SwaggerOperationSpec,
   SwaggerParameterSpec,
   TreeNode,
+  ThemeMode,
   WorkbenchAgentChatMessage,
   WorkbenchAgentKnowledgeStatus,
   WorkbenchAuthSettings,
@@ -79,12 +80,13 @@ import {
 import { api } from "../services/api";
 import { useSession } from "../state/SessionProvider";
 
-type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-viewer" | "compare" | "agent" | "developer" | "api";
+type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-viewer" | "compare" | "agent" | "developer" | "api" | "settings";
 type WorkspaceMenuGroup = "views" | "diagrams" | "api";
 type ElementSearchMode = "query" | "stereotype";
 type CompareMode = "branch" | "item";
+type SettingsSubtab = "users-groups" | "network" | "agentic";
 
-const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api"];
+const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api", "settings"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
 const ITEM_DETAIL_VIEW_LABELS: Record<ItemDetailViewMode, string> = {
   standard: "Standard",
@@ -1712,7 +1714,8 @@ export default function WorkspacePage() {
   };
 
   const [tab, setTab] = useState<WorkspaceTab>(() => parseWorkspaceTab(searchParams.get("tab")));
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSubtab, setSettingsSubtab] = useState<SettingsSubtab>("users-groups");
+  const [preferencesDraft, setPreferencesDraft] = useState<SessionPreferences>(currentPreferences);
   const [selectedProjectId, setSelectedProjectId] = useState(() => searchParams.get("project") ?? "");
   const [selectedBranchId, setSelectedBranchId] = useState(() => searchParams.get("branch") ?? "");
   const [treeFilter, setTreeFilter] = useState("");
@@ -1883,6 +1886,10 @@ export default function WorkspacePage() {
   }, [authManagementStatusQuery.data?.settings]);
 
   useEffect(() => {
+    setPreferencesDraft(currentPreferences);
+  }, [currentPreferences]);
+
+  useEffect(() => {
     if (!managedServersQuery.data) {
       return;
     }
@@ -1927,7 +1934,7 @@ export default function WorkspacePage() {
       workbenchAgentStatus?.updated_at ?? "",
     ],
     queryFn: api.listWorkbenchAgentModels,
-    enabled: tab === "agent" && Boolean(workbenchAgentStatus?.configured && workbenchAgentStatus?.has_api_key),
+    enabled: (tab === "agent" || (tab === "settings" && settingsSubtab === "agentic")) && Boolean(workbenchAgentStatus?.configured && workbenchAgentStatus?.has_api_key),
     staleTime: 1000 * 60 * 5,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -5980,16 +5987,6 @@ export default function WorkspacePage() {
     );
   };
 
-  const renderAdminSettings = () => (
-    <Stack spacing={2}>
-      {renderServerPresetManagement()}
-      {renderWorkbenchUserManagement()}
-      {renderPermissionInventoryStatus()}
-      {renderTombstoneAudit()}
-      {renderCacheIngestToken()}
-    </Stack>
-  );
-
   const renderDeveloperApi = () => (
     <Stack spacing={2}>
       <Paper sx={{ p: 3, borderRadius: 2 }}>
@@ -6063,6 +6060,121 @@ export default function WorkspacePage() {
     </Stack>
   );
 
+  const renderWorkbenchAgentSettings = () => (
+    <Paper sx={{ p: 3, borderRadius: 2 }}>
+      <Stack spacing={2}>
+        <Box>
+          <Typography variant="h5">Agentic Settings</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Map an Open WebUI model into Workbench Agent. Every chat uses integrity-validated, query-routed evidence from the single authoritative 3DS_KB plus the current user&apos;s permission-scoped branch model snapshot.
+          </Typography>
+        </Box>
+        {workbenchAgentStatusQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentStatusQuery.error)}</Alert> : null}
+        {workbenchAgentModelsQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentModelsQuery.error)}</Alert> : null}
+        <Alert severity="info">
+          Workbench Agent uses your current Workbench permissions. It waits for both files to finish processing, explicitly instructs the selected model to retrieve 3DS guidance before answering Workbench/Cameo questions, and keeps branch facts scoped to data this user can read.
+        </Alert>
+        <Grid container spacing={2}>
+          <Grid item xs={12} md={6}>
+            <TextField
+              label="Open WebUI Base URL"
+              value={agentBaseUrlDraft}
+              onChange={(event) => setAgentBaseUrlDraft(event.target.value)}
+              helperText="Use the root Open WebUI host, like https://openwebui.company.com"
+              fullWidth
+            />
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <TextField
+              label="Open WebUI API Key"
+              type="password"
+              value={agentApiKeyDraft}
+              onChange={(event) => setAgentApiKeyDraft(event.target.value)}
+              helperText={workbenchAgentStatus?.has_api_key ? "Leave blank to keep the saved API key, or paste a new one to rotate it." : "Required the first time you save this Open WebUI connection."}
+              fullWidth
+            />
+          </Grid>
+        </Grid>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+          <Button
+            variant="contained"
+            startIcon={<SaveRoundedIcon />}
+            disabled={!csrfToken || saveWorkbenchAgentConfigMutation.isPending || !agentBaseUrlDraft.trim()}
+            onClick={() => saveWorkbenchAgentConfigMutation.mutate()}
+          >
+            {workbenchAgentStatus?.configured ? "Save Mapping" : "Save Connection"}
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshRoundedIcon />}
+            disabled={!workbenchAgentStatus?.configured || workbenchAgentModelsQuery.isFetching}
+            onClick={() => void workbenchAgentModelsQuery.refetch()}
+          >
+            Load Models
+          </Button>
+          <Button
+            color="error"
+            variant="outlined"
+            disabled={!workbenchAgentStatus?.configured || clearWorkbenchAgentConfigMutation.isPending || !csrfToken}
+            onClick={() => clearWorkbenchAgentConfigMutation.mutate()}
+          >
+            Clear Mapping
+          </Button>
+          {saveWorkbenchAgentConfigMutation.isPending || clearWorkbenchAgentConfigMutation.isPending || workbenchAgentModelsQuery.isFetching ? (
+            <CircularProgress size={22} />
+          ) : null}
+        </Stack>
+        <TextField
+          select
+          label="Mapped Open WebUI Agent / Model"
+          value={agentSelectedModelId}
+          onChange={(event) => {
+            const nextId = event.target.value;
+            const entry = workbenchAgentModels.find((candidate) => candidate.id === nextId) ?? null;
+            setAgentSelectedModelId(nextId);
+            setAgentSelectedModelName(entry?.name ?? "");
+          }}
+          fullWidth
+          disabled={!workbenchAgentStatus?.configured || (!workbenchAgentModels.length && !workbenchAgentModelsQuery.isFetching)}
+          helperText={
+            selectedWorkbenchAgentModel?.description ||
+            workbenchAgentStatus?.model_name ||
+            "Load models after saving the Open WebUI connection, then choose the mapped agent/model here."
+          }
+        >
+          <MenuItem value="">
+            <em>Select an Open WebUI model</em>
+          </MenuItem>
+          {workbenchAgentModels.map((entry) => (
+            <MenuItem key={entry.id} value={entry.id}>
+              {entry.name} ({entry.id})
+            </MenuItem>
+          ))}
+        </TextField>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+          <Chip label={workbenchAgentStatus?.configured ? "Connection saved" : "Connection not saved"} color={workbenchAgentStatus?.configured ? "success" : "default"} />
+          <Chip label={workbenchAgentStatus?.model_name || "No mapped model yet"} variant="outlined" />
+          <Chip label={workbenchAgentStatus?.knowledge_file_name || "Knowledge not synced"} variant="outlined" />
+          <Chip label={workbenchAgentStatus?.reference_file_count ? `${workbenchAgentStatus.reference_file_count} Workbench + 3DS reference files` : "Workbench + 3DS references not synced"} variant="outlined" />
+          <Chip
+            label={
+              workbenchAgentStatus?.three_ds_kb_available
+                ? `3DS KB: ${workbenchAgentStatus.three_ds_kb_page_count} documents / ${workbenchAgentStatus.three_ds_kb_chunk_count} integrity-gated evidence records`
+                : "3DS KB not configured"
+            }
+            color={workbenchAgentStatus?.three_ds_kb_available ? "success" : "warning"}
+            variant="outlined"
+          />
+        </Stack>
+        {workbenchAgentStatus?.updated_at ? (
+          <Typography variant="caption" color="text.secondary">
+            Mapping updated {new Date(workbenchAgentStatus.updated_at).toLocaleString()}.
+          </Typography>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+
   const renderWorkbenchAgent = () => (
     <Stack spacing={2}>
       <Paper sx={{ p: 3, borderRadius: 2 }}>
@@ -6070,111 +6182,24 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Workbench Agent</Typography>
             <Typography variant="body2" color="text.secondary">
-              Map any Open WebUI model to Workbench. Every chat uses integrity-validated, query-routed evidence from the single authoritative 3DS_KB plus the current user&apos;s permission-scoped branch model snapshot.
+              Chat with the mapped Open WebUI model against the selected project branch. Configure the Open WebUI connection in Settings → Agentic Settings.
             </Typography>
           </Box>
-          {workbenchAgentStatusQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentStatusQuery.error)}</Alert> : null}
-          {workbenchAgentModelsQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentModelsQuery.error)}</Alert> : null}
-          <Alert severity="info">
-            Workbench Agent uses your current Workbench permissions. It waits for both files to finish processing, explicitly instructs the selected model to retrieve 3DS guidance before answering Workbench/Cameo questions, and keeps branch facts scoped to data this user can read.
-          </Alert>
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={6}>
-              <TextField
-                label="Open WebUI Base URL"
-                value={agentBaseUrlDraft}
-                onChange={(event) => setAgentBaseUrlDraft(event.target.value)}
-                helperText="Use the root Open WebUI host, like https://openwebui.company.com"
-                fullWidth
-              />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField
-                label="Open WebUI API Key"
-                type="password"
-                value={agentApiKeyDraft}
-                onChange={(event) => setAgentApiKeyDraft(event.target.value)}
-                helperText={workbenchAgentStatus?.has_api_key ? "Leave blank to keep the saved API key, or paste a new one to rotate it." : "Required the first time you save this Open WebUI connection."}
-                fullWidth
-              />
-            </Grid>
-          </Grid>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
-            <Button
-              variant="contained"
-              startIcon={<SaveRoundedIcon />}
-              disabled={!csrfToken || saveWorkbenchAgentConfigMutation.isPending || !agentBaseUrlDraft.trim()}
-              onClick={() => saveWorkbenchAgentConfigMutation.mutate()}
-            >
-              {workbenchAgentStatus?.configured ? "Save Mapping" : "Save Connection"}
-            </Button>
-            <Button
-              variant="outlined"
-              startIcon={<RefreshRoundedIcon />}
-              disabled={!workbenchAgentStatus?.configured || workbenchAgentModelsQuery.isFetching}
-              onClick={() => void workbenchAgentModelsQuery.refetch()}
-            >
-              Load Models
-            </Button>
-            <Button
-              color="error"
-              variant="outlined"
-              disabled={!workbenchAgentStatus?.configured || clearWorkbenchAgentConfigMutation.isPending || !csrfToken}
-              onClick={() => clearWorkbenchAgentConfigMutation.mutate()}
-            >
-              Clear Mapping
-            </Button>
-            {saveWorkbenchAgentConfigMutation.isPending || clearWorkbenchAgentConfigMutation.isPending || workbenchAgentModelsQuery.isFetching ? (
-              <CircularProgress size={22} />
-            ) : null}
-          </Stack>
-          <TextField
-            select
-            label="Mapped Open WebUI Agent / Model"
-            value={agentSelectedModelId}
-            onChange={(event) => {
-              const nextId = event.target.value;
-              const entry = workbenchAgentModels.find((candidate) => candidate.id === nextId) ?? null;
-              setAgentSelectedModelId(nextId);
-              setAgentSelectedModelName(entry?.name ?? "");
-            }}
-            fullWidth
-            disabled={!workbenchAgentStatus?.configured || (!workbenchAgentModels.length && !workbenchAgentModelsQuery.isFetching)}
-            helperText={
-              selectedWorkbenchAgentModel?.description ||
-              workbenchAgentStatus?.model_name ||
-              "Load models after saving the Open WebUI connection, then choose the mapped agent/model here."
-            }
-          >
-            <MenuItem value="">
-              <em>Select an Open WebUI model</em>
-            </MenuItem>
-            {workbenchAgentModels.map((entry) => (
-              <MenuItem key={entry.id} value={entry.id}>
-                {entry.name} ({entry.id})
-              </MenuItem>
-            ))}
-          </TextField>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
             <Chip label={workbenchAgentStatus?.configured ? "Connection saved" : "Connection not saved"} color={workbenchAgentStatus?.configured ? "success" : "default"} />
             <Chip label={workbenchAgentStatus?.model_name || "No mapped model yet"} variant="outlined" />
             <Chip label={workbenchAgentStatus?.knowledge_file_name || "Knowledge not synced"} variant="outlined" />
-            <Chip label={workbenchAgentStatus?.reference_file_count ? `${workbenchAgentStatus.reference_file_count} Workbench + 3DS reference files` : "Workbench + 3DS references not synced"} variant="outlined" />
-            <Chip
-              label={
-                workbenchAgentStatus?.three_ds_kb_available
-                  ? `3DS KB: ${workbenchAgentStatus.three_ds_kb_page_count} documents / ${workbenchAgentStatus.three_ds_kb_chunk_count} integrity-gated evidence records`
-                  : "3DS KB not configured"
-              }
-              color={workbenchAgentStatus?.three_ds_kb_available ? "success" : "warning"}
-              variant="outlined"
-            />
           </Stack>
-          {workbenchAgentStatus?.updated_at ? (
-            <Typography variant="caption" color="text.secondary">
-              Mapping updated {new Date(workbenchAgentStatus.updated_at).toLocaleString()}.
-            </Typography>
-          ) : null}
+          <Button
+            variant="outlined"
+            startIcon={<SettingsRoundedIcon />}
+            onClick={() => {
+              setSettingsSubtab("agentic");
+              setTab("settings");
+            }}
+          >
+            Open Agentic Settings
+          </Button>
         </Stack>
       </Paper>
 
@@ -6311,10 +6336,188 @@ export default function WorkspacePage() {
     </Stack>
   );
 
-  const renderSettingsExtras = () => (
+  const renderWorkspacePreferences = () => {
+    const setPreferenceField = <K extends keyof SessionPreferences>(key: K, value: SessionPreferences[K]) => {
+      setPreferencesDraft((current) => ({ ...current, [key]: value }));
+    };
+    const detailViewOptions: Array<{ value: ItemDetailViewMode; label: string }> = [
+      { value: "standard", label: "Standard" },
+      { value: "expert", label: "Expert" },
+      { value: "all", label: "All" },
+    ];
+
+    return (
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="h5">Workspace Preferences</Typography>
+            <Typography variant="body2" color="text.secondary">
+              User-facing workspace behavior. These settings are saved to your Workbench profile, not the deployment environment file.
+            </Typography>
+          </Box>
+          <TextField
+            select
+            label="Theme"
+            value={preferencesDraft.theme_mode}
+            onChange={(event) => setPreferenceField("theme_mode", event.target.value as ThemeMode)}
+            fullWidth
+          >
+            <MenuItem value="light">Light</MenuItem>
+            <MenuItem value="dark">Dark</MenuItem>
+            <MenuItem value="system">System</MenuItem>
+          </TextField>
+          <Grid container spacing={2}>
+            <Grid item xs={12}>
+              <Typography gutterBottom fontWeight={600}>Font Scale</Typography>
+              <Slider
+                value={preferencesDraft.font_scale}
+                min={0.85}
+                max={1.4}
+                step={0.05}
+                marks
+                onChange={(_, value) => setPreferenceField("font_scale", value as number)}
+                valueLabelDisplay="auto"
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <Typography gutterBottom fontWeight={600}>Presentation Font Scale</Typography>
+              <Slider
+                value={preferencesDraft.presentation_font_scale}
+                min={1}
+                max={2}
+                step={0.05}
+                marks
+                onChange={(_, value) => setPreferenceField("presentation_font_scale", value as number)}
+                valueLabelDisplay="auto"
+              />
+            </Grid>
+          </Grid>
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={6}>
+              <TextField
+                select
+                label="Specification View Mode"
+                value={preferencesDraft.item_detail_view_mode}
+                onChange={(event) => setPreferenceField("item_detail_view_mode", event.target.value as ItemDetailViewMode)}
+                fullWidth
+              >
+                {detailViewOptions.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <TextField
+                label="Request Timeout (seconds)"
+                type="number"
+                fullWidth
+                value={preferencesDraft.request_timeout_seconds}
+                onChange={(event) => setPreferenceField("request_timeout_seconds", Number(event.target.value))}
+              />
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <TextField
+                label="Live Log Polling (ms)"
+                type="number"
+                fullWidth
+                value={preferencesDraft.live_log_poll_interval_ms}
+                onChange={(event) => setPreferenceField("live_log_poll_interval_ms", Number(event.target.value))}
+              />
+            </Grid>
+          </Grid>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={preferencesDraft.compact_ui}
+                onChange={(event) => setPreferenceField("compact_ui", event.target.checked)}
+              />
+            }
+            label="Use compact workspace layout"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={preferencesDraft.show_hidden_packages_in_tree}
+                onChange={(event) => setPreferenceField("show_hidden_packages_in_tree", event.target.checked)}
+              />
+            }
+            label="Show hidden packages in containment tree"
+          />
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+            <Button
+              variant="contained"
+              startIcon={<SaveRoundedIcon />}
+              disabled={!csrfToken || settingsMutation.isPending}
+              onClick={() => settingsMutation.mutate(preferencesDraft)}
+            >
+              Save Workspace Preferences
+            </Button>
+            {settingsMutation.isPending ? <CircularProgress size={22} /> : null}
+          </Stack>
+        </Stack>
+      </Paper>
+    );
+  };
+
+  const renderSettingsPage = () => (
     <Stack spacing={2}>
-      {renderCacheApiKeys()}
-      {isAdmin ? renderAdminSettings() : null}
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="h5">Workbench Settings</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Settings are now part of the main workspace bar. Use the subtabs below for users, network/server setup, and agentic configuration.
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Button
+              variant={settingsSubtab === "users-groups" ? "contained" : "outlined"}
+              onClick={() => setSettingsSubtab("users-groups")}
+            >
+              Users & Groups
+            </Button>
+            <Button
+              variant={settingsSubtab === "network" ? "contained" : "outlined"}
+              onClick={() => setSettingsSubtab("network")}
+            >
+              Network Settings
+            </Button>
+            <Button
+              variant={settingsSubtab === "agentic" ? "contained" : "outlined"}
+              onClick={() => setSettingsSubtab("agentic")}
+            >
+              Agentic Settings
+            </Button>
+          </Stack>
+        </Stack>
+      </Paper>
+
+      {settingsSubtab === "users-groups" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderWorkbenchUserManagement() : (
+            <Alert severity="info">User and group management is administrator-only. Your personal API keys are available below.</Alert>
+          )}
+          {renderCacheApiKeys()}
+          {isAdmin ? renderPermissionInventoryStatus() : null}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "network" ? (
+        <Stack spacing={2}>
+          {renderWorkspacePreferences()}
+          {isAdmin ? renderServerPresetManagement() : null}
+          {isAdmin ? renderCacheIngestToken() : null}
+          {isAdmin ? renderTombstoneAudit() : null}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "agentic" ? (
+        <Stack spacing={2}>
+          {renderWorkbenchAgentSettings()}
+        </Stack>
+      ) : null}
     </Stack>
   );
 
@@ -6576,11 +6779,11 @@ export default function WorkspacePage() {
             <MenuItem
               onClick={() => {
                 closeUserMenu();
-                setSettingsOpen(true);
+                setTab("settings");
               }}
             >
               <SettingsRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
-              Workspace Settings
+              Settings
             </MenuItem>
             <MenuItem
               onClick={() => {
@@ -6745,6 +6948,14 @@ export default function WorkspacePage() {
               >
                 Agent
               </Button>
+              <Button
+                size="small"
+                variant={tab === "settings" ? "contained" : "text"}
+                startIcon={<SettingsRoundedIcon />}
+                onClick={() => setTab("settings")}
+              >
+                Settings
+              </Button>
             </Stack>
             <Menu
               anchorEl={workspaceMenuAnchorEl}
@@ -6807,23 +7018,10 @@ export default function WorkspacePage() {
             {tab === "agent" ? renderWorkbenchAgent() : null}
             {tab === "developer" ? renderDeveloperApi() : null}
             {tab === "api" ? renderApiExplorer() : null}
+            {tab === "settings" ? renderSettingsPage() : null}
           </Box>
         </Stack>
       </Box>
-      <SettingsDialog
-        open={settingsOpen}
-        preferences={currentPreferences}
-        saving={settingsMutation.isPending}
-        extraContent={renderSettingsExtras()}
-        onClose={() => {
-          setSettingsOpen(false);
-          setRevealedCacheIngestToken("");
-          setRevealedCacheApiKey("");
-        }}
-        onSave={async (preferences) => {
-          await settingsMutation.mutateAsync(preferences);
-        }}
-      />
     </Box>
   );
 }
