@@ -25,6 +25,8 @@ import {
   Paper,
   Slider,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -62,6 +64,7 @@ import {
   ProjectUsageResponse,
   ServerProfile,
   ServerProfileInput,
+  ServerPermissionInventoryDetails,
   ServerPermissionInventoryStatus,
   SessionPreferences,
   StereotypeElementSearchResponse,
@@ -74,6 +77,9 @@ import {
   WorkbenchAgentChatMessage,
   WorkbenchAgentKnowledgeStatus,
   WorkbenchAuthSettings,
+  WorkbenchGroupCreateRequest,
+  WorkbenchGroupSummary,
+  WorkbenchGroupUpdateRequest,
   WorkbenchUserCreateRequest,
   WorkbenchUserUpdateRequest,
 } from "../models/api";
@@ -84,7 +90,7 @@ type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-vi
 type WorkspaceMenuGroup = "views" | "diagrams" | "api";
 type ElementSearchMode = "query" | "stereotype";
 type CompareMode = "branch" | "item";
-type SettingsSubtab = "users-groups" | "network" | "agentic";
+type SettingsSubtab = "users" | "groups" | "auth" | "api-keys" | "network" | "agentic";
 
 const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api", "settings"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
@@ -160,6 +166,41 @@ function parseElementSearchMode(value: string | null | undefined): ElementSearch
 
 function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : "The request failed.";
+}
+
+function inventoryTextValue(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+  }
+  return "";
+}
+
+function inventoryRecordTitle(record: Record<string, unknown>, fallback: string): string {
+  return inventoryTextValue(record, ["displayName", "name", "qualifiedName", "title", "key", "ID", "id", "roleName", "groupName"]) || fallback;
+}
+
+function inventoryRecordSubtitle(record: Record<string, unknown>): string {
+  return inventoryTextValue(record, ["description", "qualifiedName", "ID", "id", "key", "resourceID", "resourceId"]);
+}
+
+function inventoryRecordSearchText(record: Record<string, unknown>): string {
+  return JSON.stringify(record).toLowerCase();
+}
+
+function inventoryMemberCount(record: Record<string, unknown>): number | null {
+  for (const key of ["users", "groupUsers", "usergroups", "members", "children"]) {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      return value.length;
+    }
+  }
+  return null;
 }
 
 function flattenTree(nodes: TreeNode[]): TreeNode[] {
@@ -1694,6 +1735,7 @@ export default function WorkspacePage() {
   const capabilities = session?.capabilities?.capabilities ?? {};
   const canEdit = capabilities.edit?.state === "ready";
   const isAdmin = Boolean(session?.can_manage_server_presets);
+  const canManageGroups = isAdmin || Boolean(session?.can_manage_groups);
   const compactUi = currentPreferences.compact_ui ?? true;
   const [itemDetailViewMode, setItemDetailViewMode] = useState<ItemDetailViewMode>(() =>
     parseItemDetailViewMode(currentPreferences.item_detail_view_mode),
@@ -1714,7 +1756,10 @@ export default function WorkspacePage() {
   };
 
   const [tab, setTab] = useState<WorkspaceTab>(() => parseWorkspaceTab(searchParams.get("tab")));
-  const [settingsSubtab, setSettingsSubtab] = useState<SettingsSubtab>("users-groups");
+  const [settingsSubtab, setSettingsSubtab] = useState<SettingsSubtab>("users");
+  const [workbenchUserSearch, setWorkbenchUserSearch] = useState("");
+  const [twcGroupSearch, setTwcGroupSearch] = useState("");
+  const settingsTabActive = tab === "settings";
   const [preferencesDraft, setPreferencesDraft] = useState<SessionPreferences>(currentPreferences);
   const [selectedProjectId, setSelectedProjectId] = useState(() => searchParams.get("project") ?? "");
   const [selectedBranchId, setSelectedBranchId] = useState(() => searchParams.get("branch") ?? "");
@@ -1774,6 +1819,13 @@ export default function WorkspacePage() {
     display_name: "",
   });
   const [workbenchPasswordResets, setWorkbenchPasswordResets] = useState<Record<string, string>>({});
+  const [newWorkbenchGroup, setNewWorkbenchGroup] = useState<WorkbenchGroupCreateRequest>({
+    name: "",
+    description: "",
+    users: [],
+    enabled: true,
+  });
+  const [workbenchGroupUserDrafts, setWorkbenchGroupUserDrafts] = useState<Record<string, string>>({});
   const [newServerPreset, setNewServerPreset] = useState<ServerProfileInput>({
     name: "",
     base_url: "",
@@ -1807,16 +1859,17 @@ export default function WorkspacePage() {
   const projectsQuery = useQuery({
     queryKey: ["workspace-projects", ...sessionCacheKey],
     queryFn: () => api.getProjects(),
+    enabled: !settingsTabActive,
     staleTime: 10_000,
     gcTime: cacheTimeMs,
-    refetchInterval: 30_000,
+    refetchInterval: settingsTabActive ? false : 30_000,
     refetchOnWindowFocus: true,
   });
 
   const contractQuery = useQuery({
     queryKey: ["workspace-contract", ...sessionCacheKey],
     queryFn: api.getContractManifest,
-    enabled: Boolean(session?.user?.preferred_username),
+    enabled: isAdmin,
     staleTime: cacheTimeMs,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -1841,7 +1894,15 @@ export default function WorkspacePage() {
   const workbenchUsersQuery = useQuery({
     queryKey: ["workbench-users", ...sessionCacheKey],
     queryFn: api.listWorkbenchUsers,
-    enabled: isAdmin,
+    enabled: canManageGroups,
+    staleTime: 10_000,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const workbenchGroupsQuery = useQuery({
+    queryKey: ["workbench-groups", ...sessionCacheKey],
+    queryFn: api.listWorkbenchGroups,
+    enabled: canManageGroups,
     staleTime: 10_000,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -1863,6 +1924,14 @@ export default function WorkspacePage() {
     refetchInterval: (query) =>
       query.state.data?.state === "refreshing" ? 5_000 : 30_000,
     refetchOnWindowFocus: true,
+  });
+  const permissionInventoryDetailsQuery = useQuery({
+    queryKey: ["workspace-permission-inventory-details", ...sessionCacheKey],
+    queryFn: api.getPermissionInventoryDetails,
+    enabled: Boolean(session?.server?.id) && isAdmin && tab === "settings" && settingsSubtab === "groups",
+    staleTime: 30_000,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
   });
   const branchTombstonesQuery = useQuery({
     queryKey: ["workspace-branch-tombstones", ...sessionCacheKey],
@@ -1888,6 +1957,18 @@ export default function WorkspacePage() {
   useEffect(() => {
     setPreferencesDraft(currentPreferences);
   }, [currentPreferences]);
+
+  useEffect(() => {
+    if (!isAdmin && (tab === "api" || tab === "developer")) {
+      setTab(canManageGroups ? "settings" : "dashboard");
+    }
+    if (!canManageGroups && tab === "settings") {
+      setTab("dashboard");
+    }
+    if (!isAdmin && settingsSubtab !== "users" && settingsSubtab !== "groups") {
+      setSettingsSubtab(canManageGroups ? "users" : "users");
+    }
+  }, [canManageGroups, isAdmin, settingsSubtab, tab]);
 
   useEffect(() => {
     if (!managedServersQuery.data) {
@@ -3018,7 +3099,10 @@ export default function WorkspacePage() {
   const retryPermissionInventoryMutation = useMutation({
     mutationFn: () => api.retryPermissionInventory(csrfToken),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["workspace-permission-inventory-status", ...sessionCacheKey] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["workspace-permission-inventory-status", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-permission-inventory-details", ...sessionCacheKey] }),
+      ]);
       setNotice({ severity: "success", message: "The TWC permission inventory refresh was queued in the background." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
@@ -3070,6 +3154,40 @@ export default function WorkspacePage() {
         queryClient.invalidateQueries({ queryKey: ["auth-management-status", ...sessionCacheKey] }),
       ]);
       setNotice({ severity: "success", message: "Workbench user deleted." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const createWorkbenchGroupMutation = useMutation({
+    mutationFn: (payload: WorkbenchGroupCreateRequest) => api.createWorkbenchGroup(payload, csrfToken),
+    onSuccess: async () => {
+      setNewWorkbenchGroup({ name: "", description: "", users: [], enabled: true });
+      await queryClient.invalidateQueries({ queryKey: ["workbench-groups", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Workbench group created." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const updateWorkbenchGroupMutation = useMutation({
+    mutationFn: ({ name, payload }: { name: string; payload: WorkbenchGroupUpdateRequest }) =>
+      api.updateWorkbenchGroup(name, payload, csrfToken),
+    onSuccess: async (group) => {
+      setWorkbenchGroupUserDrafts((current) => {
+        const next = { ...current };
+        delete next[group.name];
+        return next;
+      });
+      await queryClient.invalidateQueries({ queryKey: ["workbench-groups", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: `Workbench group ${group.name} updated.` });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const deleteWorkbenchGroupMutation = useMutation({
+    mutationFn: (name: string) => api.deleteWorkbenchGroup(name, csrfToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["workbench-groups", ...sessionCacheKey] });
+      setNotice({ severity: "success", message: "Workbench group deleted." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -5427,12 +5545,10 @@ export default function WorkspacePage() {
     );
   };
 
-  const renderWorkbenchUserManagement = () => {
+  const renderAuthenticationSettings = () => {
     const status = authManagementStatusQuery.data;
-    const users = workbenchUsersQuery.data ?? [];
     const userManagementMode = authSettingsDraft.user_management_mode;
     const settingsBusy = updateAuthSettingsMutation.isPending || authManagementStatusQuery.isFetching;
-    const userBusy = createWorkbenchUserMutation.isPending || updateWorkbenchUserMutation.isPending || deleteWorkbenchUserMutation.isPending;
     const localAuthOnlyDisabled =
       userManagementMode === "twc" && !authSettingsDraft.twc_redirect_enabled && !authSettingsDraft.twc_token_enabled;
 
@@ -5441,15 +5557,14 @@ export default function WorkspacePage() {
         <Stack spacing={2}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
             <Box>
-              <Typography variant="h5">Workbench User Management</Typography>
+              <Typography variant="h5">Authentication Type & Settings</Typography>
               <Typography variant="body2" color="text.secondary">
-                Choose one user authority for this Workbench instance and manage local app users when local mode is active.
+                Choose exactly one sign-in authority. Workbench local users and TWC-managed users are intentionally mutually exclusive.
               </Typography>
             </Box>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-              <Chip label={`${status?.local_user_count ?? users.length} local users`} variant="outlined" />
               <Chip
-                label={userManagementMode === "local" ? "Settings mode: local users" : "Settings mode: TWC users"}
+                label={userManagementMode === "local" ? "Mode: local users" : "Mode: TWC users"}
                 color={userManagementMode === "local" ? "secondary" : "primary"}
                 variant="outlined"
               />
@@ -5462,7 +5577,7 @@ export default function WorkspacePage() {
           </Stack>
 
           <Alert severity="info">
-            This page is the authority after bootstrap. Use local mode for Workbench-managed username/password users, or TWC mode for TWC-managed users. Workbench will not enable both modes at the same time.
+            Use local mode for Workbench-managed username/password users, or TWC mode for TWC-managed users. Workbench will not enable both modes at the same time.
           </Alert>
           {status?.first_admin_setup_required ? (
             <Alert severity="warning">
@@ -5479,7 +5594,6 @@ export default function WorkspacePage() {
             </Alert>
           )}
           {authManagementStatusQuery.error ? <Alert severity="error">{errorMessage(authManagementStatusQuery.error)}</Alert> : null}
-          {workbenchUsersQuery.error ? <Alert severity="error">{errorMessage(workbenchUsersQuery.error)}</Alert> : null}
 
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.5}>
@@ -5569,8 +5683,59 @@ export default function WorkspacePage() {
               </Stack>
             </Stack>
           </Paper>
+        </Stack>
+      </Paper>
+    );
+  };
 
-          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+  const renderWorkbenchUserManagement = () => {
+    const status = authManagementStatusQuery.data;
+    const users = workbenchUsersQuery.data ?? [];
+    const userBusy = createWorkbenchUserMutation.isPending || updateWorkbenchUserMutation.isPending || deleteWorkbenchUserMutation.isPending;
+    const normalizedSearch = workbenchUserSearch.trim().toLowerCase();
+    const filteredUsers = normalizedSearch
+      ? users.filter((user) =>
+          [user.username, user.display_name, user.role]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedSearch),
+        )
+      : users;
+
+    return (
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+            <Box>
+              <Typography variant="h5">Users</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Create local Workbench users, search users, rotate passwords, and enable or disable access.
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip label={`${status?.local_user_count ?? users.length} local users`} variant="outlined" />
+              <Chip
+                label={authSettingsDraft.user_management_mode === "local" ? "Local user mode active" : "TWC user mode active"}
+                color={authSettingsDraft.user_management_mode === "local" ? "secondary" : "primary"}
+                variant="outlined"
+              />
+            </Stack>
+          </Stack>
+
+          {workbenchUsersQuery.error ? <Alert severity="error">{errorMessage(workbenchUsersQuery.error)}</Alert> : null}
+          {authSettingsDraft.user_management_mode === "local" ? (
+            <Alert severity="warning">
+              Local Workbench usernames should match TWC usernames so stored project permissions map cleanly.
+            </Alert>
+          ) : (
+            <Alert severity="info">
+              TWC mode is active. Local user records can stay here for audit or future use, but TWC sign-in is the authority.
+            </Alert>
+          )}
+
+          {isAdmin ? (
+            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.5}>
               <Typography variant="subtitle1">Create local Workbench user</Typography>
               <Grid container spacing={1.5}>
@@ -5610,6 +5775,7 @@ export default function WorkspacePage() {
                     fullWidth
                   >
                     <MenuItem value="user">User</MenuItem>
+                    <MenuItem value="group_manager">Group Manager</MenuItem>
                     <MenuItem value="admin">Admin</MenuItem>
                   </TextField>
                 </Grid>
@@ -5639,12 +5805,23 @@ export default function WorkspacePage() {
                 Create Workbench User
               </Button>
             </Stack>
-          </Paper>
+            </Paper>
+          ) : (
+            <Alert severity="info">Group managers can search users for group membership. Creating, disabling, deleting, and role changes are administrator-only.</Alert>
+          )}
+
+          <TextField
+            label="Search users"
+            value={workbenchUserSearch}
+            onChange={(event) => setWorkbenchUserSearch(event.target.value)}
+            helperText="Search username, display name, or role."
+            fullWidth
+          />
 
           {workbenchUsersQuery.isLoading ? <CircularProgress size={28} /> : null}
           <Stack spacing={1.5}>
-            {users.length ? (
-              users.map((user) => {
+            {filteredUsers.length ? (
+              filteredUsers.map((user) => {
                 const resetPassword = workbenchPasswordResets[user.username] ?? "";
                 const isCurrentUser = user.username.toLowerCase() === (session?.user?.preferred_username ?? "").toLowerCase();
                 return (
@@ -5666,6 +5843,7 @@ export default function WorkspacePage() {
                           <Chip label={`${user.accessible_branch_count} branches`} variant="outlined" />
                         </Stack>
                       </Stack>
+                      {isAdmin ? (
                       <Grid container spacing={1.5} alignItems="center">
                         <Grid item xs={12} md={4}>
                           <TextField
@@ -5728,12 +5906,15 @@ export default function WorkspacePage() {
                           </Stack>
                         </Grid>
                       </Grid>
+                      ) : null}
                     </Stack>
                   </Paper>
                 );
               })
             ) : (
-              <Typography color="text.secondary">No local Workbench users exist yet.</Typography>
+              <Typography color="text.secondary">
+                {users.length ? "No users match that search." : "No local Workbench users exist yet."}
+              </Typography>
             )}
           </Stack>
         </Stack>
@@ -5928,6 +6109,331 @@ export default function WorkspacePage() {
             </Button>
             {retryPermissionInventoryMutation.isPending ? <CircularProgress size={22} sx={{ ml: 1 }} /> : null}
           </Box>
+        </Stack>
+      </Paper>
+    );
+  };
+
+  const renderWorkbenchGroupManagement = () => {
+    const status = permissionInventoryStatusQuery.data;
+    const inventory: ServerPermissionInventoryDetails | null = permissionInventoryDetailsQuery.data ?? null;
+    const normalizedSearch = twcGroupSearch.trim().toLowerCase();
+    const localGroups = workbenchGroupsQuery.data ?? [];
+    const localUsers = workbenchUsersQuery.data ?? [];
+    const groupBusy = createWorkbenchGroupMutation.isPending || updateWorkbenchGroupMutation.isPending || deleteWorkbenchGroupMutation.isPending;
+    const groups = inventory?.groups ?? [];
+    const roles = inventory?.roles ?? [];
+    const filteredLocalGroups = normalizedSearch
+      ? localGroups.filter((group) =>
+          [group.name, group.description, ...group.users]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedSearch),
+        )
+      : localGroups;
+    const filteredGroups = normalizedSearch
+      ? groups.filter((group) => inventoryRecordSearchText(group).includes(normalizedSearch))
+      : groups;
+    const filteredRoles = normalizedSearch
+      ? roles.filter((role) => inventoryRecordSearchText(role).includes(normalizedSearch))
+      : roles;
+
+    return (
+      <Paper sx={{ p: 3, borderRadius: 2 }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+            <Box>
+              <Typography variant="h5">Groups</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Manage local Workbench groups. Administrators can also import TWC users, groups, roles, and scoped project permissions.
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip label={`${localGroups.length} local groups`} variant="outlined" />
+              {isAdmin ? <Chip label={`${status?.group_count ?? groups.length} TWC groups`} variant="outlined" /> : null}
+              {isAdmin ? <Chip label={`${status?.role_count ?? roles.length} TWC roles`} variant="outlined" /> : null}
+              {status ? <Chip label={status.state.toUpperCase()} color={status.state === "clean" ? "success" : status.state === "failed" ? "error" : "warning"} /> : null}
+            </Stack>
+          </Stack>
+
+          <Alert severity="info">
+            Local Workbench groups organize local users. Group managers can only manage groups they are already assigned to.
+          </Alert>
+          {workbenchGroupsQuery.error ? <Alert severity="error">{errorMessage(workbenchGroupsQuery.error)}</Alert> : null}
+          {isAdmin && permissionInventoryStatusQuery.error ? <Alert severity="error">{errorMessage(permissionInventoryStatusQuery.error)}</Alert> : null}
+          {isAdmin && permissionInventoryDetailsQuery.error ? <Alert severity="error">{errorMessage(permissionInventoryDetailsQuery.error)}</Alert> : null}
+          {isAdmin && status?.message ? <Alert severity={status.state === "failed" ? "error" : "info"}>{status.message}</Alert> : null}
+
+          {isAdmin ? (
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Stack spacing={1.5}>
+              <Typography variant="subtitle1">Create local Workbench group</Typography>
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    label="Group name"
+                    value={newWorkbenchGroup.name}
+                    onChange={(event) => setNewWorkbenchGroup((current) => ({ ...current, name: event.target.value }))}
+                    fullWidth
+                  />
+                </Grid>
+                <Grid item xs={12} md={5}>
+                  <TextField
+                    label="Description"
+                    value={newWorkbenchGroup.description}
+                    onChange={(event) => setNewWorkbenchGroup((current) => ({ ...current, description: event.target.value }))}
+                    fullWidth
+                  />
+                </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    select
+                    label="Add initial user"
+                    value=""
+                    onChange={(event) => {
+                      const username = event.target.value;
+                      setNewWorkbenchGroup((current) => ({
+                        ...current,
+                        users: current.users.includes(username) ? current.users : [...current.users, username],
+                      }));
+                    }}
+                    disabled={!localUsers.length}
+                    fullWidth
+                  >
+                    <MenuItem value="">
+                      <em>Select user</em>
+                    </MenuItem>
+                    {localUsers.map((user) => (
+                      <MenuItem key={`new-group-user-${user.username}`} value={user.username}>
+                        {user.display_name || user.username}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} md={1}>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={newWorkbenchGroup.enabled}
+                        onChange={(event) => setNewWorkbenchGroup((current) => ({ ...current, enabled: event.target.checked }))}
+                      />
+                    }
+                    label="Enabled"
+                  />
+                </Grid>
+              </Grid>
+              {newWorkbenchGroup.users.length ? (
+                <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                  {newWorkbenchGroup.users.map((username) => (
+                    <Chip
+                      key={`new-group-selected-${username}`}
+                      label={username}
+                      onDelete={() => setNewWorkbenchGroup((current) => ({ ...current, users: current.users.filter((item) => item !== username) }))}
+                    />
+                  ))}
+                </Stack>
+              ) : null}
+              <Button
+                variant="contained"
+                disabled={!csrfToken || !newWorkbenchGroup.name.trim() || groupBusy}
+                onClick={() => createWorkbenchGroupMutation.mutate(newWorkbenchGroup)}
+              >
+                Create Workbench Group
+              </Button>
+            </Stack>
+          </Paper>
+          ) : (
+            <Alert severity="info">Group managers can edit membership for groups they already belong to. Creating or deleting groups is administrator-only.</Alert>
+          )}
+
+          <TextField
+            label="Search groups and roles"
+            value={twcGroupSearch}
+            onChange={(event) => setTwcGroupSearch(event.target.value)}
+            helperText={isAdmin ? "Search local groups, TWC group names, role names, ids, descriptions, members, or raw TWC fields." : "Search groups you are assigned to."}
+            fullWidth
+          />
+
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Stack spacing={1.5}>
+              <Typography variant="subtitle1">Local Workbench Groups</Typography>
+              {workbenchGroupsQuery.isLoading ? <CircularProgress size={24} /> : null}
+              {filteredLocalGroups.length ? (
+                filteredLocalGroups.map((group: WorkbenchGroupSummary) => {
+                  const draftUser = workbenchGroupUserDrafts[group.name] ?? "";
+                  return (
+                    <Paper key={group.name} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                      <Stack spacing={1.25}>
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+                          <Box>
+                            <Typography variant="subtitle2">{group.name}</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {group.description || "No description"} · {group.users.length} user{group.users.length === 1 ? "" : "s"} · updated {new Date(group.updated_at).toLocaleString()}
+                            </Typography>
+                          </Box>
+                          <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                            <Chip label={group.enabled ? "enabled" : "disabled"} color={group.enabled ? "success" : "warning"} variant="outlined" size="small" />
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              disabled={!csrfToken || groupBusy}
+                              onClick={() => updateWorkbenchGroupMutation.mutate({ name: group.name, payload: { enabled: !group.enabled } })}
+                            >
+                              {group.enabled ? "Disable" : "Enable"}
+                            </Button>
+                            {isAdmin ? (
+                              <Button
+                                size="small"
+                                color="warning"
+                                disabled={!csrfToken || groupBusy}
+                                onClick={() => deleteWorkbenchGroupMutation.mutate(group.name)}
+                              >
+                                Delete
+                              </Button>
+                            ) : null}
+                          </Stack>
+                        </Stack>
+                        <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                          {group.users.length ? group.users.map((username) => (
+                            <Chip
+                              key={`${group.name}-${username}`}
+                              label={username}
+                              size="small"
+                              onDelete={
+                                csrfToken && !groupBusy
+                                  ? () => updateWorkbenchGroupMutation.mutate({
+                                      name: group.name,
+                                      payload: { users: group.users.filter((item) => item !== username) },
+                                    })
+                                  : undefined
+                              }
+                            />
+                          )) : <Typography variant="caption" color="text.secondary">No users added yet.</Typography>}
+                        </Stack>
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }}>
+                          <TextField
+                            select
+                            size="small"
+                            label="Add user"
+                            value={draftUser}
+                            onChange={(event) => setWorkbenchGroupUserDrafts((current) => ({ ...current, [group.name]: event.target.value }))}
+                            sx={{ minWidth: 240 }}
+                          >
+                            <MenuItem value="">
+                              <em>Select user</em>
+                            </MenuItem>
+                            {localUsers
+                              .filter((user) => !group.users.includes(user.username))
+                              .map((user) => (
+                                <MenuItem key={`${group.name}-available-${user.username}`} value={user.username}>
+                                  {user.display_name || user.username}
+                                </MenuItem>
+                              ))}
+                          </TextField>
+                          <Button
+                            variant="outlined"
+                            disabled={!csrfToken || !draftUser || groupBusy}
+                            onClick={() => updateWorkbenchGroupMutation.mutate({ name: group.name, payload: { users: [...group.users, draftUser] } })}
+                          >
+                            Add User
+                          </Button>
+                        </Stack>
+                      </Stack>
+                    </Paper>
+                  );
+                })
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  {localGroups.length ? "No local Workbench groups match that search." : "No local Workbench groups exist yet."}
+                </Typography>
+              )}
+            </Stack>
+          </Paper>
+
+          {isAdmin ? (
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+            <Button
+              variant="contained"
+              startIcon={<RefreshRoundedIcon />}
+              disabled={!csrfToken || !status?.current_user_can_refresh || status?.state === "refreshing" || retryPermissionInventoryMutation.isPending}
+              onClick={() => retryPermissionInventoryMutation.mutate()}
+            >
+              Import TWC Users & Groups
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              disabled={permissionInventoryStatusQuery.isFetching || permissionInventoryDetailsQuery.isFetching}
+              onClick={() => {
+                void permissionInventoryStatusQuery.refetch();
+                void permissionInventoryDetailsQuery.refetch();
+              }}
+            >
+              Refresh List
+            </Button>
+            {retryPermissionInventoryMutation.isPending || permissionInventoryDetailsQuery.isLoading ? <CircularProgress size={22} /> : null}
+          </Stack>
+          ) : null}
+
+          {isAdmin ? (
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={6}>
+              <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                <Stack spacing={1.5}>
+                  <Typography variant="subtitle1">Imported TWC Groups</Typography>
+                  {filteredGroups.length ? (
+                    filteredGroups.slice(0, 50).map((group, index) => {
+                      const memberCount = inventoryMemberCount(group);
+                      return (
+                        <Paper key={`group-${index}-${inventoryRecordTitle(group, "group")}`} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                          <Typography variant="subtitle2">{inventoryRecordTitle(group, `Group ${index + 1}`)}</Typography>
+                          {inventoryRecordSubtitle(group) ? (
+                            <Typography variant="caption" color="text.secondary">{inventoryRecordSubtitle(group)}</Typography>
+                          ) : null}
+                          <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
+                            {memberCount !== null ? <Chip label={`${memberCount} direct entries`} size="small" variant="outlined" /> : null}
+                            {inventoryTextValue(group, ["ID", "id", "key"]) ? <Chip label={inventoryTextValue(group, ["ID", "id", "key"])} size="small" variant="outlined" /> : null}
+                          </Stack>
+                        </Paper>
+                      );
+                    })
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      {groups.length ? "No groups match that search." : "No imported groups are stored yet. Run Import TWC Users & Groups as a TWC Server Administrator."}
+                    </Typography>
+                  )}
+                  {filteredGroups.length > 50 ? <Typography variant="caption" color="text.secondary">Showing first 50 matching groups. Narrow the search for more precision.</Typography> : null}
+                </Stack>
+              </Paper>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, height: "100%" }}>
+                <Stack spacing={1.5}>
+                  <Typography variant="subtitle1">Imported TWC Roles</Typography>
+                  {filteredRoles.length ? (
+                    filteredRoles.slice(0, 50).map((role, index) => (
+                      <Paper key={`role-${index}-${inventoryRecordTitle(role, "role")}`} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                        <Typography variant="subtitle2">{inventoryRecordTitle(role, `Role ${index + 1}`)}</Typography>
+                        {inventoryRecordSubtitle(role) ? (
+                          <Typography variant="caption" color="text.secondary">{inventoryRecordSubtitle(role)}</Typography>
+                        ) : null}
+                        <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
+                          {inventoryTextValue(role, ["ID", "id", "key"]) ? <Chip label={inventoryTextValue(role, ["ID", "id", "key"])} size="small" variant="outlined" /> : null}
+                          {inventoryTextValue(role, ["resourceID", "resourceId", "scope"]) ? <Chip label={inventoryTextValue(role, ["resourceID", "resourceId", "scope"])} size="small" variant="outlined" /> : null}
+                        </Stack>
+                      </Paper>
+                    ))
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      {roles.length ? "No roles match that search." : "No imported roles are stored yet. Run Import TWC Users & Groups as a TWC Server Administrator."}
+                    </Typography>
+                  )}
+                  {filteredRoles.length > 50 ? <Typography variant="caption" color="text.secondary">Showing first 50 matching roles. Narrow the search for more precision.</Typography> : null}
+                </Stack>
+              </Paper>
+            </Grid>
+          </Grid>
+          ) : null}
         </Stack>
       </Paper>
     );
@@ -6190,16 +6696,18 @@ export default function WorkspacePage() {
             <Chip label={workbenchAgentStatus?.model_name || "No mapped model yet"} variant="outlined" />
             <Chip label={workbenchAgentStatus?.knowledge_file_name || "Knowledge not synced"} variant="outlined" />
           </Stack>
-          <Button
-            variant="outlined"
-            startIcon={<SettingsRoundedIcon />}
-            onClick={() => {
-              setSettingsSubtab("agentic");
-              setTab("settings");
-            }}
-          >
-            Open Agentic Settings
-          </Button>
+          {isAdmin ? (
+            <Button
+              variant="outlined"
+              startIcon={<SettingsRoundedIcon />}
+              onClick={() => {
+                setSettingsSubtab("agentic");
+                setTab("settings");
+              }}
+            >
+              Open Agentic Settings
+            </Button>
+          ) : null}
         </Stack>
       </Paper>
 
@@ -6468,39 +6976,54 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Workbench Settings</Typography>
             <Typography variant="body2" color="text.secondary">
-              Settings are now part of the main workspace bar. Use the subtabs below for users, network/server setup, and agentic configuration.
+              Organized admin and personal settings. Workspace project/branch context is hidden here so setup work stays focused.
             </Typography>
           </Box>
-          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-            <Button
-              variant={settingsSubtab === "users-groups" ? "contained" : "outlined"}
-              onClick={() => setSettingsSubtab("users-groups")}
-            >
-              Users & Groups
-            </Button>
-            <Button
-              variant={settingsSubtab === "network" ? "contained" : "outlined"}
-              onClick={() => setSettingsSubtab("network")}
-            >
-              Network Settings
-            </Button>
-            <Button
-              variant={settingsSubtab === "agentic" ? "contained" : "outlined"}
-              onClick={() => setSettingsSubtab("agentic")}
-            >
-              Agentic Settings
-            </Button>
-          </Stack>
+          <Tabs
+            value={settingsSubtab}
+            onChange={(_event: SyntheticEvent, value: SettingsSubtab) => setSettingsSubtab(value)}
+            variant="scrollable"
+            scrollButtons="auto"
+            aria-label="Workbench settings sections"
+          >
+            {canManageGroups ? <Tab value="users" label="Users" /> : null}
+            {canManageGroups ? <Tab value="groups" label="Groups" /> : null}
+            {isAdmin ? <Tab value="auth" label="Authentication" /> : null}
+            {isAdmin ? <Tab value="api-keys" label="API Access Keys" /> : null}
+            {isAdmin ? <Tab value="network" label="Network Settings" /> : null}
+            {isAdmin ? <Tab value="agentic" label="Agentic Settings" /> : null}
+          </Tabs>
         </Stack>
       </Paper>
 
-      {settingsSubtab === "users-groups" ? (
+      {settingsSubtab === "users" ? (
         <Stack spacing={2}>
-          {isAdmin ? renderWorkbenchUserManagement() : (
-            <Alert severity="info">User and group management is administrator-only. Your personal API keys are available below.</Alert>
+          {canManageGroups ? renderWorkbenchUserManagement() : (
+            <Alert severity="info">User management is available to Workbench administrators and group managers.</Alert>
           )}
-          {renderCacheApiKeys()}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "groups" ? (
+        <Stack spacing={2}>
+          {canManageGroups ? renderWorkbenchGroupManagement() : (
+            <Alert severity="info">Group management is available to Workbench administrators and group managers.</Alert>
+          )}
           {isAdmin ? renderPermissionInventoryStatus() : null}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "auth" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderAuthenticationSettings() : (
+            <Alert severity="info">Authentication settings are administrator-only.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "api-keys" ? (
+        <Stack spacing={2}>
+          {renderCacheApiKeys()}
         </Stack>
       ) : null}
 
@@ -6776,15 +7299,17 @@ export default function WorkspacePage() {
             keepMounted
           >
             <MenuItem disabled>{userMenuLabel}</MenuItem>
-            <MenuItem
-              onClick={() => {
-                closeUserMenu();
-                setTab("settings");
-              }}
-            >
-              <SettingsRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
-              Settings
-            </MenuItem>
+            {canManageGroups ? (
+              <MenuItem
+                onClick={() => {
+                  closeUserMenu();
+                  setTab("settings");
+                }}
+              >
+                <SettingsRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
+                Settings
+              </MenuItem>
+            ) : null}
             <MenuItem
               onClick={() => {
                 closeUserMenu();
@@ -6803,12 +7328,13 @@ export default function WorkspacePage() {
           display: "grid",
           gridTemplateColumns: {
             xs: "1fr",
-            lg: `${navPaneWidth}px 12px minmax(0, 1fr)`,
+            lg: settingsTabActive ? "minmax(0, 1fr)" : `${navPaneWidth}px 12px minmax(0, 1fr)`,
           },
           gap: 0,
           p: workspaceOuterPadding,
         }}
       >
+        {!settingsTabActive ? (
         <Paper
           component="aside"
           sx={{
@@ -6905,16 +7431,19 @@ export default function WorkspacePage() {
             ) : null}
           </Stack>
         </Paper>
+        ) : null}
+        {!settingsTabActive ? (
         <Box
           role="separator"
           aria-orientation="vertical"
           sx={resizeHandleStyles()}
           onMouseDown={(event) => beginHorizontalResize(event, navPaneWidth, setNavPaneWidth, 260, 520)}
         />
-        <Stack spacing={sectionSpacing} component="main" sx={{ minWidth: 0, pl: { xs: 0, lg: compactUi ? 1.5 : 2 } }}>
+        ) : null}
+        <Stack spacing={sectionSpacing} component="main" sx={{ minWidth: 0, pl: { xs: 0, lg: settingsTabActive ? 0 : compactUi ? 1.5 : 2 } }}>
           {notice ? <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.message}</Alert> : null}
           {session?.permission_snapshot_warning ? <Alert severity="warning">{session.permission_snapshot_warning}</Alert> : null}
-          {projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
+          {!settingsTabActive && projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
           <Paper sx={{ borderRadius: 2 }}>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ p: compactUi ? 1 : 1.25 }}>
               <Button
@@ -6933,14 +7462,16 @@ export default function WorkspacePage() {
               >
                 Diagrams
               </Button>
-              <Button
-                size="small"
-                variant={currentMenuGroup === "api" ? "contained" : "text"}
-                endIcon={<KeyboardArrowDownRoundedIcon />}
-                onClick={openWorkspaceMenu("api")}
-              >
-                API
-              </Button>
+              {isAdmin ? (
+                <Button
+                  size="small"
+                  variant={currentMenuGroup === "api" ? "contained" : "text"}
+                  endIcon={<KeyboardArrowDownRoundedIcon />}
+                  onClick={openWorkspaceMenu("api")}
+                >
+                  API
+                </Button>
+              ) : null}
               <Button
                 size="small"
                 variant={tab === "agent" ? "contained" : "text"}
@@ -6948,14 +7479,16 @@ export default function WorkspacePage() {
               >
                 Agent
               </Button>
-              <Button
-                size="small"
-                variant={tab === "settings" ? "contained" : "text"}
-                startIcon={<SettingsRoundedIcon />}
-                onClick={() => setTab("settings")}
-              >
-                Settings
-              </Button>
+              {canManageGroups ? (
+                <Button
+                  size="small"
+                  variant={tab === "settings" ? "contained" : "text"}
+                  startIcon={<SettingsRoundedIcon />}
+                  onClick={() => setTab("settings")}
+                >
+                  Settings
+                </Button>
+              ) : null}
             </Stack>
             <Menu
               anchorEl={workspaceMenuAnchorEl}
@@ -6998,7 +7531,7 @@ export default function WorkspacePage() {
                   </MenuItem>,
                 ]
               ) : null}
-              {workspaceMenuGroup === "api" ? (
+              {workspaceMenuGroup === "api" && isAdmin ? (
                 [
                   <MenuItem key="developer" selected={tab === "developer"} onClick={() => { setTab("developer"); closeWorkspaceMenu(); }}>Developer API</MenuItem>,
                   <MenuItem key="api-explorer" selected={tab === "api"} onClick={() => { setTab("api"); closeWorkspaceMenu(); }}>
@@ -7016,9 +7549,9 @@ export default function WorkspacePage() {
             {tab === "diagram-viewer" ? renderDiagramViewer() : null}
             {tab === "compare" ? renderCompare() : null}
             {tab === "agent" ? renderWorkbenchAgent() : null}
-            {tab === "developer" ? renderDeveloperApi() : null}
-            {tab === "api" ? renderApiExplorer() : null}
-            {tab === "settings" ? renderSettingsPage() : null}
+            {tab === "developer" && isAdmin ? renderDeveloperApi() : null}
+            {tab === "api" && isAdmin ? renderApiExplorer() : null}
+            {tab === "settings" && canManageGroups ? renderSettingsPage() : null}
           </Box>
         </Stack>
       </Box>

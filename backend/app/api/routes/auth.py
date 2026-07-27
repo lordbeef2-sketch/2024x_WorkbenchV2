@@ -12,13 +12,15 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
-from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
+from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf, require_group_manager, require_group_manager_csrf
 from app.auth.twc import build_twc_oidc_signin_url, exchange_twc_auth_code
 from app.models.domain import (
     TokenLoginRequest,
     WorkbenchAuthSettings,
     WorkbenchAuthSettingsUpdate,
     WorkbenchFirstAdminSetupRequest,
+    WorkbenchGroupCreateRequest,
+    WorkbenchGroupUpdateRequest,
     WorkbenchLocalLoginRequest,
     WorkbenchUserCreateRequest,
     WorkbenchUserUpdateRequest,
@@ -424,7 +426,7 @@ def update_auth_management_settings(
 
 @router.get("/management/users")
 def list_workbench_users(
-    session=Depends(require_admin),
+    session=Depends(require_group_manager),
     container: ApplicationContainer = Depends(get_container),
 ):
     return container.platform.list_workbench_users(session)
@@ -471,6 +473,57 @@ def delete_workbench_user(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workbench user not found")
+    return {"ok": True}
+
+
+@router.get("/management/groups")
+def list_workbench_groups(
+    session=Depends(require_group_manager),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.list_workbench_groups(session)
+
+
+@router.post("/management/groups")
+def create_workbench_group(
+    payload: WorkbenchGroupCreateRequest,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.create_workbench_group(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.put("/management/groups/{name}")
+def update_workbench_group(
+    name: str,
+    payload: WorkbenchGroupUpdateRequest,
+    session=Depends(require_group_manager_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.update_workbench_group(session, name, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workbench group not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.delete("/management/groups/{name}")
+def delete_workbench_group(
+    name: str,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        if not container.platform.delete_workbench_group(session, name):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workbench group not found")
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return {"ok": True}
 
 

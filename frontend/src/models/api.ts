@@ -107,6 +107,7 @@ export interface SessionSnapshot {
   pending_server: ServerProfile | null;
   server_state: UserServerState | null;
   can_manage_server_presets: boolean;
+  can_manage_groups: boolean;
   capabilities: CapabilitySummary | null;
   preferences: SessionPreferences;
   bookmarks: Bookmark[];
@@ -441,6 +442,14 @@ export interface ServerPermissionInventoryStatus {
   message: string;
 }
 
+export interface ServerPermissionInventoryDetails {
+  server_id: string;
+  roles: Record<string, unknown>[];
+  groups: Record<string, unknown>[];
+  captured_at: string | null;
+  dirty: boolean;
+}
+
 export interface ServerPermissionInventoryAuditRecord {
   id: string;
   server_id: string;
@@ -557,7 +566,7 @@ export interface WorkbenchAuthAdminStatus {
   can_manage_users: boolean;
 }
 
-export type WorkbenchUserRole = "user" | "admin";
+export type WorkbenchUserRole = "user" | "group_manager" | "admin";
 
 export interface WorkbenchUserSummary {
   username: string;
@@ -585,6 +594,28 @@ export interface WorkbenchUserUpdateRequest {
   role?: WorkbenchUserRole | null;
   enabled?: boolean | null;
   display_name?: string | null;
+}
+
+export interface WorkbenchGroupSummary {
+  name: string;
+  description: string;
+  users: string[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkbenchGroupCreateRequest {
+  name: string;
+  description: string;
+  users: string[];
+  enabled: boolean;
+}
+
+export interface WorkbenchGroupUpdateRequest {
+  description?: string | null;
+  users?: string[] | null;
+  enabled?: boolean | null;
 }
 
 export interface CacheIngestTokenStatus {

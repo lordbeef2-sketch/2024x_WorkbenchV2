@@ -151,6 +151,7 @@ class AuthorizationContext(BaseModel):
     permissions_included: bool = False
     source: str = "authenticated-user-default"
     can_manage_server_presets: bool = False
+    can_manage_groups: bool = False
 
 
 class ServerHealth(BaseModel):
@@ -292,6 +293,7 @@ class WorkbenchAuthSettingsUpdate(BaseModel):
 
 class WorkbenchUserRole(str, Enum):
     USER = "user"
+    GROUP_MANAGER = "group_manager"
     ADMIN = "admin"
 
 
@@ -353,6 +355,73 @@ class WorkbenchUserUpdateRequest(BaseModel):
         return str(value).strip()
 
 
+class WorkbenchGroupRecord(BaseModel):
+    name: str
+    description: str = ""
+    users: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class WorkbenchGroupSummary(BaseModel):
+    name: str
+    description: str = ""
+    users: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkbenchGroupCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    users: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+    @field_validator("name", "description", mode="before")
+    @classmethod
+    def normalize_group_create_fields(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+    @field_validator("users", mode="before")
+    @classmethod
+    def normalize_group_users(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [item.strip().lower() for item in value.split(",") if item.strip()]
+        if isinstance(value, list):
+            return [str(item).strip().lower() for item in value if str(item).strip()]
+        return []
+
+
+class WorkbenchGroupUpdateRequest(BaseModel):
+    description: str | None = None
+    users: list[str] | None = None
+    enabled: bool | None = None
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_group_update_description(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+    @field_validator("users", mode="before")
+    @classmethod
+    def normalize_group_update_users(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        return WorkbenchGroupCreateRequest.normalize_group_users(value)
+
+
 class WorkbenchAuthAdminStatus(BaseModel):
     settings: WorkbenchAuthSettings
     local_user_count: int = 0
@@ -389,6 +458,7 @@ class SessionSnapshot(BaseModel):
     pending_server: ServerProfile | None = None
     server_state: UserServerState | None = None
     can_manage_server_presets: bool = False
+    can_manage_groups: bool = False
     capabilities: CapabilitySummary | None = None
     preferences: SessionPreferences = Field(default_factory=SessionPreferences)
     bookmarks: list[Bookmark] = Field(default_factory=list)
@@ -801,6 +871,14 @@ class ServerPermissionInventory(BaseModel):
     roles: list[dict[str, Any]] = Field(default_factory=list)
     groups: list[dict[str, Any]] = Field(default_factory=list)
     captured_at: datetime = Field(default_factory=utcnow)
+    dirty: bool = False
+
+
+class ServerPermissionInventoryDetails(BaseModel):
+    server_id: str
+    roles: list[dict[str, Any]] = Field(default_factory=list)
+    groups: list[dict[str, Any]] = Field(default_factory=list)
+    captured_at: datetime | None = None
     dirty: bool = False
 
 

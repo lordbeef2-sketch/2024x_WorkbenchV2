@@ -98,6 +98,7 @@ from app.models.domain import (
     SearchResponse,
     ServerHealth,
     ServerPermissionInventory,
+    ServerPermissionInventoryDetails,
     ServerPermissionInventoryAuditRecord,
     ServerPermissionInventoryStatus,
     ServerProfile,
@@ -128,6 +129,10 @@ from app.models.domain import (
     WorkbenchAgentSecret,
     WorkbenchAgentStatus,
     WorkbenchFirstAdminSetupRequest,
+    WorkbenchGroupCreateRequest,
+    WorkbenchGroupRecord,
+    WorkbenchGroupSummary,
+    WorkbenchGroupUpdateRequest,
     WorkbenchLocalLoginRequest,
     WorkbenchUserCreateRequest,
     WorkbenchUserRecord,
@@ -246,6 +251,9 @@ class PlatformService:
     def can_manage_server_presets(self, session: SessionData) -> bool:
         return session.authorization_context.can_manage_server_presets
 
+    def can_manage_groups(self, session: SessionData) -> bool:
+        return session.authorization_context.can_manage_server_presets or session.authorization_context.can_manage_groups
+
     def auth_admin_status(self, session: SessionData | None = None) -> WorkbenchAuthAdminStatus:
         users = self.repo.list_workbench_users()
         settings = self.get_auth_settings()
@@ -253,7 +261,7 @@ class PlatformService:
             settings=settings,
             local_user_count=len(users),
             first_admin_setup_required=settings.user_management_mode == "local" and len(users) == 0,
-            can_manage_users=bool(session and self.can_manage_server_presets(session)),
+            can_manage_users=bool(session and self.can_manage_groups(session)),
         )
 
     def get_auth_settings(self) -> WorkbenchAuthSettings:
@@ -383,7 +391,7 @@ class PlatformService:
         if payload.display_name is not None:
             updates["display_name"] = payload.display_name
         if user.enabled and user.role == WorkbenchUserRole.ADMIN and (
-            updates.get("enabled") is False or updates.get("role") == WorkbenchUserRole.USER
+            updates.get("enabled") is False or updates.get("role") in {WorkbenchUserRole.USER, WorkbenchUserRole.GROUP_MANAGER}
         ):
             other_enabled_admins = [
                 candidate
@@ -416,6 +424,79 @@ class PlatformService:
             if not other_enabled_admins:
                 raise ValueError("At least one enabled Workbench admin must remain.")
         return self.repo.delete_workbench_user(normalized)
+
+    def list_workbench_groups(self, session: SessionData) -> list[WorkbenchGroupSummary]:
+        groups = self.repo.list_workbench_groups()
+        if not session.authorization_context.can_manage_server_presets:
+            username = self._normalize_workbench_username(session.user.preferred_username)
+            groups = [group for group in groups if username in {self._normalize_workbench_username(user) for user in group.users}]
+        return [self._workbench_group_summary(group) for group in groups]
+
+    def create_workbench_group(self, payload: WorkbenchGroupCreateRequest) -> WorkbenchGroupSummary:
+        name = self._normalize_workbench_group_name(payload.name)
+        if not name:
+            raise ValueError("Group name is required.")
+        if self.repo.get_workbench_group(name):
+            raise ValueError("Workbench group already exists.")
+        users = self._normalize_workbench_group_users(payload.users)
+        self._validate_workbench_group_users(users)
+        group = WorkbenchGroupRecord(
+            name=name,
+            description=payload.description,
+            users=users,
+            enabled=payload.enabled,
+        )
+        return self._workbench_group_summary(self.repo.upsert_workbench_group(group))
+
+    def update_workbench_group(self, session: SessionData, name: str, payload: WorkbenchGroupUpdateRequest) -> WorkbenchGroupSummary:
+        normalized = self._normalize_workbench_group_name(name)
+        group = self.repo.get_workbench_group(normalized)
+        if not group:
+            raise KeyError(normalized)
+        self._require_workbench_group_write(session, group)
+        updates: dict[str, Any] = {}
+        if payload.description is not None:
+            updates["description"] = payload.description
+        if payload.enabled is not None:
+            updates["enabled"] = payload.enabled
+        if payload.users is not None:
+            users = self._normalize_workbench_group_users(payload.users)
+            self._validate_workbench_group_users(users)
+            updates["users"] = users
+        return self._workbench_group_summary(self.repo.upsert_workbench_group(group.model_copy(update=updates)))
+
+    def delete_workbench_group(self, session: SessionData, name: str) -> bool:
+        if not session.authorization_context.can_manage_server_presets:
+            raise PermissionError("Only Workbench administrators can delete groups.")
+        return self.repo.delete_workbench_group(self._normalize_workbench_group_name(name))
+
+    def _require_workbench_group_write(self, session: SessionData, group: WorkbenchGroupRecord) -> None:
+        if session.authorization_context.can_manage_server_presets:
+            return
+        username = self._normalize_workbench_username(session.user.preferred_username)
+        if username not in {self._normalize_workbench_username(user) for user in group.users}:
+            raise PermissionError("Group managers can only manage groups they are already assigned to.")
+
+    def _workbench_group_summary(self, group: WorkbenchGroupRecord) -> WorkbenchGroupSummary:
+        return WorkbenchGroupSummary(
+            name=group.name,
+            description=group.description,
+            users=group.users,
+            enabled=group.enabled,
+            created_at=group.created_at,
+            updated_at=group.updated_at,
+        )
+
+    def _normalize_workbench_group_name(self, value: str) -> str:
+        return re.sub(r"\s+", " ", value.strip()).lower()
+
+    def _normalize_workbench_group_users(self, users: list[str]) -> list[str]:
+        return sorted({self._normalize_workbench_username(user) for user in users if user.strip()})
+
+    def _validate_workbench_group_users(self, users: list[str]) -> None:
+        missing = [user for user in users if not self.repo.get_workbench_user(user)]
+        if missing:
+            raise ValueError(f"Workbench group references unknown user(s): {', '.join(missing)}")
 
     def setup_first_workbench_admin(self, payload: WorkbenchFirstAdminSetupRequest) -> SessionData:
         if self.repo.list_workbench_users():
@@ -454,6 +535,7 @@ class PlatformService:
             roles=[user_record.role.value],
             source="workbench-local",
             can_manage_server_presets=user_record.role == WorkbenchUserRole.ADMIN,
+            can_manage_groups=user_record.role in {WorkbenchUserRole.ADMIN, WorkbenchUserRole.GROUP_MANAGER},
         )
         session = self.sessions.create_session(
             server,
@@ -5146,6 +5228,18 @@ class PlatformService:
             message=messages[state],
         )
 
+    def server_permission_inventory_details(self, session: SessionData) -> ServerPermissionInventoryDetails:
+        inventory = self.repo.get_server_permission_inventory(session.server.id)
+        if not inventory:
+            return ServerPermissionInventoryDetails(server_id=session.server.id)
+        return ServerPermissionInventoryDetails(
+            server_id=inventory.server_id,
+            roles=inventory.roles,
+            groups=inventory.groups,
+            captured_at=inventory.captured_at,
+            dirty=inventory.dirty,
+        )
+
     def list_server_permission_inventory_audit(
         self,
         session: SessionData,
@@ -8567,6 +8661,7 @@ class PlatformService:
         permissions_included = bool(current_user_context and current_user_context.permissions_included)
         role_ids = list((current_user_context.role_ids) if current_user_context else [])
         can_manage = self._claims_grant_admin(preferred_username, roles, groups)
+        can_manage_groups = can_manage or self._claims_grant_group_manager(roles, groups)
 
         if roles or groups or permissions:
             return AuthorizationContext(
@@ -8577,6 +8672,7 @@ class PlatformService:
                 permissions_included=permissions_included,
                 source="upstream-authorization-claims",
                 can_manage_server_presets=can_manage,
+                can_manage_groups=can_manage_groups,
             )
 
         return AuthorizationContext(
@@ -8587,6 +8683,7 @@ class PlatformService:
             permissions_included=permissions_included,
             source="authenticated-user-default",
             can_manage_server_presets=can_manage,
+            can_manage_groups=can_manage_groups,
         )
 
     def _claims_grant_admin(self, preferred_username: str, roles: list[str], groups: list[str]) -> bool:
@@ -8598,6 +8695,14 @@ class PlatformService:
             if role.strip()
         }
         return bool(normalized_roles & SERVER_ADMIN_ROLE_NAMES)
+
+    def _claims_grant_group_manager(self, roles: list[str], groups: list[str]) -> bool:
+        normalized_claims = {
+            re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+            for value in [*roles, *groups]
+            if value.strip()
+        }
+        return "group manager" in normalized_claims
 
     def _is_twc_server_administrator(self, session: SessionData) -> bool:
         normalized_roles = {

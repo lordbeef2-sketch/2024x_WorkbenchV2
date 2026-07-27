@@ -23,6 +23,7 @@ import {
   ProjectTombstoneRecord,
   ProjectUsageResponse,
   ServerHealth,
+  ServerPermissionInventoryDetails,
   ServerPermissionInventoryStatus,
   ServerProfile,
   ServerProfileInput,
@@ -40,6 +41,9 @@ import {
   WorkbenchAgentConfigRequest,
   WorkbenchAgentStatus,
   WorkbenchFirstAdminSetupRequest,
+  WorkbenchGroupCreateRequest,
+  WorkbenchGroupSummary,
+  WorkbenchGroupUpdateRequest,
   WorkbenchLocalLoginRequest,
   WorkbenchUserCreateRequest,
   WorkbenchUserSummary,
@@ -176,6 +180,29 @@ export const api = {
       headers: jsonHeaders(csrfToken),
     });
   },
+  listWorkbenchGroups() {
+    return request<WorkbenchGroupSummary[]>("/auth/management/groups");
+  },
+  createWorkbenchGroup(payload: WorkbenchGroupCreateRequest, csrfToken: string) {
+    return request<WorkbenchGroupSummary>("/auth/management/groups", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  updateWorkbenchGroup(name: string, payload: WorkbenchGroupUpdateRequest, csrfToken: string) {
+    return request<WorkbenchGroupSummary>(`/auth/management/groups/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
+  deleteWorkbenchGroup(name: string, csrfToken: string) {
+    return request<{ ok: boolean }>(`/auth/management/groups/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
   listServers() {
     return request<ServerProfile[]>("/servers");
   },
@@ -220,6 +247,9 @@ export const api = {
   },
   getPermissionInventoryStatus() {
     return request<ServerPermissionInventoryStatus>("/workspace/permission-inventory/status");
+  },
+  getPermissionInventoryDetails() {
+    return request<ServerPermissionInventoryDetails>("/workspace/permission-inventory");
   },
   retryPermissionInventory(csrfToken: string) {
     return request<JobRecord>("/workspace/permission-inventory/retry", {

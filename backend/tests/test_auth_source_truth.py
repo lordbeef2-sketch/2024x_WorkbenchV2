@@ -16,6 +16,8 @@ from app.core.storage import SqliteRepository
 from app.models.domain import (
     ServerProfile,
     WorkbenchAuthSettingsUpdate,
+    WorkbenchGroupCreateRequest,
+    WorkbenchGroupUpdateRequest,
     WorkbenchUserCreateRequest,
     WorkbenchUserRole,
     WorkbenchUserUpdateRequest,
@@ -252,6 +254,90 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
 
             self.assertEqual(session.server.id, "workbench-setup")
             self.assertEqual(session.user.auth_source, "workbench-local")
+
+    def test_group_managers_only_manage_groups_they_belong_to(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="admin",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.ADMIN,
+                    enabled=True,
+                )
+            )
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="manager",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.GROUP_MANAGER,
+                    enabled=True,
+                )
+            )
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="other",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.USER,
+                    enabled=True,
+                )
+            )
+            service.create_workbench_group(
+                WorkbenchGroupCreateRequest(name="owned", users=["manager"])
+            )
+            service.create_workbench_group(
+                WorkbenchGroupCreateRequest(name="outside", users=["other"])
+            )
+            manager_session = SimpleNamespace(
+                user=SimpleNamespace(preferred_username="manager"),
+                authorization_context=SimpleNamespace(
+                    can_manage_server_presets=False,
+                    can_manage_groups=True,
+                ),
+            )
+
+            self.assertEqual(
+                [group.name for group in service.list_workbench_groups(manager_session)],
+                ["owned"],
+            )
+
+            updated = service.update_workbench_group(
+                manager_session,
+                "owned",
+                WorkbenchGroupUpdateRequest(description="managed safely"),
+            )
+
+            self.assertEqual(updated.description, "managed safely")
+            with self.assertRaisesRegex(PermissionError, "only manage groups"):
+                service.update_workbench_group(
+                    manager_session,
+                    "outside",
+                    WorkbenchGroupUpdateRequest(description="should be blocked"),
+                )
+            with self.assertRaisesRegex(PermissionError, "Only Workbench administrators"):
+                service.delete_workbench_group(manager_session, "owned")
+
+    def test_group_manager_claim_is_exact_and_not_admin(self) -> None:
+        service = object.__new__(PlatformService)
+        service.settings = Settings()
+
+        context = service._build_authorization_context(
+            "twc-manager",
+            current_user_context=SimpleNamespace(
+                roles=["Group Manager"],
+                role_ids=[],
+                groups=[],
+                permissions=[],
+                permissions_included=False,
+            ),
+            upstream_roles=None,
+            upstream_groups=None,
+        )
+
+        self.assertTrue(context.can_manage_groups)
+        self.assertFalse(context.can_manage_server_presets)
+        self.assertFalse(service._claims_grant_group_manager(["Project Group Managers"], []))
 
     def test_empty_env_preset_catalog_does_not_delete_app_managed_servers(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:

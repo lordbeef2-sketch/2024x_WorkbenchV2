@@ -29,6 +29,7 @@ from app.models.domain import (
     ServerProfile,
     UserServerState,
     WorkbenchAuthSettings,
+    WorkbenchGroupRecord,
     WorkbenchUserRecord,
     utcnow,
 )
@@ -297,6 +298,18 @@ class SqliteRepository:
                     project_id TEXT NOT NULL,
                     branch_id TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workbench_groups (
+                    name TEXT PRIMARY KEY,
+                    description TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
                     payload TEXT NOT NULL
                 )
                 """
@@ -2415,6 +2428,52 @@ class SqliteRepository:
             cursor = connection.execute(
                 "DELETE FROM workbench_users WHERE username = ?",
                 (username.strip().lower(),),
+            )
+            connection.commit()
+        return cursor.rowcount > 0
+
+    def list_workbench_groups(self) -> list[WorkbenchGroupRecord]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM workbench_groups ORDER BY LOWER(name)"
+            ).fetchall()
+        return [WorkbenchGroupRecord.model_validate_json(row["payload"]) for row in rows]
+
+    def get_workbench_group(self, name: str) -> WorkbenchGroupRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM workbench_groups WHERE name = ?",
+                (name.strip().lower(),),
+            ).fetchone()
+        return WorkbenchGroupRecord.model_validate_json(row["payload"]) if row else None
+
+    def upsert_workbench_group(self, group: WorkbenchGroupRecord) -> WorkbenchGroupRecord:
+        normalized_users = sorted({item.strip().lower() for item in group.users if item.strip()})
+        stored = group.model_copy(update={"name": group.name.strip().lower(), "users": normalized_users, "updated_at": utcnow()})
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO workbench_groups (
+                    name, description, enabled, created_at, updated_at, payload
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored.name,
+                    stored.description,
+                    int(stored.enabled),
+                    stored.created_at.isoformat(),
+                    stored.updated_at.isoformat(),
+                    stored.model_dump_json(),
+                ),
+            )
+            connection.commit()
+        return stored
+
+    def delete_workbench_group(self, name: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM workbench_groups WHERE name = ?",
+                (name.strip().lower(),),
             )
             connection.commit()
         return cursor.rowcount > 0
