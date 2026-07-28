@@ -1486,6 +1486,8 @@ class TeamworkAdapter:
         if isinstance(esi_data, dict):
             return _first_text(
                 esi_data.get("name"),
+                entity.get("human_name"),
+                entity.get("humanName"),
                 entity.get("kerml:name"),
                 entity.get("dcterms:title"),
                 entity.get("name"),
@@ -1493,6 +1495,8 @@ class TeamworkAdapter:
                 entity.get("title"),
             )
         return _first_text(
+            entity.get("human_name"),
+            entity.get("humanName"),
             entity.get("kerml:name"),
             entity.get("dcterms:title"),
             entity.get("name"),
@@ -1502,7 +1506,15 @@ class TeamworkAdapter:
 
     def _extract_description(self, payload: dict[str, Any]) -> str:
         entity = _payload_entity(payload) or {}
-        return _first_text(entity.get("kerml:comment"), entity.get("dcterms:description"), entity.get("description"), entity.get("summary"))
+        return _first_text(
+            entity.get("documentation"),
+            entity.get("body_markdown"),
+            entity.get("bodyMarkdown"),
+            entity.get("kerml:comment"),
+            entity.get("dcterms:description"),
+            entity.get("description"),
+            entity.get("summary"),
+        )
 
     def element_discovery_entry(self, element_id: str, payload: Any, fallback: ElementDiscoveryEntry | None = None) -> ElementDiscoveryEntry:
         entity = _payload_entity(payload) if payload is not None else None
@@ -1624,6 +1636,48 @@ class TeamworkAdapter:
                 return [value]
         return []
 
+    def _plugin_reference_values_from_map(self, value: Any) -> dict[str, list[str]]:
+        if not isinstance(value, dict):
+            return {}
+        normalized: dict[str, list[str]] = {}
+        for raw_key, raw_values in value.items():
+            key = str(raw_key).strip()
+            if not key:
+                continue
+            ids: list[str] = []
+            for raw_value in _as_list(raw_values):
+                reference_id = _reference_id(raw_value)
+                if reference_id and reference_id not in ids:
+                    ids.append(reference_id)
+            if ids:
+                normalized[key] = ids
+        return normalized
+
+    def _plugin_reference_summary(
+        self,
+        reference_id: str,
+        *,
+        relationship_type: str,
+        project_id: str,
+        branch_id: str,
+        resolved_entities: dict[str, dict[str, Any]],
+        parent_path: str = "",
+    ) -> ItemReference:
+        resolved_entity = resolved_entities.get(reference_id)
+        reference_name = self._extract_display_name(resolved_entity) if isinstance(resolved_entity, dict) else ""
+        raw_types = _normalize_types(resolved_entity.get("@type")) if isinstance(resolved_entity, dict) else []
+        item_type = _humanize_type(raw_types[0]) if raw_types else "element"
+        path = self._item_path(project_id, branch_id, reference_name or reference_id, resolved_entity) if isinstance(resolved_entity, dict) else ""
+        if not path and parent_path:
+            path = f"{parent_path}/{reference_name or reference_id}"
+        return ItemReference(
+            id=reference_id,
+            name=reference_name or reference_id,
+            item_type=item_type,
+            relationship_type=relationship_type,
+            path=path,
+        )
+
     def reference_resolution_ids(self, payload: dict[str, Any]) -> list[str]:
         entity = _payload_entity(payload) or {}
         ignored_keys = {
@@ -1663,6 +1717,19 @@ class TeamworkAdapter:
         }
 
         resolution_ids: list[str] = []
+        for key in ("owner_id", "ownerId"):
+            reference_id = _reference_id(entity.get(key))
+            if reference_id and reference_id not in resolution_ids:
+                resolution_ids.append(reference_id)
+        for key in ("owned_element_ids", "ownedElementIds", "diagram_element_ids", "diagramElementIds", "applied_stereotype_ids", "appliedStereotypeIds"):
+            for value in _as_list(entity.get(key)):
+                reference_id = _reference_id(value)
+                if reference_id and reference_id not in resolution_ids:
+                    resolution_ids.append(reference_id)
+        for values in self._plugin_reference_values_from_map(entity.get("references")).values():
+            for reference_id in values:
+                if reference_id not in resolution_ids:
+                    resolution_ids.append(reference_id)
         for key, value in entity.items():
             if key in ignored_keys:
                 continue
@@ -1676,7 +1743,7 @@ class TeamworkAdapter:
         entity = _payload_entity(payload) or {}
         stereotypes: list[str] = []
         stereotype_values: list[Any] = []
-        for key in ("uml:stereotypeName", "stereotypeName", "stereotypes"):
+        for key in ("uml:stereotypeName", "stereotypeName", "stereotypes", "applied_stereotype_ids", "appliedStereotypeIds"):
             stereotype_values.extend(_as_list(entity.get(key)))
         for value in stereotype_values:
             if isinstance(value, dict):
@@ -1895,12 +1962,51 @@ class TeamworkAdapter:
             )
             if owner is not None:
                 break
+        if owner is None:
+            owner_id = _reference_id(entity.get("owner_id")) or _reference_id(entity.get("ownerId"))
+            if owner_id:
+                owner = self._plugin_reference_summary(
+                    owner_id,
+                    relationship_type="owner",
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    resolved_entities=resolved_entities,
+                )
 
         type_references: list[ItemReference] = []
         contained_elements: list[ItemReference] = []
         related_items: list[ItemReference] = []
+        for raw_child_id in [*(_as_list(entity.get("owned_element_ids"))), *(_as_list(entity.get("ownedElementIds")))]:
+            child_id = _reference_id(raw_child_id)
+            if child_id:
+                contained_elements.append(
+                    self._plugin_reference_summary(
+                        child_id,
+                        relationship_type="ownedElement",
+                        project_id=project_id,
+                        branch_id=branch_id,
+                        resolved_entities=resolved_entities,
+                        parent_path=item_path,
+                    )
+                )
+        for relationship_type, reference_ids in self._plugin_reference_values_from_map(entity.get("references")).items():
+            for reference_id in reference_ids:
+                target = self._plugin_reference_summary(
+                    reference_id,
+                    relationship_type=relationship_type,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    resolved_entities=resolved_entities,
+                    parent_path=item_path,
+                )
+                if relationship_type in containment_keys or relationship_type in {"ownedElement", "owned_element_ids", "ownedElementIds"}:
+                    contained_elements.append(target)
+                elif relationship_type in type_keys or relationship_type.lower() in {"type", "classifier"}:
+                    type_references.append(target)
+                else:
+                    related_items.append(target)
         for key, value in entity.items():
-            if key in ignored_keys or key == "kerml:owner":
+            if key in ignored_keys or key == "kerml:owner" or key in {"references", "attributes", "spec_sections", "specSections", "owned_element_ids", "ownedElementIds"}:
                 continue
             relationship_type = containment_keys.get(key) or type_keys.get(key) or key.split(":")[-1]
             references = self._reference_values_for_field(value)
@@ -1955,7 +2061,9 @@ class TeamworkAdapter:
         metadata = self._extract_item_metadata(entity)
         name = self._extract_display_name(entity) or item_id
         description = self._extract_description(entity)
-        item_type = _humanize_type(raw_types[0]) if raw_types else "item"
+        item_type = _first_text(entity.get("human_type"), entity.get("humanType"), entity.get("metaclass"))
+        if not item_type:
+            item_type = _humanize_type(raw_types[0]) if raw_types else "item"
         item_path = self._item_path(project_id, branch_id, name, entity)
         owner, type_references, contained_elements, related_items = self._resolved_item_references(
             entity,

@@ -19,6 +19,65 @@ from app.services.platform import PlatformService
 
 
 class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
+    def test_plugin_snapshot_payload_remaps_cameo_relationships_and_specs(self) -> None:
+        adapter = object.__new__(TeamworkAdapter)
+        adapter.context = SimpleNamespace(server=SimpleNamespace(id="server"))
+        payload = {
+            "element_id": "element-1",
+            "model_id": "model-1",
+            "owner_id": "owner-1",
+            "name": "raw name",
+            "human_name": "Logical Component",
+            "human_type": "Block",
+            "metaclass": "Class",
+            "qualified_name": "Root::Logical Component",
+            "documentation": "Published documentation",
+            "owned_element_ids": ["part-1"],
+            "applied_stereotype_ids": ["stereo-1"],
+            "attributes": {"visibility": "public", "isAbstract": False},
+            "references": {
+                "classifier": ["type-1"],
+                "satisfy": ["req-1"],
+                "usageDiagrams": ["diagram-1"],
+            },
+            "spec_sections": {
+                "metamodel": {"entries": [{"name": "Visibility", "value": "public"}]},
+                "relations": {"entries": [{"name": "Satisfy", "target": "req-1"}]},
+            },
+        }
+        resolved_payloads = {
+            "owner-1": {"element_id": "owner-1", "human_name": "Owner Package", "human_type": "Package"},
+            "part-1": {"element_id": "part-1", "human_name": "Owned Part", "human_type": "Part Property"},
+            "type-1": {"element_id": "type-1", "human_name": "Type Block", "human_type": "Block"},
+            "req-1": {"element_id": "req-1", "human_name": "Requirement 1", "human_type": "Requirement"},
+            "diagram-1": {"element_id": "diagram-1", "human_name": "Context Diagram", "human_type": "Diagram"},
+            "stereo-1": {"element_id": "stereo-1", "human_name": "SafetyCritical", "human_type": "Stereotype"},
+        }
+
+        details = adapter.build_item_details_from_payload(
+            payload,
+            "element-1",
+            "project-1",
+            "branch-1",
+            resolved_payloads=resolved_payloads,
+        )
+
+        self.assertEqual(details.name, "Logical Component")
+        self.assertEqual(details.item_type, "Block")
+        self.assertEqual(details.description, "Published documentation")
+        self.assertEqual(details.path, "Root/Logical Component")
+        self.assertEqual(details.owner.name, "Owner Package")
+        self.assertIn("stereo-1", details.stereotypes)
+        self.assertEqual(details.source_payload["spec_sections"]["metamodel"]["entries"][0]["value"], "public")
+        self.assertEqual([(item.id, item.relationship_type) for item in details.contained_elements], [("part-1", "ownedElement")])
+        self.assertIn(("type-1", "classifier"), [(item.id, item.relationship_type) for item in details.type_references])
+        related = {(item.id, item.relationship_type) for item in details.related_items}
+        self.assertIn(("req-1", "satisfy"), related)
+        self.assertIn(("diagram-1", "usageDiagrams"), related)
+        relationship_rows = {(item["target"], item["type"]) for item in details.relationships}
+        self.assertIn(("part-1", "ownedElement"), relationship_rows)
+        self.assertIn(("req-1", "satisfy"), relationship_rows)
+
     async def test_every_group_is_checked_for_global_and_project_scopes(self) -> None:
         adapter = object.__new__(TeamworkAdapter)
         adapter.context = SimpleNamespace(server=SimpleNamespace(id="server"))
