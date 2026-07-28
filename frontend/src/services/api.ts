@@ -432,7 +432,7 @@ export const api = {
       headers: jsonHeaders(csrfToken),
     });
   },
-  getItem(itemId: string, projectId?: string, branchId?: string, workspaceId?: string, refresh = false) {
+  getItem(itemId: string, projectId?: string, branchId?: string, workspaceId?: string, refresh = false, modelId?: string) {
     const params = new URLSearchParams();
     if (projectId) {
       params.set("projectId", projectId);
@@ -442,6 +442,9 @@ export const api = {
     }
     if (workspaceId) {
       params.set("workspaceId", workspaceId);
+    }
+    if (modelId) {
+      params.set("modelId", modelId);
     }
     if (refresh) {
       params.set("refresh", "true");

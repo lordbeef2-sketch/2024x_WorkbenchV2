@@ -575,12 +575,13 @@ async def item(
     projectId: str | None = Query(default=None),
     branchId: str | None = Query(default=None),
     workspaceId: str | None = Query(default=None),
+    modelId: str | None = Query(default=None),
     refresh: bool = Query(default=False),
     session=Depends(get_session),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
-        return await container.platform.get_item(session, item_id, projectId, branchId, workspaceId, refresh=refresh)
+        return await container.platform.get_item(session, item_id, projectId, branchId, workspaceId, refresh=refresh, model_id=modelId)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found") from exc
     except RuntimeError as exc:

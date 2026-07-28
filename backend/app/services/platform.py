@@ -3932,8 +3932,10 @@ class PlatformService:
         item_id: str,
         project_id: str,
         branch_id: str,
+        *,
+        model_id: str | None = None,
     ) -> ItemDetails | None:
-        cached_record = self.get_cached_branch_element(session, project_id, branch_id, item_id)
+        cached_record = self.get_cached_branch_element(session, project_id, branch_id, item_id, model_id=model_id)
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         branch_access = self._branch_access_for_session(session, project_id, branch_id) if self._is_plugin_managed_summary(summary) else None
         admin_model_visibility = self._has_workbench_admin_model_visibility(session)
@@ -4886,6 +4888,7 @@ class PlatformService:
         branch_id: str | None = None,
         workspace_id: str | None = None,
         refresh: bool = False,
+        model_id: str | None = None,
     ) -> ItemDetails:
         cache_key = self._item_cache_key(project_id, branch_id, item_id)
         use_branch_materialized_cache = bool(project_id and branch_id)
@@ -4911,7 +4914,7 @@ class PlatformService:
                         summary=summary,
                         force=refresh,
                     )
-                materialized_item = await self._materialized_item_details(session, item_id, project_id, branch_id)
+                materialized_item = await self._materialized_item_details(session, item_id, project_id, branch_id, model_id=model_id)
                 if materialized_item is None:
                     raise KeyError(item_id)
                 self.sessions.add_recent_item(

@@ -876,6 +876,54 @@ function isDiagramLikeItem(item: ItemDetails | null | undefined): boolean {
   return candidates.some((candidate) => String(candidate ?? "").toLowerCase().includes("diagram"));
 }
 
+function itemDetailsFromTreeNode(node: TreeNode, projectId: string, branchId: string): ItemDetails {
+  const metaclass = typeof node.metadata.metaclass === "string" ? node.metadata.metaclass : "";
+  const modelId = typeof node.metadata.model_id === "string" ? node.metadata.model_id : "";
+  const qualifiedName = typeof node.metadata.qualified_name === "string" ? node.metadata.qualified_name : "";
+  const childCount = typeof node.metadata.child_count === "number" ? node.metadata.child_count : 0;
+  const stereotypes = Array.isArray(node.metadata.stereotypes)
+    ? node.metadata.stereotypes.filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+    : [];
+  return {
+    id: node.id,
+    name: node.label || node.id,
+    item_type: node.node_type || metaclass || "element",
+    path: qualifiedName || node.path || node.id,
+    project_id: projectId,
+    branch_id: branchId,
+    description: "",
+    documentation_markdown: "",
+    raw_types: [node.node_type, metaclass].filter((value): value is string => Boolean(value)),
+    stereotypes,
+    owner: null,
+    type_references: [],
+    contained_elements: [],
+    related_items: [],
+    metadata: {
+      ...node.metadata,
+      child_count: childCount,
+      model_id: modelId,
+      tree_node_fallback: true,
+    },
+    relationships: [],
+    version: "",
+    editable: false,
+    attachment_supported: false,
+    collaborators: [],
+    source_payload: {
+      element_id: node.id,
+      name: node.label || node.id,
+      human_name: node.label || node.id,
+      human_type: node.node_type || metaclass || "element",
+      metaclass,
+      model_id: modelId,
+      qualified_name: qualifiedName || node.path || "",
+      child_count: childCount,
+      tree_node_fallback: true,
+    },
+  };
+}
+
 function pythonLiteral(value: string): string {
   return JSON.stringify(value);
 }
@@ -2335,6 +2383,12 @@ export default function WorkspacePage() {
 
   const baseFlatNodes = useMemo(() => flattenTree(baseTreeNodes), [baseTreeNodes]);
   const loadedFlatNodes = useMemo(() => flattenTree(treeNodes), [treeNodes]);
+  const selectedTreeNode = useMemo(
+    () => (selectedItemId ? loadedFlatNodes.find((node) => node.id === selectedItemId) ?? null : null),
+    [loadedFlatNodes, selectedItemId],
+  );
+  const selectedTreeModelId =
+    typeof selectedTreeNode?.metadata.model_id === "string" ? selectedTreeNode.metadata.model_id.trim() : "";
   const branchAccessManifestQuery = useQuery({
     queryKey: ["workspace-access-map", ...sessionCacheKey, selectedProjectId, selectedBranchId],
     queryFn: () => api.getBranchAccessManifestStatus(selectedProjectId, selectedBranchId),
@@ -2532,13 +2586,15 @@ export default function WorkspacePage() {
   ]);
 
   const itemQuery = useQuery({
-    queryKey: ["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId],
+    queryKey: ["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId, selectedTreeModelId],
     queryFn: () =>
       api.getItem(
         selectedItemId,
         selectedProjectId || undefined,
         selectedBranchId || undefined,
         selectedProject?.workspace_id || undefined,
+        false,
+        selectedTreeModelId || undefined,
       ),
     enabled: Boolean(selectedItemId),
     staleTime: cacheTimeMs,
@@ -2560,7 +2616,10 @@ export default function WorkspacePage() {
     setElementSearchSummary("");
   }, [selectedProjectId, selectedBranchId]);
 
-  const selectedWorkspaceItem = itemQuery.data ?? itemDraft ?? null;
+  const selectedTreeFallbackItem = selectedTreeNode && selectedProjectId && selectedBranchId
+    ? itemDetailsFromTreeNode(selectedTreeNode, selectedProjectId, selectedBranchId)
+    : null;
+  const selectedWorkspaceItem = itemQuery.data ?? itemDraft ?? selectedTreeFallbackItem;
   const selectedWorkspaceItemIsDiagram = isDiagramLikeItem(selectedWorkspaceItem);
   const selectedWorkspaceItemDiagramPreviewUrl = selectedWorkspaceItem ? diagramPreviewDataUrl(selectedWorkspaceItem) : null;
   const referenceNameById = useMemo(() => {
@@ -2611,10 +2670,6 @@ export default function WorkspacePage() {
     ? displayEntityName(selectedWorkspaceItem.name, selectedWorkspaceItem.id, selectedWorkspaceItem.item_type, referenceNameById, selectedWorkspaceItem.path)
     : "";
   const selectedWorkspaceItemPath = selectedWorkspaceItem ? friendlyPath(selectedWorkspaceItem.path, referenceNameById) : "";
-  const selectedTreeNode = useMemo(
-    () => (selectedItemId ? loadedFlatNodes.find((node) => node.id === selectedItemId) ?? null : null),
-    [loadedFlatNodes, selectedItemId],
-  );
   const selectedPermissionModelId = (() => {
     const candidates = [
       selectedTreeNode?.metadata.model_id,
@@ -2978,10 +3033,11 @@ export default function WorkspacePage() {
         selectedBranchId || undefined,
         selectedProject?.workspace_id || undefined,
         true,
+        selectedTreeModelId || undefined,
       );
     },
     onSuccess: (item) => {
-      queryClient.setQueryData(["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId], item);
+      queryClient.setQueryData(["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId, selectedTreeModelId], item);
       setItemDraft(item);
       setNotice({ severity: "success", message: "Stored model item reloaded and permissions rechecked." });
     },
@@ -3571,7 +3627,7 @@ export default function WorkspacePage() {
   };
 
   const openDiagramViewer = () => {
-    if (!selectedWorkspaceItemDiagramPreviewUrl) {
+    if (!selectedWorkspaceItemDiagramPreviewUrl && !selectedWorkspaceItemIsDiagram) {
       return;
     }
     setTab("diagram-viewer");
@@ -4684,10 +4740,27 @@ export default function WorkspacePage() {
               </Paper>
             ) : (
               <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
-                <Typography variant="h6">Select a model item</Typography>
-                <Typography color="text.secondary" sx={{ mt: 1 }}>
-                  Use the containment tree to the left to pick any node from the published branch tree, then inspect it here.
-                </Typography>
+                {selectedTreeNode ? (
+                  <Stack spacing={1.25} alignItems="center">
+                    <Typography variant="h6">{selectedTreeNode.label}</Typography>
+                    <Chip label={humanizeFieldLabel(selectedTreeNode.node_type)} variant="outlined" />
+                    <Typography color="text.secondary">
+                      {friendlyPath(selectedTreeNode.path, referenceNameById) || selectedTreeNode.id}
+                    </Typography>
+                    {itemQuery.isLoading ? <CircularProgress size={24} /> : null}
+                    {itemQuery.error ? <Alert severity="warning">{errorMessage(itemQuery.error)}</Alert> : null}
+                    <Typography variant="body2" color="text.secondary">
+                      Workbench selected this containment node, but the full item specification is still being resolved from the stored branch snapshot.
+                    </Typography>
+                  </Stack>
+                ) : (
+                  <>
+                    <Typography variant="h6">Select a model item</Typography>
+                    <Typography color="text.secondary" sx={{ mt: 1 }}>
+                      Use the containment tree to the left to pick any node from the published branch tree, then inspect it here.
+                    </Typography>
+                  </>
+                )}
               </Paper>
             )}
           </Box>
@@ -4697,7 +4770,7 @@ export default function WorkspacePage() {
   );
 
   const renderDetails = () => {
-    const selectedItem = itemQuery.data ?? null;
+    const selectedItem = selectedWorkspaceItem;
     const editable = Boolean(selectedItem?.editable && canEdit);
 
     if (!selectedItemId) {
@@ -4711,8 +4784,16 @@ export default function WorkspacePage() {
       );
     }
 
-    if (itemQuery.isLoading || !itemDraft) {
+    if (itemQuery.isLoading && !selectedItem) {
       return <CircularProgress size={28} />;
+    }
+    if (!selectedItem) {
+      return (
+        <Paper sx={{ p: 4, borderRadius: 2, textAlign: "center" }}>
+          <Typography variant="h5">Item details unavailable</Typography>
+          {itemQuery.error ? <Alert severity="warning" sx={{ mt: 2 }}>{errorMessage(itemQuery.error)}</Alert> : null}
+        </Paper>
+      );
     }
 
     return (
@@ -4728,7 +4809,7 @@ export default function WorkspacePage() {
             Editing is disabled for this item unless TWC marks it editable and the RealSwagger element update capability is available to the current session.
           </Alert>
         ) : null}
-        {renderSpecificationWorkspace(itemDraft, {
+        {renderSpecificationWorkspace(selectedItem, {
           mode: "details",
           editable,
           extraHeader: (
@@ -7686,7 +7767,7 @@ export default function WorkspacePage() {
                   <MenuItem
                     key="diagram-viewer"
                     selected={tab === "diagram-viewer"}
-                    disabled={!selectedWorkspaceItemDiagramPreviewUrl}
+                    disabled={!selectedWorkspaceItemDiagramPreviewUrl && !selectedWorkspaceItemIsDiagram}
                     onClick={() => {
                       openDiagramViewer();
                       closeWorkspaceMenu();
