@@ -46,6 +46,8 @@ import {
   WorkbenchGroupSummary,
   WorkbenchGroupUpdateRequest,
   WorkbenchLocalLoginRequest,
+  WorkbenchProjectAccessAssignmentRequest,
+  WorkbenchProjectAccessAssignmentResponse,
   WorkbenchUserCreateRequest,
   WorkbenchUserSummary,
   WorkbenchUserUpdateRequest,
@@ -202,6 +204,13 @@ export const api = {
     return request<{ ok: boolean }>(`/auth/management/groups/${encodeURIComponent(name)}`, {
       method: "DELETE",
       headers: jsonHeaders(csrfToken),
+    });
+  },
+  assignWorkbenchProjectAccess(payload: WorkbenchProjectAccessAssignmentRequest, csrfToken: string) {
+    return request<WorkbenchProjectAccessAssignmentResponse>("/auth/management/project-access", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
     });
   },
   listServers() {

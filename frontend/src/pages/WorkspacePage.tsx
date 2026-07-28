@@ -80,6 +80,7 @@ import {
   WorkbenchGroupCreateRequest,
   WorkbenchGroupSummary,
   WorkbenchGroupUpdateRequest,
+  WorkbenchProjectAccessAssignmentRequest,
   WorkbenchUserCreateRequest,
   WorkbenchUserUpdateRequest,
 } from "../models/api";
@@ -1826,6 +1827,15 @@ export default function WorkspacePage() {
     enabled: true,
   });
   const [workbenchGroupUserDrafts, setWorkbenchGroupUserDrafts] = useState<Record<string, string>>({});
+  const [workbenchAccessAssignment, setWorkbenchAccessAssignment] = useState<WorkbenchProjectAccessAssignmentRequest>({
+    principal_type: "user",
+    principal_name: "",
+    project_id: "",
+    branch_id: null,
+    accessible: true,
+    editable: false,
+    admin_access: false,
+  });
   const [newServerPreset, setNewServerPreset] = useState<ServerProfileInput>({
     name: "",
     base_url: "",
@@ -3198,6 +3208,20 @@ export default function WorkspacePage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["workbench-groups", ...sessionCacheKey] });
       setNotice({ severity: "success", message: "Workbench group deleted." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const assignWorkbenchProjectAccessMutation = useMutation({
+    mutationFn: (payload: WorkbenchProjectAccessAssignmentRequest) => api.assignWorkbenchProjectAccess(payload, csrfToken),
+    onSuccess: async (response) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["workbench-users", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workbench-groups", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-projects", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-branches", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: response.message });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -6131,6 +6155,138 @@ export default function WorkspacePage() {
     );
   };
 
+  const renderWorkbenchProjectAccessAssignment = () => {
+    const localUsers = workbenchUsersQuery.data ?? [];
+    const localGroups = workbenchGroupsQuery.data ?? [];
+    const assignmentProject = projects.find((project) => project.id === workbenchAccessAssignment.project_id) ?? null;
+    const assignmentBranches = assignmentProject?.branches ?? [];
+    const principalOptions = workbenchAccessAssignment.principal_type === "group"
+      ? localGroups.filter((group) => group.enabled).map((group) => ({ value: group.name, label: `${group.name} (${group.users.length} users)` }))
+      : localUsers.filter((user) => user.enabled).map((user) => ({ value: user.username, label: user.display_name ? `${user.display_name} (${user.username})` : user.username }));
+    return (
+      <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+        <Stack spacing={1.5}>
+          <Box>
+            <Typography variant="subtitle1">Assign project access</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Grant or revoke WorkBench-local access to plugin-imported projects. Group assignment expands to the group&apos;s current users.
+            </Typography>
+          </Box>
+          <Alert severity="info">
+            This affects WorkBench visibility only. It does not change Teamwork Cloud permissions or create live TWC credentials.
+          </Alert>
+          <Grid container spacing={1.5}>
+            <Grid item xs={12} md={2}>
+              <TextField
+                select
+                label="Assign to"
+                value={workbenchAccessAssignment.principal_type}
+                onChange={(event) =>
+                  setWorkbenchAccessAssignment((current) => ({
+                    ...current,
+                    principal_type: event.target.value as "user" | "group",
+                    principal_name: "",
+                  }))
+                }
+                fullWidth
+              >
+                <MenuItem value="user">User</MenuItem>
+                <MenuItem value="group">Group</MenuItem>
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={3}>
+              <TextField
+                select
+                label={workbenchAccessAssignment.principal_type === "group" ? "Group" : "User"}
+                value={workbenchAccessAssignment.principal_name}
+                onChange={(event) => setWorkbenchAccessAssignment((current) => ({ ...current, principal_name: event.target.value }))}
+                fullWidth
+              >
+                <MenuItem value="">
+                  <em>Select {workbenchAccessAssignment.principal_type}</em>
+                </MenuItem>
+                {principalOptions.map((option) => (
+                  <MenuItem key={`${workbenchAccessAssignment.principal_type}-${option.value}`} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={3}>
+              <TextField
+                select
+                label="Project"
+                value={workbenchAccessAssignment.project_id}
+                onChange={(event) =>
+                  setWorkbenchAccessAssignment((current) => ({
+                    ...current,
+                    project_id: event.target.value,
+                    branch_id: null,
+                  }))
+                }
+                fullWidth
+              >
+                <MenuItem value="">
+                  <em>Select project</em>
+                </MenuItem>
+                {projects.map((project) => (
+                  <MenuItem key={`assign-project-${project.id}`} value={project.id}>
+                    {project.name} ({project.branches.length} branches)
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={2}>
+              <TextField
+                select
+                label="Branch"
+                value={workbenchAccessAssignment.branch_id ?? ""}
+                onChange={(event) => setWorkbenchAccessAssignment((current) => ({ ...current, branch_id: event.target.value || null }))}
+                disabled={!assignmentBranches.length}
+                fullWidth
+              >
+                <MenuItem value="">All branches</MenuItem>
+                {assignmentBranches.map((branch) => (
+                  <MenuItem key={`assign-branch-${branch.id}`} value={branch.id}>
+                    {branch.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} md={2}>
+              <Stack spacing={0.5}>
+                <FormControlLabel
+                  control={<Checkbox checked={workbenchAccessAssignment.accessible} onChange={(event) => setWorkbenchAccessAssignment((current) => ({ ...current, accessible: event.target.checked }))} />}
+                  label="Visible"
+                />
+                <FormControlLabel
+                  control={<Checkbox checked={workbenchAccessAssignment.editable} onChange={(event) => setWorkbenchAccessAssignment((current) => ({ ...current, editable: event.target.checked }))} />}
+                  label="Editable"
+                />
+                <FormControlLabel
+                  control={<Checkbox checked={workbenchAccessAssignment.admin_access} onChange={(event) => setWorkbenchAccessAssignment((current) => ({ ...current, admin_access: event.target.checked }))} />}
+                  label="Access admin"
+                />
+              </Stack>
+            </Grid>
+          </Grid>
+          <Button
+            variant="contained"
+            disabled={
+              !csrfToken ||
+              !workbenchAccessAssignment.principal_name ||
+              !workbenchAccessAssignment.project_id ||
+              assignWorkbenchProjectAccessMutation.isPending
+            }
+            onClick={() => assignWorkbenchProjectAccessMutation.mutate(workbenchAccessAssignment)}
+          >
+            Apply Project Access
+          </Button>
+        </Stack>
+      </Paper>
+    );
+  };
+
   const renderWorkbenchGroupManagement = () => {
     const status = permissionInventoryStatusQuery.data;
     const inventory: ServerPermissionInventoryDetails | null = permissionInventoryDetailsQuery.data ?? null;
@@ -7015,6 +7171,7 @@ export default function WorkspacePage() {
 
       {settingsSubtab === "users" ? (
         <Stack spacing={2}>
+          {isAdmin ? renderWorkbenchProjectAccessAssignment() : null}
           {canManageGroups ? renderWorkbenchUserManagement() : (
             <Alert severity="info">User management is available to Workbench administrators and group managers.</Alert>
           )}
@@ -7023,6 +7180,7 @@ export default function WorkspacePage() {
 
       {settingsSubtab === "groups" ? (
         <Stack spacing={2}>
+          {isAdmin ? renderWorkbenchProjectAccessAssignment() : null}
           {canManageGroups ? renderWorkbenchGroupManagement() : (
             <Alert severity="info">Group management is available to Workbench administrators and group managers.</Alert>
           )}
