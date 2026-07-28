@@ -1260,14 +1260,14 @@ class PlatformService:
             session.server.id,
             PROJECT_LIST_CACHE_KEY,
         )
-        logger.info("twc-project-list-ui", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
+        logger.debug("twc-project-list-ui", user=session.user.preferred_username, server_id=session.server.id, delivered_count=len(projects))
         return projects
 
     async def list_project_branches(self, session: SessionData, project_id: str, workspace_id: str | None = None, refresh: bool = False):
         # Always filter branch names from the current stored permission
         # snapshot; a pre-refresh UI cache must not survive a revocation.
         branches = self._branch_summaries_from_cache_for_user(session, project_id)
-        logger.info(
+        logger.debug(
             "twc-branch-list-ui",
             user=session.user.preferred_username,
             server_id=session.server.id,
@@ -6024,7 +6024,26 @@ class PlatformService:
         user_id = self._user_key(session.user.preferred_username)
         server_id = session.server.id
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        admin_model_visibility = self._has_workbench_admin_model_visibility(session)
         plugin_managed = self._is_plugin_managed_summary(summary)
+        if admin_model_visibility and summary is not None:
+            model_exists = (
+                self.repo.get_cached_model(server_id, project_id, branch_id, model_id) is not None
+                if model_id
+                else None
+            )
+            return CurrentPermissionStatus(
+                project_id=project_id,
+                branch_id=branch_id,
+                model_id=model_id,
+                project_accessible=True,
+                branch_accessible=True,
+                branch_editable=False,
+                branch_admin_access=True,
+                model_accessible=model_exists,
+                model_editable=False if model_id else None,
+                snapshot_updated_at=summary.updated_at,
+            )
         branch = (
             self._plugin_branch_access_or_source_fallback(
                 user_id,
