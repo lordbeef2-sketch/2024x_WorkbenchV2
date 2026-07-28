@@ -7707,28 +7707,11 @@ class PlatformService:
         branch_access = self._branch_access_for_user(user_id, server_id, project_id, branch_id)
         if branch_access is not None:
             return branch_access
-        resolved_summary = summary or self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
-        if not self._is_plugin_managed_summary(resolved_summary):
-            return None
-        source_user = self._user_key(resolved_summary.source_user or "")
-        if not source_user or source_user != user_id:
-            return None
-        return BranchAccessRecord(
-            user_id=user_id,
-            server_id=server_id,
-            project_id=project_id,
-            branch_id=branch_id,
-            workspace_id=resolved_summary.workspace_id,
-            branch_name=resolved_summary.branch_name or branch_id,
-            latest_revision=resolved_summary.latest_revision,
-            accessible=True,
-            editable=True,
-            admin_access=False,
-            roles=["Snapshot Publisher"],
-            source="cameo-plugin-ingest-fallback",
-            payload={"source_user": resolved_summary.source_user, "fallback": True},
-            updated_at=resolved_summary.updated_at,
-        )
+        # Security boundary: publishing a plugin snapshot is not an enduring
+        # authorization grant. Access must come from the latest stored TWC
+        # permission snapshot or an explicit Workbench admin assignment so a
+        # later revoke cannot be bypassed by being the original source user.
+        return None
 
     def _branch_access_for_session(
         self,

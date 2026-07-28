@@ -38,6 +38,7 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
             "references": {
                 "classifier": ["type-1"],
                 "satisfy": ["req-1"],
+                "verifiedBy": ["test-1"],
                 "usageDiagrams": ["diagram-1"],
             },
             "spec_sections": {
@@ -50,6 +51,7 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
             "part-1": {"element_id": "part-1", "human_name": "Owned Part", "human_type": "Part Property"},
             "type-1": {"element_id": "type-1", "human_name": "Type Block", "human_type": "Block"},
             "req-1": {"element_id": "req-1", "human_name": "Requirement 1", "human_type": "Requirement"},
+            "test-1": {"element_id": "test-1", "human_name": "Verification Case", "human_type": "Test Case"},
             "diagram-1": {"element_id": "diagram-1", "human_name": "Context Diagram", "human_type": "Diagram"},
             "stereo-1": {"element_id": "stereo-1", "human_name": "SafetyCritical", "human_type": "Stereotype"},
         }
@@ -73,10 +75,12 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("type-1", "classifier"), [(item.id, item.relationship_type) for item in details.type_references])
         related = {(item.id, item.relationship_type) for item in details.related_items}
         self.assertIn(("req-1", "satisfy"), related)
+        self.assertIn(("test-1", "verifiedBy"), related)
         self.assertIn(("diagram-1", "usageDiagrams"), related)
         relationship_rows = {(item["target"], item["type"]) for item in details.relationships}
         self.assertIn(("part-1", "ownedElement"), relationship_rows)
         self.assertIn(("req-1", "satisfy"), relationship_rows)
+        self.assertIn(("test-1", "verifiedBy"), relationship_rows)
 
     async def test_every_group_is_checked_for_global_and_project_scopes(self) -> None:
         adapter = object.__new__(TeamworkAdapter)

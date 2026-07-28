@@ -3589,6 +3589,13 @@ export default function WorkspacePage() {
     if (!item || !selectedProjectId || !selectedBranchId) {
       return;
     }
+    const loadedTrail = findNodeTrail(treeNodesRef.current, item.id);
+    if (loadedTrail.length) {
+      setExpandedTreeNodeIds(Array.from(new Set([...expandedTreeNodeIds, ...loadedTrail.slice(0, -1).map((node) => node.id)])));
+      setSelectedItemId(item.id);
+      setTab("models");
+      return;
+    }
     const rawSegments = item.path
       .split("/")
       .map((segment) => segment.trim())
@@ -3617,6 +3624,9 @@ export default function WorkspacePage() {
     setExpandedTreeNodeIds(Array.from(nextExpanded));
     setSelectedItemId(item.id);
     setTab("models");
+    if (!findNodeById(treeNodesRef.current, item.id)) {
+      setNotice({ severity: "warning", message: "Workbench selected the item, but its containment parents are not loaded in the current tree yet. Expand its parent package or search for the item to reveal it." });
+    }
   };
 
   const revealSelectedInTree = () => {
@@ -4013,6 +4023,26 @@ export default function WorkspacePage() {
     const diagramUsageReferences = collectReferenceMatches(item, ["diagram", "symbol", "usage"]);
     const navigationTableRows = hintRowsToTableRows(navigationRows);
     const relationRows = relationshipTableRows(item, referenceNameById);
+    const combineDataRows = (...groups: DataTableRow[][]): DataTableRow[] => {
+      const seen = new Set<string>();
+      return groups.flat().filter((row) => {
+        const key = `${row.key}:${row.cells.map((cell) => String(cell)).join("::")}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+    };
+    const usageDiagramRows = combineDataRows(
+      structuredUsageRows,
+      referenceRowsToTableRows(diagramUsageReferences, referenceNameById),
+    );
+    const innerElementRows = combineDataRows(
+      structuredInnerElementRows,
+      referenceRowsToTableRows(item.contained_elements, referenceNameById),
+    );
+    const combinedRelationRows = combineDataRows(structuredRelationRows, relationRows);
     const tagRows = dedupeInspectorRows([
       ...(item.stereotypes.length
         ? [
@@ -4042,6 +4072,7 @@ export default function WorkspacePage() {
       ...hintRowsToTableRows(traceabilityRows),
       ...referenceRowsToTableRows(traceabilityReferences, referenceNameById),
     ];
+    const combinedTraceabilityRows = combineDataRows(structuredTraceabilityRows, traceabilityTableRows);
     const allocationRows = collectHintRows(item, referenceNameById, ALLOCATION_FIELD_HINTS, {
       includeMetadata: true,
       inlineOnly: false,
@@ -4051,6 +4082,7 @@ export default function WorkspacePage() {
       ...hintRowsToTableRows(allocationRows),
       ...referenceRowsToTableRows(allocationReferences, referenceNameById),
     ];
+    const combinedAllocationRows = combineDataRows(structuredAllocationRows, allocationTableRows);
     const selectedSectionTitle =
       selectedSpecificationSection === "properties"
         ? displayEntityName(item.name, item.id, item.item_type, referenceNameById, item.path)
@@ -4152,8 +4184,8 @@ export default function WorkspacePage() {
                 },
           );
         case "usage-diagrams":
-          return structuredUsageRows.length
-            ? renderDataTable(["Name", "Type"], structuredUsageRows, "No diagram usage references were published for this item.", {
+          return usageDiagramRows.length
+            ? renderDataTable(["Name", "Type"], usageDiagramRows, "No diagram usage references were published for this item.", {
                 columnTemplate: {
                   xs: "minmax(0, 1fr)",
                   sm: "minmax(0, 1.2fr) minmax(160px, 0.8fr)",
@@ -4161,8 +4193,8 @@ export default function WorkspacePage() {
               })
             : renderReferenceTable(diagramUsageReferences, "No diagram usage references were published for this item.");
         case "inner-elements":
-          return structuredInnerElementRows.length
-            ? renderDataTable(["Name", "Type"], structuredInnerElementRows, "No contained elements were published for this item.", {
+          return innerElementRows.length
+            ? renderDataTable(["Name", "Type"], innerElementRows, "No contained elements were published for this item.", {
                 columnTemplate: {
                   xs: "minmax(0, 1fr)",
                   sm: "minmax(0, 1.2fr) minmax(160px, 0.8fr)",
@@ -4170,7 +4202,7 @@ export default function WorkspacePage() {
               })
             : renderReferenceTable(item.contained_elements, "No contained elements were published for this item.");
         case "relations":
-          return renderDataTable(["Name", "Element", "Direction", "Related Element"], structuredRelationRows.length ? structuredRelationRows : relationRows, "No relationships were published for this item.", {
+          return renderDataTable(["Name", "Element", "Direction", "Related Element"], combinedRelationRows, "No relationships were published for this item.", {
             columnTemplate: {
               xs: "minmax(0, 1fr)",
               sm: "minmax(150px, 0.9fr) minmax(180px, 1fr) minmax(120px, 0.6fr) minmax(180px, 1fr)",
@@ -4196,14 +4228,14 @@ export default function WorkspacePage() {
             </Stack>
           );
         case "traceability":
-          return renderDataTable(["Name", "Value"], structuredTraceabilityRows.length ? structuredTraceabilityRows : traceabilityTableRows, "No traceability properties were published for this item.", {
+          return renderDataTable(["Name", "Value"], combinedTraceabilityRows, "No traceability properties were published for this item.", {
             columnTemplate: {
               xs: "minmax(0, 1fr)",
               sm: "minmax(180px, 0.8fr) minmax(0, 1.2fr)",
             },
           });
         case "allocations":
-          return renderDataTable(["Name", "Value"], structuredAllocationRows.length ? structuredAllocationRows : allocationTableRows, "No allocation properties were published for this item.", {
+          return renderDataTable(["Name", "Value"], combinedAllocationRows, "No allocation properties were published for this item.", {
             columnTemplate: {
               xs: "minmax(0, 1fr)",
               sm: "minmax(180px, 0.8fr) minmax(0, 1.2fr)",

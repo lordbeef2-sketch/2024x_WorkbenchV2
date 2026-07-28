@@ -81,7 +81,7 @@ class PermissionSnapshotReplacementTests(unittest.TestCase):
         self.assertEqual([item.id for item in projects[0].branches], ["main"])
         self.assertEqual([item.id for item in branches], ["main"])
 
-    def test_current_permission_status_uses_plugin_publisher_fallback_used_by_branch_listing(self) -> None:
+    def test_current_permission_status_does_not_grant_plugin_publisher_fallback(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             repo = SqliteRepository(Path(directory) / "workbench.db")
             repo.upsert_branch_cache_summary(
@@ -110,11 +110,11 @@ class PermissionSnapshotReplacementTests(unittest.TestCase):
 
             status = service.current_permission_status(session, "project", "trunk", "model")
 
-            self.assertTrue(status.project_accessible)
-            self.assertTrue(status.branch_accessible)
-            self.assertTrue(status.branch_editable)
-            self.assertTrue(status.model_accessible)
-            self.assertTrue(status.model_editable)
+            self.assertFalse(status.project_accessible)
+            self.assertFalse(status.branch_accessible)
+            self.assertFalse(status.branch_editable)
+            self.assertFalse(status.model_accessible)
+            self.assertFalse(status.model_editable)
 
     def test_current_permission_status_uses_rest_model_visibility_when_branch_row_is_absent(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
