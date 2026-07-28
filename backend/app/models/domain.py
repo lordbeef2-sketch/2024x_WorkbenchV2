@@ -1444,6 +1444,10 @@ class CacheIngestTokenRotateResponse(CacheIngestTokenStatus):
     token: str
 
 
+class CacheIngestTokenRevealResponse(CacheIngestTokenStatus):
+    token: str
+
+
 class CacheApiKeyScope(str, Enum):
     READ = "read"
     WRITE = "write"

@@ -47,6 +47,17 @@ def rotate_cache_ingest_token(
     return container.platform.rotate_cache_ingest_token()
 
 
+@router.post("/cache-ingest-token/reveal")
+def reveal_cache_ingest_token(
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.reveal_cache_ingest_token()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.put("/cache-ingest-token")
 def store_cache_ingest_token(
     payload: CacheIngestTokenRequest,

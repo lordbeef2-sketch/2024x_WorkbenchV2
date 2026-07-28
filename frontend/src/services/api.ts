@@ -12,6 +12,7 @@ import {
   BranchSummary,
   BranchTombstoneRecord,
   CacheIngestTokenRotateResponse,
+  CacheIngestTokenRevealResponse,
   CacheIngestTokenStatus,
   CapabilitySummary,
   CompareResult,
@@ -281,6 +282,12 @@ export const api = {
   },
   rotateCacheIngestToken(csrfToken: string) {
     return request<CacheIngestTokenRotateResponse>("/workspace/cache-ingest-token/rotate", {
+      method: "POST",
+      headers: jsonHeaders(csrfToken),
+    });
+  },
+  revealCacheIngestToken(csrfToken: string) {
+    return request<CacheIngestTokenRevealResponse>("/workspace/cache-ingest-token/reveal", {
       method: "POST",
       headers: jsonHeaders(csrfToken),
     });

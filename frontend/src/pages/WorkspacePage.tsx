@@ -3118,6 +3118,16 @@ export default function WorkspacePage() {
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
+  const revealCacheIngestTokenMutation = useMutation({
+    mutationFn: () => api.revealCacheIngestToken(csrfToken),
+    onSuccess: (result) => {
+      setRevealedCacheIngestToken(result.token);
+      setManualCacheIngestToken(result.token);
+      setNotice({ severity: "success", message: "Current app-managed plugin ingest token revealed. Copy it into the Cameo plugin." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
   const createWorkbenchUserMutation = useMutation({
     mutationFn: (payload: WorkbenchUserCreateRequest) => api.createWorkbenchUser(payload, csrfToken),
     onSuccess: async () => {
@@ -5987,6 +5997,13 @@ export default function WorkspacePage() {
                   {cacheIngestTokenStatus.configured ? "Rotate Token" : "Generate Token"}
                 </Button>
                 <Button
+                  variant="outlined"
+                  disabled={!csrfToken || cacheIngestTokenStatus.source !== "shared" || revealCacheIngestTokenMutation.isPending}
+                  onClick={() => revealCacheIngestTokenMutation.mutate()}
+                >
+                  Reveal Current Token
+                </Button>
+                <Button
                   variant="text"
                   color="warning"
                   disabled={!csrfToken || cacheIngestTokenStatus.source !== "shared" || clearCacheIngestTokenMutation.isPending}
@@ -5994,7 +6011,7 @@ export default function WorkspacePage() {
                 >
                   Clear App-Managed Token
                 </Button>
-                {storeCacheIngestTokenMutation.isPending || rotateCacheIngestTokenMutation.isPending || clearCacheIngestTokenMutation.isPending ? <CircularProgress size={24} /> : null}
+                {storeCacheIngestTokenMutation.isPending || rotateCacheIngestTokenMutation.isPending || revealCacheIngestTokenMutation.isPending || clearCacheIngestTokenMutation.isPending ? <CircularProgress size={24} /> : null}
               </Stack>
               {cacheIngestTokenStatus.updated_at ? (
                 <Typography variant="caption" color="text.secondary">
@@ -6004,10 +6021,10 @@ export default function WorkspacePage() {
               {revealedCacheIngestToken ? (
                 <>
                   <Alert severity="success">
-                    Copy this token into the Cameo plugin now. Workbench stores it encrypted and will not show the full value again after you leave this screen.
+                    Copy this token into the Cameo plugin. Workbench stores the app-managed token encrypted; administrators can reveal it here when needed.
                   </Alert>
                   <TextField
-                    label="New plugin ingest token"
+                    label="Plugin ingest token"
                     value={revealedCacheIngestToken}
                     fullWidth
                     InputProps={{ readOnly: true }}

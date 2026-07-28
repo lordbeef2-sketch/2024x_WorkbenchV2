@@ -54,6 +54,7 @@ from app.models.domain import (
     CacheApiManifest,
     CacheApiTokenIdentity,
     CacheIngestTokenRotateResponse,
+    CacheIngestTokenRevealResponse,
     CacheIngestTokenStatus,
     CacheServerEntry,
     CacheProjectBranchEntry,
@@ -250,6 +251,10 @@ class PlatformService:
 
     def can_manage_server_presets(self, session: SessionData) -> bool:
         return session.authorization_context.can_manage_server_presets
+
+    def _has_workbench_admin_model_visibility(self, session: SessionData) -> bool:
+        authorization_context = getattr(session, "authorization_context", None)
+        return bool(getattr(authorization_context, "can_manage_server_presets", False))
 
     def can_manage_groups(self, session: SessionData) -> bool:
         return session.authorization_context.can_manage_server_presets or session.authorization_context.can_manage_groups
@@ -1180,7 +1185,14 @@ class PlatformService:
         return branches
 
     def _project_summaries_from_cache_for_user(self, session: SessionData) -> list[ProjectSummary]:
-        cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
+        if self._has_workbench_admin_model_visibility(session):
+            cached_projects = self.list_cached_projects_for_user(
+                session.server.id,
+                session.user.preferred_username,
+                include_all_workbench_admin=True,
+            )
+        else:
+            cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
         projects: list[ProjectSummary] = []
         for project in cached_projects:
             plugin_branches = self._plugin_cache_project_branches(
@@ -1209,7 +1221,14 @@ class PlatformService:
         return projects
 
     def _branch_summaries_from_cache_for_user(self, session: SessionData, project_id: str) -> list[BranchSummary]:
-        cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
+        if self._has_workbench_admin_model_visibility(session):
+            cached_projects = self.list_cached_projects_for_user(
+                session.server.id,
+                session.user.preferred_username,
+                include_all_workbench_admin=True,
+            )
+        else:
+            cached_projects = self.list_cached_projects_for_user(session.server.id, session.user.preferred_username)
         for project in cached_projects:
             if project.project_id != project_id:
                 continue
@@ -1302,6 +1321,7 @@ class PlatformService:
             session.server.id,
             project_id,
             branch_id,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
         if not models:
             return ProjectUsageResponse(project_id=project_id, branch_id=branch_id)
@@ -1366,6 +1386,7 @@ class PlatformService:
                 branch_id,
                 parent_id,
                 model_id=model_id,
+                include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
             )
             return response.items
 
@@ -1539,6 +1560,7 @@ class PlatformService:
             limit=limit,
             offset=offset,
             all_results=all_results,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
 
     def search_cached_branch_elements(
@@ -1569,6 +1591,7 @@ class PlatformService:
             include_details=include_details,
             limit=limit,
             offset=offset,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
 
     def search_cached_branch_elements_by_stereotype(
@@ -1591,6 +1614,7 @@ class PlatformService:
             include_details=include_details,
             limit=limit,
             offset=offset,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
 
     def get_cached_branch_element(
@@ -1609,6 +1633,7 @@ class PlatformService:
             branch_id,
             element_id,
             model_id=model_id,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
 
     def get_branch_ingest_state(self, server_id: str, project_id: str, branch_id: str) -> BranchIngestState:
@@ -2251,12 +2276,21 @@ class PlatformService:
             )
         self.repo.upsert_branch_cache_summary(summary, connection=connection)
 
-    def list_cached_projects_for_user(self, server_id: str, preferred_username: str) -> list[CacheProjectEntry]:
+    def list_cached_projects_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        *,
+        include_all_workbench_admin: bool = False,
+    ) -> list[CacheProjectEntry]:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
         projects: dict[str, CacheProjectEntry] = {}
         for summary in self.repo.list_branch_cache_summaries(server_id):
-            if self._is_plugin_managed_summary(summary):
+            if include_all_workbench_admin:
+                visible_model_count = summary.model_count
+                visible_element_count = summary.element_count
+            elif self._is_plugin_managed_summary(summary):
                 branch_access = self._plugin_branch_access_or_source_fallback(
                     user_id,
                     server_id,
@@ -2549,6 +2583,7 @@ class PlatformService:
         limit: int = 200,
         offset: int = 0,
         all_results: bool = False,
+        include_all_workbench_admin: bool = False,
     ) -> CachedElementQueryResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
@@ -2556,6 +2591,16 @@ class PlatformService:
             limit = max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1)
             offset = 0
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if include_all_workbench_admin:
+            return self.repo.list_cached_elements(
+                server_id,
+                project_id,
+                branch_id,
+                model_id=model_id,
+                search=search,
+                limit=limit,
+                offset=offset,
+            )
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 user_id,
@@ -2609,6 +2654,7 @@ class PlatformService:
         include_details: bool = False,
         limit: int = 200,
         offset: int = 0,
+        include_all_workbench_admin: bool = False,
     ) -> StereotypeElementSearchResponse:
         self._require_server(server_id, include_disabled=True)
         query = stereotype.strip()
@@ -2626,6 +2672,7 @@ class PlatformService:
             branch_id,
             limit=max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1),
             offset=0,
+            include_all_workbench_admin=include_all_workbench_admin,
         ).items
         visible_by_id = {item.element_id: item for item in visible_elements}
         query_normalized = normalize_lookup_key(query)
@@ -2664,7 +2711,17 @@ class PlatformService:
             details = [
                 detail
                 for element in paged_items
-                if (detail := self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element.element_id)) is not None
+                if (
+                    detail := self._cached_item_details_for_user(
+                        server_id,
+                        preferred_username,
+                        project_id,
+                        branch_id,
+                        element.element_id,
+                        include_all_workbench_admin=include_all_workbench_admin,
+                    )
+                )
+                is not None
             ]
 
         return StereotypeElementSearchResponse(
@@ -2685,9 +2742,19 @@ class PlatformService:
         branch_id: str,
         *,
         model_id: str | None = None,
+        include_all_workbench_admin: bool = False,
     ) -> list[CachedElementRecord]:
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         branch_total = max(self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id), 1)
+        if include_all_workbench_admin:
+            return self.repo.list_cached_elements(
+                server_id,
+                project_id,
+                branch_id,
+                model_id=model_id,
+                limit=branch_total,
+                offset=0,
+            ).items
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 user_id,
@@ -2735,10 +2802,17 @@ class PlatformService:
         root_id: str | None = None,
         depth: int | None = None,
         include_orphans: bool = True,
+        include_all_workbench_admin: bool = False,
     ) -> CacheTreeResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
-        visible_models = self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id)
+        visible_models = self._visible_cached_models_for_user(
+            user_id,
+            server_id,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         if model_id is not None:
             visible_models = [model for model in visible_models if model.model_id == model_id]
 
@@ -2787,6 +2861,7 @@ class PlatformService:
                         project_id,
                         branch_id,
                         model_id=model.model_id,
+                        include_all_workbench_admin=include_all_workbench_admin,
                     )
                 },
                 root_id=root_id,
@@ -2820,13 +2895,30 @@ class PlatformService:
         parent_id: str,
         *,
         model_id: str | None = None,
+        include_all_workbench_admin: bool = False,
     ) -> CacheChildrenResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
         if model_id:
-            visible_models = [model for model in self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id) if model.model_id == model_id]
+            visible_models = [
+                model
+                for model in self._visible_cached_models_for_user(
+                    user_id,
+                    server_id,
+                    project_id,
+                    branch_id,
+                    include_all_workbench_admin=include_all_workbench_admin,
+                )
+                if model.model_id == model_id
+            ]
         else:
-            visible_models = self._visible_cached_models_for_user(user_id, server_id, project_id, branch_id)
+            visible_models = self._visible_cached_models_for_user(
+                user_id,
+                server_id,
+                project_id,
+                branch_id,
+                include_all_workbench_admin=include_all_workbench_admin,
+            )
 
         for model in visible_models:
             if parent_id == model.model_id:
@@ -2908,10 +3000,17 @@ class PlatformService:
         include_details: bool = False,
         limit: int = 200,
         offset: int = 0,
+        include_all_workbench_admin: bool = False,
     ) -> CacheElementSearchResponse:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
-        visible_elements = self._visible_cached_elements_for_user(user_id, server_id, project_id, branch_id)
+        visible_elements = self._visible_cached_elements_for_user(
+            user_id,
+            server_id,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         visible_by_id = {item.element_id: item for item in visible_elements}
         query_normalized = normalize_lookup_key(query or "")
         item_type_normalized = normalize_lookup_key(item_type or "")
@@ -2966,7 +3065,17 @@ class PlatformService:
             details = [
                 detail
                 for element in paged_items
-                if (detail := self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element.element_id)) is not None
+                if (
+                    detail := self._cached_item_details_for_user(
+                        server_id,
+                        preferred_username,
+                        project_id,
+                        branch_id,
+                        element.element_id,
+                        include_all_workbench_admin=include_all_workbench_admin,
+                    )
+                )
+                is not None
             ]
 
         return CacheElementSearchResponse(
@@ -3072,10 +3181,19 @@ class PlatformService:
         element_id: str,
         *,
         model_id: str | None = None,
+        include_all_workbench_admin: bool = False,
     ) -> CachedElementRecord | None:
         self._require_server(server_id, include_disabled=True)
         user_id = self._user_key(preferred_username)
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if include_all_workbench_admin:
+            if model_id is not None:
+                return self.repo.get_cached_element(server_id, project_id, branch_id, element_id, model_id=model_id)
+            for model in self.repo.list_cached_models(server_id, project_id, branch_id):
+                match = self.repo.get_cached_element(server_id, project_id, branch_id, element_id, model_id=model.model_id)
+                if match is not None:
+                    return match
+            return None
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 user_id,
@@ -3116,15 +3234,26 @@ class PlatformService:
         project_id: str,
         branch_id: str,
         element_id: str,
+        *,
+        include_all_workbench_admin: bool = False,
     ) -> ItemDetails | None:
-        record = self.get_cached_branch_element_for_user(server_id, preferred_username, project_id, branch_id, element_id)
+        record = self.get_cached_branch_element_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         if record is None:
             return None
 
         branch_access = self._branch_access_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
         editable = False
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
-        if self._is_plugin_managed_summary(summary):
+        if include_all_workbench_admin:
+            editable = False
+        elif self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 self._user_key(preferred_username),
                 server_id,
@@ -3153,6 +3282,7 @@ class PlatformService:
                 project_id,
                 branch_id,
                 reference_id,
+                include_all_workbench_admin=include_all_workbench_admin,
             )
             if referenced_record is not None and isinstance(referenced_record.payload, dict):
                 resolved_payloads[reference_id] = referenced_record.payload
@@ -3705,12 +3835,15 @@ class PlatformService:
         cached_record = self.get_cached_branch_element(session, project_id, branch_id, item_id)
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         branch_access = self._branch_access_for_session(session, project_id, branch_id) if self._is_plugin_managed_summary(summary) else None
+        admin_model_visibility = self._has_workbench_admin_model_visibility(session)
         editable = False
         if cached_record is None:
             cached_model = self.repo.get_cached_model(session.server.id, project_id, branch_id, item_id)
             if cached_model is None:
                 return None
-            if self._is_plugin_managed_summary(summary):
+            if admin_model_visibility:
+                editable = False
+            elif self._is_plugin_managed_summary(summary):
                 if branch_access is None or not branch_access.accessible:
                     return None
                 editable = bool(branch_access.editable)
@@ -3733,7 +3866,9 @@ class PlatformService:
                 editable=editable,
             )
 
-        if self._is_plugin_managed_summary(summary):
+        if admin_model_visibility:
+            editable = False
+        elif self._is_plugin_managed_summary(summary):
             editable = bool(branch_access.editable) if branch_access and branch_access.accessible else False
         else:
             permission = self.repo.get_model_permission(
@@ -3806,6 +3941,8 @@ class PlatformService:
         branch_id: str,
     ) -> list[CachedModelRecord]:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if self._has_workbench_admin_model_visibility(session):
+            return self.repo.list_cached_models(session.server.id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
             branch_access = self._branch_access_for_session(session, project_id, branch_id)
             if branch_access is None or not branch_access.accessible:
@@ -3870,6 +4007,7 @@ class PlatformService:
                     project_id,
                     branch_id,
                     model_id=model.model_id,
+                    include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
                 )
             }
             nodes.append(
@@ -4485,7 +4623,9 @@ class PlatformService:
         models = self.repo.list_cached_models(session.server.id, project_id, branch_id)
         if not models:
             return None
-        if self._is_plugin_managed_summary(summary):
+        if self._has_workbench_admin_model_visibility(session):
+            accessible_models = models
+        elif self._is_plugin_managed_summary(summary):
             branch_access = self._branch_access_for_session(session, project_id, branch_id)
             if branch_access is None or not branch_access.accessible:
                 return None
@@ -7567,8 +7707,12 @@ class PlatformService:
         server_id: str,
         project_id: str,
         branch_id: str,
+        *,
+        include_all_workbench_admin: bool = False,
     ) -> list[CachedModelRecord]:
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if include_all_workbench_admin:
+            return self.repo.list_cached_models(server_id, project_id, branch_id)
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 user_id,
@@ -8510,6 +8654,19 @@ class PlatformService:
             token_hint=self._token_hint(token),
             updated_at=updated_at,
             message="The plugin ingest token was stored in encrypted Workbench app storage.",
+            token=token,
+        )
+
+    def reveal_cache_ingest_token(self) -> CacheIngestTokenRevealResponse:
+        token, updated_at = self._shared_cache_ingest_token()
+        if not token:
+            raise ValueError("No app-managed plugin ingest token is stored. Generate or save one first.")
+        return CacheIngestTokenRevealResponse(
+            configured=True,
+            source="shared",
+            token_hint=self._token_hint(token),
+            updated_at=updated_at,
+            message="The app-managed plugin ingest token was revealed for this administrator session.",
             token=token,
         )
 

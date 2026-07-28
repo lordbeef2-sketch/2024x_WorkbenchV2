@@ -634,6 +634,10 @@ export interface CacheIngestTokenRotateResponse extends CacheIngestTokenStatus {
   token: string;
 }
 
+export interface CacheIngestTokenRevealResponse extends CacheIngestTokenStatus {
+  token: string;
+}
+
 export interface CacheApiKeySummary {
   key_id: string;
   label: string;
