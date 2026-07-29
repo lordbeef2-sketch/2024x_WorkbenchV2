@@ -34,9 +34,11 @@ from app.models.domain import (
     ServerPermissionInventory,
     ServerPermissionInventoryAuditRecord,
     SessionData,
+    SwaggerExecuteRequest,
     UserContext,
 )
 from app.services.platform import PermissionSnapshotIndeterminateError, PlatformService
+from app.services.platform import WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY
 
 
 class PermissionSnapshotReplacementTests(unittest.TestCase):
@@ -1069,6 +1071,31 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
                 for entry in diagnostic["elements"][0]["derived_item_details"]["relationships"]
             }
             self.assertIn(("test-case", "verifiedBy"), related)
+
+            explorer_operations = service._workbench_api_explorer_operations()
+            self.assertEqual(explorer_operations[0].key, WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY)
+            self.assertEqual(explorer_operations[0].tag, "Workbench API")
+
+            session = SessionData(
+                server=ServerProfile(id="server", name="Server", base_url="https://twc.example"),
+                user=UserContext(preferred_username="admin", server_id="server", server_name="Server"),
+                authorization_context=AuthorizationContext(can_manage_server_presets=True),
+                encrypted_credentials="",
+                capabilities=CapabilitySummary(detected_version="2024x"),
+            )
+            response = service._execute_workbench_spec_diagnostic_operation(
+                session,
+                SwaggerExecuteRequest(
+                    operation_key=WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY,
+                    query_params={
+                        "projectId": "project",
+                        "branchId": "main",
+                        "elementId": "element",
+                    },
+                ),
+            )
+            self.assertTrue(response.ok)
+            self.assertEqual(response.body["schema_version"], "workbench-spec-diagnostic.v1")
 
     def test_acl_delta_marks_users_due_and_tombstone_revokes_branch_atomically(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:

@@ -14,7 +14,7 @@ from io import StringIO
 from pathlib import Path
 import re
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -114,6 +114,9 @@ from app.models.domain import (
     SwaggerContractManifest,
     SwaggerExecuteRequest,
     SwaggerExecuteResponse,
+    SwaggerOperationSpec,
+    SwaggerParameterSpec,
+    SwaggerResponseSpec,
     TokenBundle,
     TokenLoginRequest,
     TreeNode,
@@ -153,6 +156,25 @@ from app.services.three_ds_corpus import ThreeDsCorpus
 from app.settings.config import Settings
 
 logger = structlog.get_logger(__name__)
+WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY = "workbench_get_model_cache_spec_diagnostic"
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _truthy_query_value(value: Any, *, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 AUTHORITATIVE_THREE_DS_KB_ROOT = Path("C:/Users/Main1/Documents/NI KB base/3DS_KB").resolve()
 
 
@@ -5511,9 +5533,64 @@ class PlatformService:
         }
 
     def swagger_contract_manifest(self) -> SwaggerContractManifest:
-        return self.contract.manifest()
+        manifest = self.contract.manifest()
+        workbench_operations = self._workbench_api_explorer_operations()
+        if not workbench_operations:
+            return manifest
+        operations = [*manifest.operations, *workbench_operations]
+        operation_counts = dict(manifest.operation_counts)
+        tag_counts = dict(manifest.tag_counts)
+        for operation in workbench_operations:
+            operation_counts[operation.method] = operation_counts.get(operation.method, 0) + 1
+            tag_counts[operation.tag] = tag_counts.get(operation.tag, 0) + 1
+        return manifest.model_copy(
+            update={
+                "operations": operations,
+                "operation_counts": dict(sorted(operation_counts.items())),
+                "tag_counts": dict(sorted(tag_counts.items())),
+                "warnings": [
+                    *manifest.warnings,
+                    "Workbench API operations are local Workbench endpoints, not Teamwork Cloud RealSwagger operations.",
+                ],
+            }
+        )
+
+    def _workbench_api_explorer_operations(self) -> list[SwaggerOperationSpec]:
+        return [
+            SwaggerOperationSpec(
+                key=WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY,
+                method="GET",
+                path="/api/workspace/model-cache/spec-diagnostic",
+                tag="Workbench API",
+                tags=["Workbench API", "Model Cache"],
+                operation_id=WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY,
+                summary="Export Workbench spec diagnostic mapping payload",
+                description=(
+                    "Workbench-only diagnostic endpoint. Reads the stored/plugin model cache and returns branch summary, "
+                    "model inventory, raw snapshot payloads, spec_sections summaries, and derived ItemDetails so Cameo "
+                    "Specification-window pages can be mapped from facts. This does not call Teamwork Cloud."
+                ),
+                query_parameters=[
+                    SwaggerParameterSpec(name="projectId", location="query", required=True, schema_type="string", description="Workbench cached project id."),
+                    SwaggerParameterSpec(name="branchId", location="query", required=True, schema_type="string", description="Workbench cached branch id."),
+                    SwaggerParameterSpec(name="modelId", location="query", required=False, schema_type="string", description="Optional cached model id filter."),
+                    SwaggerParameterSpec(name="elementId", location="query", required=False, schema_type="array", description="Optional element id. Repeat this query parameter for multiple exact elements."),
+                    SwaggerParameterSpec(name="limit", location="query", required=False, schema_type="integer", default=25, description="Maximum elements returned when elementId is omitted. Range: 1-1000."),
+                    SwaggerParameterSpec(name="includeRawPayload", location="query", required=False, schema_type="boolean", default=True, description="Include raw plugin snapshot payloads."),
+                    SwaggerParameterSpec(name="includeDetails", location="query", required=False, schema_type="boolean", default=True, description="Include Workbench derived ItemDetails beside raw payloads."),
+                ],
+                responses=[
+                    SwaggerResponseSpec(status_code="200", description="Workbench spec diagnostic mapping payload.", content_types=["application/json"]),
+                    SwaggerResponseSpec(status_code="403", description="The active Workbench user cannot read the requested cached branch/model.", content_types=["application/json"]),
+                    SwaggerResponseSpec(status_code="404", description="No cached branch snapshot exists for the requested project and branch.", content_types=["application/json"]),
+                ],
+                destructive=False,
+            )
+        ]
 
     async def execute_swagger_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
+        if payload.operation_key == WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY:
+            return self._execute_workbench_spec_diagnostic_operation(session, payload)
         operation, candidate_path = self.contract.build_candidate_path(
             payload.operation_key,
             path_params=payload.path_params,
@@ -5532,6 +5609,62 @@ class PlatformService:
             timeout=payload.timeout_seconds,
         )
         return self._swagger_response(payload.operation_key, operation.method, operation.path, requested_path, response)
+
+    def _execute_workbench_spec_diagnostic_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
+        query_params = payload.query_params or {}
+        project_id = str(query_params.get("projectId") or "").strip()
+        branch_id = str(query_params.get("branchId") or "").strip()
+        if not project_id:
+            raise ValueError("Missing required query parameter: projectId")
+        if not branch_id:
+            raise ValueError("Missing required query parameter: branchId")
+        raw_element_ids = query_params.get("elementId")
+        element_ids = [str(value).strip() for value in _as_list(raw_element_ids) if str(value).strip()]
+        limit = int(query_params.get("limit") or 25)
+        include_raw_payload = _truthy_query_value(query_params.get("includeRawPayload"), default=True)
+        include_details = _truthy_query_value(query_params.get("includeDetails"), default=True)
+        diagnostic = self.get_cached_branch_spec_diagnostic_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+            model_id=str(query_params.get("modelId") or "").strip() or None,
+            element_ids=element_ids,
+            limit=limit,
+            include_raw_payload=include_raw_payload,
+            include_details=include_details,
+            include_all_workbench_admin=self.can_manage_server_presets(session),
+        )
+        requested_path = self._workbench_spec_diagnostic_requested_path(query_params)
+        content = json.dumps(diagnostic, default=str).encode("utf-8")
+        return SwaggerExecuteResponse(
+            operation_key=payload.operation_key,
+            method="GET",
+            path="/api/workspace/model-cache/spec-diagnostic",
+            requested_path=requested_path,
+            status_code=200,
+            ok=True,
+            content_type="application/json",
+            headers={"content-type": "application/json"},
+            body=diagnostic,
+            text=None,
+            body_base64=None,
+            is_binary=False,
+            size_bytes=len(content),
+        )
+
+    def _workbench_spec_diagnostic_requested_path(self, query_params: dict[str, Any]) -> str:
+        query_items: list[tuple[str, str]] = []
+        for key in ("projectId", "branchId", "modelId", "elementId", "limit", "includeRawPayload", "includeDetails"):
+            value = query_params.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, list):
+                query_items.extend((key, str(item)) for item in value if item not in (None, ""))
+            else:
+                query_items.append((key, str(value)))
+        suffix = f"?{urlencode(query_items, doseq=True)}" if query_items else ""
+        return f"/api/workspace/model-cache/spec-diagnostic{suffix}"
 
     async def execute_swagger_upload(
         self,
