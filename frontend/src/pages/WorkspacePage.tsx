@@ -130,16 +130,14 @@ const SPECIFICATION_SECTION_LABELS: Record<SpecificationSectionId, string> = {
 };
 
 const SPECIFICATION_CHILD_SECTIONS: SpecificationSectionId[] = [
-  "native-properties",
-  "stereotype-properties",
-  "documentation",
   "navigation",
+  "documentation",
   "usage-diagrams",
-  "inner-elements",
+  "traceability",
   "relations",
   "tags",
   "constraints",
-  "traceability",
+  "inner-elements",
   "allocations",
 ];
 
@@ -1710,6 +1708,25 @@ function specificationWindowRows(
       });
     }
   }
+
+  const nativeRows = payloadNativeMetamodelEntries(item)
+    .filter((entry) => {
+      const value = hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue;
+      if (viewMode === "standard") {
+        return entry.set === true && hasMeaningfulValue(entry.value);
+      }
+      if (viewMode === "expert") {
+        return hasMeaningfulValue(value) || entry.set === true || entry.derived === true;
+      }
+      return true;
+    })
+    .map((entry, index) => ({
+      key: `native.metamodel.${String(entry.id ?? index)}`,
+      label: String(entry.name ?? entry.id ?? `Property ${index + 1}`),
+      value: nativeEntryDisplayValue(entry, lookup) || (viewMode === "all" ? "Not provided" : ""),
+    }))
+    .filter((row) => hasMeaningfulValue(row.value));
+  rows.push(...nativeRows);
 
   return dedupeInspectorRows(rows);
 }
