@@ -458,6 +458,37 @@ def model_cache_snapshot(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
+@router.get("/model-cache/spec-diagnostic")
+def model_cache_spec_diagnostic(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    modelId: str | None = Query(default=None),
+    elementId: list[str] | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=1000),
+    includeRawPayload: bool = Query(default=True),
+    includeDetails: bool = Query(default=True),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.get_cached_branch_spec_diagnostic_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            projectId,
+            branchId,
+            model_id=modelId,
+            element_ids=elementId,
+            limit=limit,
+            include_raw_payload=includeRawPayload,
+            include_details=includeDetails,
+            include_all_workbench_admin=container.platform.can_manage_server_presets(session),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.get("/model-cache/models/{model_id}")
 def cached_model(
     model_id: str,

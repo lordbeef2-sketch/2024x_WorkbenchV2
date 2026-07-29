@@ -3083,6 +3083,257 @@ class PlatformService:
         self._require_server(server_id, include_disabled=True)
         return self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element_id)
 
+    def get_cached_branch_spec_diagnostic_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        *,
+        model_id: str | None = None,
+        element_ids: list[str] | None = None,
+        limit: int = 25,
+        include_raw_payload: bool = True,
+        include_details: bool = True,
+        include_all_workbench_admin: bool = False,
+    ) -> dict[str, Any]:
+        """Return the factual mapping surface for Cameo-specification parity work.
+
+        This is intentionally read-only and diagnostic. It places the raw plugin
+        snapshot payload next to Workbench's derived ItemDetails so we can map
+        Cameo specification pages from evidence instead of guessing in the UI.
+        """
+        self._require_server(server_id, include_disabled=True)
+        user_id = self._user_key(preferred_username)
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if summary is None:
+            raise ValueError("No cached branch snapshot exists for this project and branch.")
+
+        visible_models = self._visible_cached_models_for_user(
+            user_id,
+            server_id,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
+        if model_id is not None:
+            visible_models = [model for model in visible_models if model.model_id == model_id]
+        visible_model_ids = {model.model_id for model in visible_models}
+        if model_id is not None and not visible_model_ids:
+            raise PermissionError("The active Workbench user cannot read that cached model.")
+
+        requested_ids = [value.strip() for value in (element_ids or []) if value and value.strip()]
+        elements: list[CachedElementRecord] = []
+        missing_element_ids: list[str] = []
+        if requested_ids:
+            for element_id in requested_ids[: max(limit, 1)]:
+                record = self.get_cached_branch_element_for_user(
+                    server_id,
+                    preferred_username,
+                    project_id,
+                    branch_id,
+                    element_id,
+                    model_id=model_id,
+                    include_all_workbench_admin=include_all_workbench_admin,
+                )
+                if record is None:
+                    missing_element_ids.append(element_id)
+                    continue
+                if model_id is None or record.model_id == model_id:
+                    elements.append(record)
+        else:
+            elements = self.list_cached_branch_elements_for_user(
+                server_id,
+                preferred_username,
+                project_id,
+                branch_id,
+                model_id=model_id,
+                limit=max(limit, 1),
+                offset=0,
+                include_all_workbench_admin=include_all_workbench_admin,
+            ).items
+
+        total_elements = self.repo.count_cached_elements_for_branch(server_id, project_id, branch_id)
+        adapter = create_adapter(self._require_server(server_id, include_disabled=True), {}, self.settings.resolved_data_dir)
+        reference_keys: set[str] = set()
+        attribute_keys: set[str] = set()
+        spec_section_keys: set[str] = set()
+        metaclasses: dict[str, int] = {}
+        human_types: dict[str, int] = {}
+        for record in self.repo.list_cached_elements(
+            server_id,
+            project_id,
+            branch_id,
+            model_id=model_id,
+            limit=max(total_elements, 1),
+            offset=0,
+        ).items:
+            if model_id is None and record.model_id not in visible_model_ids:
+                continue
+            payload = record.payload if isinstance(record.payload, dict) else {}
+            for key in (payload.get("references") or {}).keys() if isinstance(payload.get("references"), dict) else []:
+                reference_keys.add(str(key))
+            for key in (payload.get("attributes") or {}).keys() if isinstance(payload.get("attributes"), dict) else []:
+                attribute_keys.add(str(key))
+            for key in (payload.get("spec_sections") or payload.get("specSections") or {}).keys() if isinstance(payload.get("spec_sections") or payload.get("specSections"), dict) else []:
+                spec_section_keys.add(str(key))
+            metaclass = str(payload.get("metaclass") or record.item_type or "").strip()
+            if metaclass:
+                metaclasses[metaclass] = metaclasses.get(metaclass, 0) + 1
+            human_type = str(payload.get("human_type") or payload.get("humanType") or record.item_type or "").strip()
+            if human_type:
+                human_types[human_type] = human_types.get(human_type, 0) + 1
+
+        return {
+            "schema_version": "workbench-spec-diagnostic.v1",
+            "purpose": "Map Cameo Specification window pages from raw plugin snapshot payloads and derived Workbench item details.",
+            "server_id": server_id,
+            "project_id": project_id,
+            "branch_id": branch_id,
+            "model_id": model_id,
+            "requested_element_ids": requested_ids,
+            "missing_element_ids": missing_element_ids,
+            "selection": {
+                "limit": limit,
+                "returned_count": len(elements),
+                "total_cached_branch_elements": total_elements,
+                "include_raw_payload": include_raw_payload,
+                "include_details": include_details,
+                "admin_full_cache_view": include_all_workbench_admin,
+            },
+            "branch_summary": summary.model_dump(mode="json"),
+            "models": [model.model_dump(mode="json") for model in visible_models],
+            "payload_inventory": {
+                "attribute_keys": sorted(attribute_keys, key=str.lower),
+                "reference_keys": sorted(reference_keys, key=str.lower),
+                "spec_section_keys": sorted(spec_section_keys, key=str.lower),
+                "metaclasses": dict(sorted(metaclasses.items(), key=lambda item: (-item[1], item[0].lower()))),
+                "human_types": dict(sorted(human_types.items(), key=lambda item: (-item[1], item[0].lower()))),
+            },
+            "cameo_spec_page_inputs": {
+                "root_selected_element": ["payload identity fields", "payload.spec_sections.metamodel", "derived ItemDetails.metadata"],
+                "Navigation/Hyperlinks": ["payload.spec_sections.navigation", "payload.attributes/reference keys matching navigation, hyperlink, link, url, uri, target"],
+                "Documentation/Comments": ["payload.spec_sections.documentation", "payload.documentation", "payload.attributes.comment/ownedComment"],
+                "Usage in Diagrams": ["payload.spec_sections.usageDiagrams", "payload.diagram_element_ids", "payload.references keys matching diagram, symbol, usage"],
+                "Traceability": ["payload.spec_sections.traceability", "payload.references/attributes keys matching trace, satisfy, verify, refine, realize, specify"],
+                "Relations": ["payload.spec_sections.relations", "payload.owner_id", "payload.owned_element_ids", "payload.references"],
+                "Tags": ["payload.spec_sections.tags", "payload.spec_sections.stereotypes", "payload.applied_stereotype_ids", "payload.attributes/reference keys matching tag, stereotype, profile"],
+                "Constraints": ["payload.spec_sections.constraints", "payload.attributes/reference keys matching constraint, guard, condition, rule, expression"],
+                "Inner Elements": ["payload.spec_sections.innerElements", "payload.owned_element_ids", "payload.diagram_element_ids"],
+                "Allocations": ["payload.spec_sections.allocations", "payload.attributes/reference keys matching allocation"],
+            },
+            "elements": [
+                self._spec_diagnostic_element(
+                    adapter,
+                    server_id,
+                    preferred_username,
+                    project_id,
+                    branch_id,
+                    record,
+                    include_raw_payload=include_raw_payload,
+                    include_details=include_details,
+                    include_all_workbench_admin=include_all_workbench_admin,
+                )
+                for record in elements
+            ],
+        }
+
+    def _spec_diagnostic_element(
+        self,
+        adapter: TeamworkAdapter,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        record: CachedElementRecord,
+        *,
+        include_raw_payload: bool,
+        include_details: bool,
+        include_all_workbench_admin: bool,
+    ) -> dict[str, Any]:
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        attributes = payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {}
+        references = payload.get("references") if isinstance(payload.get("references"), dict) else {}
+        spec_sections = payload.get("spec_sections") or payload.get("specSections")
+        if not isinstance(spec_sections, dict):
+            spec_sections = {}
+        item_details = (
+            self._cached_item_details_for_user(
+                server_id,
+                preferred_username,
+                project_id,
+                branch_id,
+                record.element_id,
+                include_all_workbench_admin=include_all_workbench_admin,
+            )
+            if include_details
+            else None
+        )
+        diagnostic: dict[str, Any] = {
+            "record": record.model_dump(mode="json", exclude={"payload"}),
+            "payload_shape": {
+                "top_level_keys": sorted(payload.keys(), key=str.lower),
+                "attribute_keys": sorted(attributes.keys(), key=str.lower),
+                "reference_keys": sorted(references.keys(), key=str.lower),
+                "spec_section_keys": sorted(spec_sections.keys(), key=str.lower),
+                "reference_resolution_ids": adapter.reference_resolution_ids(payload),
+            },
+            "containment_fields": {
+                "owner_id": payload.get("owner_id") or payload.get("ownerId"),
+                "owned_element_ids": payload.get("owned_element_ids") or payload.get("ownedElementIds") or [],
+                "diagram_element_ids": payload.get("diagram_element_ids") or payload.get("diagramElementIds") or [],
+                "applied_stereotype_ids": payload.get("applied_stereotype_ids") or payload.get("appliedStereotypeIds") or [],
+            },
+            "reference_counts": {
+                key: len(value) if isinstance(value, list) else 1
+                for key, value in sorted(references.items(), key=lambda item: str(item[0]).lower())
+            },
+            "spec_sections_summary": self._summarize_spec_sections(spec_sections),
+        }
+        if item_details is not None:
+            diagnostic["derived_item_details"] = item_details.model_dump(mode="json")
+        if include_raw_payload:
+            diagnostic["raw_payload"] = payload
+        return diagnostic
+
+    def _summarize_spec_sections(self, spec_sections: dict[str, Any]) -> dict[str, Any]:
+        summary: dict[str, Any] = {}
+        for section_name, section_payload in sorted(spec_sections.items(), key=lambda item: str(item[0]).lower()):
+            if isinstance(section_payload, dict):
+                entries = section_payload.get("entries")
+                normalized_entries = entries if isinstance(entries, list) else []
+                entry_keys: set[str] = set()
+                for entry in normalized_entries:
+                    if isinstance(entry, dict):
+                        entry_keys.update(str(key) for key in entry.keys())
+                summary[str(section_name)] = {
+                    "kind": "object",
+                    "keys": sorted(section_payload.keys(), key=str.lower),
+                    "entry_count": len(normalized_entries),
+                    "entry_keys": sorted(entry_keys, key=str.lower),
+                }
+            elif isinstance(section_payload, list):
+                entry_keys: set[str] = set()
+                nested_entry_count = 0
+                for entry in section_payload:
+                    if isinstance(entry, dict):
+                        entry_keys.update(str(key) for key in entry.keys())
+                        nested_entries = entry.get("entries")
+                        if isinstance(nested_entries, list):
+                            nested_entry_count += len(nested_entries)
+                summary[str(section_name)] = {
+                    "kind": "list",
+                    "item_count": len(section_payload),
+                    "nested_entry_count": nested_entry_count,
+                    "item_keys": sorted(entry_keys, key=str.lower),
+                }
+            else:
+                summary[str(section_name)] = {
+                    "kind": type(section_payload).__name__,
+                    "has_value": section_payload is not None,
+                }
+        return summary
+
     def search_cached_branch_elements_for_user(
         self,
         server_id: str,
@@ -8889,6 +9140,7 @@ class PlatformService:
                 "GET /api/cache/servers/{server_id}/projects",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/summary",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/snapshot",
+                "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/spec-diagnostic",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/tree",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/nodes/{parent_id}/children",
                 "GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/models",

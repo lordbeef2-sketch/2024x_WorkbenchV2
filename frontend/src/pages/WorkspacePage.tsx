@@ -1189,6 +1189,58 @@ if __name__ == "__main__":
 `;
 }
 
+function workbenchSpecDiagnosticPythonScript(
+  workbenchBaseUrl: string,
+  serverId: string,
+  projectId: string,
+  branchId: string,
+  elementId: string,
+): string {
+  return `from __future__ import annotations
+
+import json
+from urllib.parse import urlencode
+
+import requests
+
+WORKBENCH_BASE_URL = ${pythonLiteral(workbenchBaseUrl)}
+API_KEY = "replace-with-your-api-key"
+SERVER_ID = ${pythonLiteral(serverId)}
+PROJECT_ID = ${pythonLiteral(projectId)}
+BRANCH_ID = ${pythonLiteral(branchId)}
+ELEMENT_ID = ${pythonLiteral(elementId)}
+VERIFY_TLS = True
+
+
+def main() -> None:
+    # Workbench-only diagnostic: no live Teamwork Cloud/API call.
+    # Use one or more elementId query values for exact elements, or remove
+    # elementId to return the first LIMIT accessible cached branch elements.
+    query = urlencode(
+        {
+            "elementId": ELEMENT_ID,
+            "limit": 25,
+            "includeRawPayload": "true",
+            "includeDetails": "true",
+        }
+    )
+    response = requests.get(
+        f"{WORKBENCH_BASE_URL}/api/cache/servers/{SERVER_ID}/projects/{PROJECT_ID}/branches/{BRANCH_ID}/spec-diagnostic?{query}",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        timeout=180,
+        verify=VERIFY_TLS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    print(json.dumps(payload, indent=2))
+    print("Use payload['cameo_spec_page_inputs'] and payload['elements'][*] to build the Cameo-to-Workbench mapping table.")
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
+
 function workbenchEditElementPythonScript(
   workbenchBaseUrl: string,
   serverId: string,
@@ -2520,6 +2572,17 @@ export default function WorkspacePage() {
   const nativeSpecificationPythonExample = useMemo(
     () =>
       workbenchNativeSpecificationPythonScript(
+        workbenchBaseUrlExample,
+        developerApiServerId,
+        developerApiProjectId,
+        developerApiBranchId,
+        developerApiElementId,
+    ),
+    [developerApiBranchId, developerApiElementId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
+  );
+  const specDiagnosticPythonExample = useMemo(
+    () =>
+      workbenchSpecDiagnosticPythonScript(
         workbenchBaseUrlExample,
         developerApiServerId,
         developerApiProjectId,
@@ -6936,6 +6999,14 @@ export default function WorkspacePage() {
             fullWidth
             multiline
             minRows={24}
+            InputProps={{ readOnly: true }}
+          />
+          <TextField
+            label="Python script: export Workbench spec diagnostic mapping payload"
+            value={specDiagnosticPythonExample}
+            fullWidth
+            multiline
+            minRows={28}
             InputProps={{ readOnly: true }}
           />
           <TextField

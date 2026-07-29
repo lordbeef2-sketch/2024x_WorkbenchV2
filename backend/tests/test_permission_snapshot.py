@@ -994,6 +994,82 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
             self.assertEqual(cached.path, "Model::Element")
             self.assertEqual(due_calls, ["server"])
 
+    def test_spec_diagnostic_exports_raw_payload_and_derived_details(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            data_dir = Path(directory)
+            repo = SqliteRepository(data_dir / "workbench.db")
+            repo.upsert_server(ServerProfile(id="server", name="Server", base_url="https://twc.example"))
+            service = object.__new__(PlatformService)
+            service.repo = repo
+            service.settings = SimpleNamespace(resolved_data_dir=data_dir)
+            service.sessions = SimpleNamespace(mark_server_permission_snapshots_due=lambda server_id: None)
+            service._permission_inventory_dirty_notifier = None
+
+            service.ingest_branch_snapshot(
+                BranchSnapshotIngestRequest(
+                    serverId="server",
+                    projectId="project",
+                    projectName="Project",
+                    branchId="main",
+                    branchName="Main",
+                    revisionId="1",
+                    sourceUser="publisher",
+                    models=[
+                        IngestModelRecord(
+                            modelId="model",
+                            name="Model",
+                            rootElementIds=["element"],
+                        )
+                    ],
+                    elements=[
+                        IngestElementRecord(
+                            elementId="element",
+                            modelId="model",
+                            humanName="Requirement A",
+                            humanType="Requirement",
+                            qualifiedName="Model::Requirement A",
+                            attributes={"text": "shall do the thing"},
+                            references={"verifiedBy": ["test-case"]},
+                            specSections={
+                                "traceability": {
+                                    "entries": [
+                                        {"name": "Verified By", "type": "Reference", "value": "test-case"}
+                                    ]
+                                }
+                            },
+                        ),
+                        IngestElementRecord(
+                            elementId="test-case",
+                            modelId="model",
+                            humanName="Verification Case",
+                            humanType="Test Case",
+                            qualifiedName="Model::Verification Case",
+                        ),
+                    ],
+                )
+            )
+
+            diagnostic = service.get_cached_branch_spec_diagnostic_for_user(
+                "server",
+                "admin",
+                "project",
+                "main",
+                element_ids=["element"],
+                include_all_workbench_admin=True,
+            )
+
+            self.assertEqual(diagnostic["schema_version"], "workbench-spec-diagnostic.v1")
+            self.assertIn("verifiedBy", diagnostic["payload_inventory"]["reference_keys"])
+            self.assertEqual(diagnostic["elements"][0]["record"]["element_id"], "element")
+            self.assertIn("raw_payload", diagnostic["elements"][0])
+            self.assertIn("derived_item_details", diagnostic["elements"][0])
+            self.assertIn("traceability", diagnostic["elements"][0]["spec_sections_summary"])
+            related = {
+                (entry["target"], entry["type"])
+                for entry in diagnostic["elements"][0]["derived_item_details"]["relationships"]
+            }
+            self.assertIn(("test-case", "verifiedBy"), related)
+
     def test_acl_delta_marks_users_due_and_tombstone_revokes_branch_atomically(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             data_dir = Path(directory)
