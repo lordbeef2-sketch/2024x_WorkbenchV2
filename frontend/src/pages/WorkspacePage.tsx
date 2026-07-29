@@ -1849,6 +1849,7 @@ export default function WorkspacePage() {
   const canEdit = capabilities.edit?.state === "ready";
   const isAdmin = Boolean(session?.can_manage_server_presets);
   const canManageGroups = isAdmin || Boolean(session?.can_manage_groups);
+  const canOpenSettings = Boolean(session?.user?.preferred_username);
   const compactUi = currentPreferences.compact_ui ?? true;
   const [itemDetailViewMode, setItemDetailViewMode] = useState<ItemDetailViewMode>(() =>
     parseItemDetailViewMode(currentPreferences.item_detail_view_mode),
@@ -2082,15 +2083,12 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     if (!isAdmin && (tab === "api" || tab === "developer")) {
-      setTab(canManageGroups ? "settings" : "dashboard");
-    }
-    if (!canManageGroups && tab === "settings") {
-      setTab("dashboard");
+      setTab(canOpenSettings ? "settings" : "dashboard");
     }
     if (!isAdmin && settingsSubtab !== "users" && settingsSubtab !== "groups") {
-      setSettingsSubtab(canManageGroups ? "users" : "users");
+      setSettingsSubtab("users");
     }
-  }, [canManageGroups, isAdmin, settingsSubtab, tab]);
+  }, [canOpenSettings, isAdmin, settingsSubtab, tab]);
 
   useEffect(() => {
     if (!managedServersQuery.data) {
@@ -7355,22 +7353,30 @@ export default function WorkspacePage() {
               Organized admin and personal settings. Workspace project/branch context is hidden here so setup work stays focused.
             </Typography>
           </Box>
-          <Tabs
-            value={settingsSubtab}
-            onChange={(_event: SyntheticEvent, value: SettingsSubtab) => setSettingsSubtab(value)}
-            variant="scrollable"
-            scrollButtons="auto"
-            aria-label="Workbench settings sections"
-          >
-            {canManageGroups ? <Tab value="users" label="Users" /> : null}
-            {canManageGroups ? <Tab value="groups" label="Groups" /> : null}
-            {isAdmin ? <Tab value="auth" label="Authentication" /> : null}
-            {isAdmin ? <Tab value="api-keys" label="API Access Keys" /> : null}
-            {isAdmin ? <Tab value="network" label="Network Settings" /> : null}
-            {isAdmin ? <Tab value="agentic" label="Agentic Settings" /> : null}
-          </Tabs>
+          {canManageGroups || isAdmin ? (
+            <Tabs
+              value={settingsSubtab}
+              onChange={(_event: SyntheticEvent, value: SettingsSubtab) => setSettingsSubtab(value)}
+              variant="scrollable"
+              scrollButtons="auto"
+              aria-label="Workbench settings sections"
+            >
+              {canManageGroups ? <Tab value="users" label="Users" /> : null}
+              {canManageGroups ? <Tab value="groups" label="Groups" /> : null}
+              {isAdmin ? <Tab value="auth" label="Authentication" /> : null}
+              {isAdmin ? <Tab value="api-keys" label="API Access Keys" /> : null}
+              {isAdmin ? <Tab value="network" label="Network Settings" /> : null}
+              {isAdmin ? <Tab value="agentic" label="Agentic Settings" /> : null}
+            </Tabs>
+          ) : null}
         </Stack>
       </Paper>
+
+      {!canManageGroups && !isAdmin ? (
+        <Alert severity="info">
+          Settings are available to Workbench administrators and group managers. If this account should manage settings, sign in with a Workbench admin account or have an administrator update the account role.
+        </Alert>
+      ) : null}
 
       {settingsSubtab === "users" ? (
         <Stack spacing={2}>
@@ -7401,22 +7407,32 @@ export default function WorkspacePage() {
 
       {settingsSubtab === "api-keys" ? (
         <Stack spacing={2}>
-          {renderCacheApiKeys()}
+          {isAdmin ? renderCacheApiKeys() : (
+            <Alert severity="info">API access keys are administrator-only.</Alert>
+          )}
         </Stack>
       ) : null}
 
       {settingsSubtab === "network" ? (
         <Stack spacing={2}>
-          {renderWorkspacePreferences()}
-          {isAdmin ? renderServerPresetManagement() : null}
-          {isAdmin ? renderCacheIngestToken() : null}
-          {isAdmin ? renderTombstoneAudit() : null}
+          {isAdmin ? (
+            <>
+              {renderWorkspacePreferences()}
+              {renderServerPresetManagement()}
+              {renderCacheIngestToken()}
+              {renderTombstoneAudit()}
+            </>
+          ) : (
+            <Alert severity="info">Network settings are administrator-only.</Alert>
+          )}
         </Stack>
       ) : null}
 
       {settingsSubtab === "agentic" ? (
         <Stack spacing={2}>
-          {renderWorkbenchAgentSettings()}
+          {isAdmin ? renderWorkbenchAgentSettings() : (
+            <Alert severity="info">Agentic settings are administrator-only.</Alert>
+          )}
         </Stack>
       ) : null}
     </Stack>
@@ -7677,11 +7693,14 @@ export default function WorkspacePage() {
             keepMounted
           >
             <MenuItem disabled>{userMenuLabel}</MenuItem>
-            {canManageGroups ? (
+            {canOpenSettings ? (
               <MenuItem
                 onClick={() => {
                   closeUserMenu();
                   setTab("settings");
+                  if (!isAdmin && settingsSubtab !== "users" && settingsSubtab !== "groups") {
+                    setSettingsSubtab("users");
+                  }
                 }}
               >
                 <SettingsRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
@@ -7857,12 +7876,17 @@ export default function WorkspacePage() {
               >
                 Agent
               </Button>
-              {canManageGroups ? (
+              {canOpenSettings ? (
                 <Button
                   size="small"
                   variant={tab === "settings" ? "contained" : "text"}
                   startIcon={<SettingsRoundedIcon />}
-                  onClick={() => setTab("settings")}
+                  onClick={() => {
+                    setTab("settings");
+                    if (!isAdmin && settingsSubtab !== "users" && settingsSubtab !== "groups") {
+                      setSettingsSubtab("users");
+                    }
+                  }}
                 >
                   Settings
                 </Button>
@@ -7929,7 +7953,7 @@ export default function WorkspacePage() {
             {tab === "agent" ? renderWorkbenchAgent() : null}
             {tab === "developer" && isAdmin ? renderDeveloperApi() : null}
             {tab === "api" && isAdmin ? renderApiExplorer() : null}
-            {tab === "settings" && canManageGroups ? renderSettingsPage() : null}
+            {tab === "settings" ? renderSettingsPage() : null}
           </Box>
         </Stack>
       </Box>
