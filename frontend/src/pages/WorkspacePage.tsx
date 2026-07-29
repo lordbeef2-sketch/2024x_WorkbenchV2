@@ -91,7 +91,7 @@ type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-vi
 type WorkspaceMenuGroup = "views" | "diagrams" | "api";
 type ElementSearchMode = "query" | "stereotype";
 type CompareMode = "branch" | "item";
-type SettingsSubtab = "users" | "groups" | "auth" | "api-keys" | "network" | "agentic";
+type SettingsSubtab = "users" | "groups" | "auth" | "api-keys";
 
 const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api", "settings"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
@@ -2135,7 +2135,7 @@ export default function WorkspacePage() {
       workbenchAgentStatus?.updated_at ?? "",
     ],
     queryFn: api.listWorkbenchAgentModels,
-    enabled: (tab === "agent" || (tab === "settings" && settingsSubtab === "agentic")) && Boolean(workbenchAgentStatus?.configured && workbenchAgentStatus?.has_api_key),
+    enabled: (tab === "agent" || (tab === "settings" && settingsSubtab === "auth")) && Boolean(workbenchAgentStatus?.configured && workbenchAgentStatus?.has_api_key),
     staleTime: 1000 * 60 * 5,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -6944,7 +6944,7 @@ export default function WorkspacePage() {
     <Paper sx={{ p: 3, borderRadius: 2 }}>
       <Stack spacing={2}>
         <Box>
-          <Typography variant="h5">Agentic Settings</Typography>
+          <Typography variant="h5">Workbench Agent Connection</Typography>
           <Typography variant="body2" color="text.secondary">
             Map an Open WebUI model into Workbench Agent. Every chat uses integrity-validated, query-routed evidence from the single authoritative 3DS_KB plus the current user&apos;s permission-scoped branch model snapshot.
           </Typography>
@@ -7062,7 +7062,7 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Workbench Agent</Typography>
             <Typography variant="body2" color="text.secondary">
-              Chat with the mapped Open WebUI model against the selected project branch. Configure the Open WebUI connection in Settings → Agentic Settings.
+              Chat with the mapped Open WebUI model against the selected project branch. Configure the Open WebUI connection in Settings → Authentication.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
@@ -7075,11 +7075,11 @@ export default function WorkspacePage() {
               variant="outlined"
               startIcon={<SettingsRoundedIcon />}
               onClick={() => {
-                setSettingsSubtab("agentic");
+                setSettingsSubtab("auth");
                 setTab("settings");
               }}
             >
-              Open Agentic Settings
+              Open Authentication Settings
             </Button>
           ) : null}
         </Stack>
@@ -7365,8 +7365,6 @@ export default function WorkspacePage() {
               {canManageGroups ? <Tab value="groups" label="Groups" /> : null}
               {isAdmin ? <Tab value="auth" label="Authentication" /> : null}
               {isAdmin ? <Tab value="api-keys" label="API Access Keys" /> : null}
-              {isAdmin ? <Tab value="network" label="Network Settings" /> : null}
-              {isAdmin ? <Tab value="agentic" label="Agentic Settings" /> : null}
             </Tabs>
           ) : null}
         </Stack>
@@ -7399,7 +7397,16 @@ export default function WorkspacePage() {
 
       {settingsSubtab === "auth" ? (
         <Stack spacing={2}>
-          {isAdmin ? renderAuthenticationSettings() : (
+          {isAdmin ? (
+            <>
+              {renderAuthenticationSettings()}
+              {renderWorkspacePreferences()}
+              {renderServerPresetManagement()}
+              {renderCacheIngestToken()}
+              {renderWorkbenchAgentSettings()}
+              {renderTombstoneAudit()}
+            </>
+          ) : (
             <Alert severity="info">Authentication settings are administrator-only.</Alert>
           )}
         </Stack>
@@ -7413,28 +7420,6 @@ export default function WorkspacePage() {
         </Stack>
       ) : null}
 
-      {settingsSubtab === "network" ? (
-        <Stack spacing={2}>
-          {isAdmin ? (
-            <>
-              {renderWorkspacePreferences()}
-              {renderServerPresetManagement()}
-              {renderCacheIngestToken()}
-              {renderTombstoneAudit()}
-            </>
-          ) : (
-            <Alert severity="info">Network settings are administrator-only.</Alert>
-          )}
-        </Stack>
-      ) : null}
-
-      {settingsSubtab === "agentic" ? (
-        <Stack spacing={2}>
-          {isAdmin ? renderWorkbenchAgentSettings() : (
-            <Alert severity="info">Agentic settings are administrator-only.</Alert>
-          )}
-        </Stack>
-      ) : null}
     </Stack>
   );
 
