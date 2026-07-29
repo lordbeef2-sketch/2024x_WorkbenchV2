@@ -1665,8 +1665,18 @@ class TeamworkAdapter:
     ) -> ItemReference:
         resolved_entity = resolved_entities.get(reference_id)
         reference_name = self._extract_display_name(resolved_entity) if isinstance(resolved_entity, dict) else ""
-        raw_types = _normalize_types(resolved_entity.get("@type")) if isinstance(resolved_entity, dict) else []
-        item_type = _humanize_type(raw_types[0]) if raw_types else "element"
+        item_type = ""
+        if isinstance(resolved_entity, dict):
+            item_type = _first_text(
+                resolved_entity.get("human_type"),
+                resolved_entity.get("humanType"),
+                resolved_entity.get("metaclass"),
+            )
+            raw_types = _normalize_types(resolved_entity.get("@type"))
+            if not item_type and raw_types:
+                item_type = _humanize_type(raw_types[0])
+        if not item_type:
+            item_type = "element"
         path = self._item_path(project_id, branch_id, reference_name or reference_id, resolved_entity) if isinstance(resolved_entity, dict) else ""
         if not path and parent_path:
             path = f"{parent_path}/{reference_name or reference_id}"
@@ -1739,17 +1749,24 @@ class TeamworkAdapter:
                     resolution_ids.append(reference_id)
         return resolution_ids
 
-    def _extract_stereotypes(self, payload: dict[str, Any]) -> list[str]:
+    def _extract_stereotypes(self, payload: dict[str, Any], resolved_entities: dict[str, dict[str, Any]] | None = None) -> list[str]:
         entity = _payload_entity(payload) or {}
+        resolved_entities = resolved_entities or {}
         stereotypes: list[str] = []
         stereotype_values: list[Any] = []
         for key in ("uml:stereotypeName", "stereotypeName", "stereotypes", "applied_stereotype_ids", "appliedStereotypeIds"):
             stereotype_values.extend(_as_list(entity.get(key)))
         for value in stereotype_values:
             if isinstance(value, dict):
-                stereotype_name = _first_text(value.get("uml:stereotypeName"), value.get("name"), value.get("label"))
+                stereotype_name = _first_text(value.get("uml:stereotypeName"), value.get("human_name"), value.get("humanName"), value.get("name"), value.get("label"))
             else:
-                stereotype_name = str(value).strip() if str(value).strip() and not _is_uuid_like(str(value)) else ""
+                raw_value = str(value).strip()
+                reference_id = _reference_id(raw_value)
+                resolved_entity = resolved_entities.get(reference_id or raw_value)
+                if isinstance(resolved_entity, dict):
+                    stereotype_name = self._extract_display_name(resolved_entity)
+                else:
+                    stereotype_name = raw_value if raw_value and not _is_uuid_like(raw_value) else ""
             if stereotype_name and stereotype_name not in stereotypes:
                 stereotypes.append(stereotype_name)
         return stereotypes
@@ -1806,8 +1823,18 @@ class TeamworkAdapter:
         if resolved_entity is None and not _is_uuid_like(reference_id):
             return None
         reference_name = self._extract_display_name(resolved_entity) if isinstance(resolved_entity, dict) else ""
-        raw_types = _normalize_types(resolved_entity.get("@type")) if isinstance(resolved_entity, dict) else []
-        item_type = _humanize_type(raw_types[0]) if raw_types else "item"
+        item_type = ""
+        if isinstance(resolved_entity, dict):
+            item_type = _first_text(
+                resolved_entity.get("human_type"),
+                resolved_entity.get("humanType"),
+                resolved_entity.get("metaclass"),
+            )
+            raw_types = _normalize_types(resolved_entity.get("@type"))
+            if not item_type and raw_types:
+                item_type = _humanize_type(raw_types[0])
+        if not item_type:
+            item_type = "item"
         path = self._item_path(project_id, branch_id, reference_name or reference_id, resolved_entity) if isinstance(resolved_entity, dict) else ""
         if not path and parent_path and relationship_type in {"contains", "ownedElement", "packagedElement"}:
             path = f"{parent_path}/{reference_name or reference_id}"
@@ -2092,7 +2119,7 @@ class TeamworkAdapter:
             description=description,
             documentation_markdown=self._build_item_markdown(name, description, raw_types, metadata),
             raw_types=raw_types,
-            stereotypes=self._extract_stereotypes(entity),
+            stereotypes=self._extract_stereotypes(entity, resolved_entities),
             owner=owner,
             type_references=type_references,
             contained_elements=contained_elements,

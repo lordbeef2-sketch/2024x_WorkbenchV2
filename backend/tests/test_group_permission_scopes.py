@@ -69,7 +69,7 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details.description, "Published documentation")
         self.assertEqual(details.path, "Root/Logical Component")
         self.assertEqual(details.owner.name, "Owner Package")
-        self.assertIn("stereo-1", details.stereotypes)
+        self.assertIn("SafetyCritical", details.stereotypes)
         self.assertEqual(details.source_payload["spec_sections"]["metamodel"]["entries"][0]["value"], "public")
         self.assertEqual([(item.id, item.relationship_type) for item in details.contained_elements], [("part-1", "ownedElement")])
         self.assertIn(("type-1", "classifier"), [(item.id, item.relationship_type) for item in details.type_references])

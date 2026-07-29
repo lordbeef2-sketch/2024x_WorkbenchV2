@@ -561,8 +561,17 @@ function resolveDisplayValue(value: unknown, lookup: Record<string, string>): un
     return value.map((item) => resolveDisplayValue(item, lookup));
   }
   if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const displayName = [record.human_name, record.humanName, record.name, record.label, record.title, record.qualifiedName, record.qualified_name, record.id]
+      .map((candidate) => (typeof candidate === "string" ? candidate.trim() : ""))
+      .find(Boolean);
+    const displayId = typeof record.id === "string" && record.id.trim() ? record.id.trim() : "";
+    if (displayName && Object.keys(record).some((key) => ["id", "name", "human_name", "humanName", "qualifiedName", "qualified_name", "metaclass"].includes(key))) {
+      const resolved = displayId ? resolvedNameForId(displayId, lookup) : null;
+      return resolved ?? humanReadableReference(displayName, lookup);
+    }
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => [key, resolveDisplayValue(nestedValue, lookup)]),
+      Object.entries(record).map(([key, nestedValue]) => [key, resolveDisplayValue(nestedValue, lookup)]),
     );
   }
   return value;
@@ -766,6 +775,61 @@ function nativeSpecificationState(entry: Record<string, unknown>): string {
     entry.volatile === true ? "volatile" : "",
   ].filter(Boolean);
   return flags.join(", ");
+}
+
+function nativeEntryDisplayValue(entry: Record<string, unknown>, lookup: Record<string, string>): string {
+  return humanReadableValue(hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue, lookup);
+}
+
+function nativeReferenceRowsForHints(
+  item: ItemDetails,
+  lookup: Record<string, string>,
+  hints: string[],
+  options?: { includeUnset?: boolean; defaultType?: string },
+): DataTableRow[] {
+  return payloadNativeMetamodelEntries(item)
+    .filter((entry) => {
+      const kind = typeof entry.kind === "string" ? entry.kind.toLowerCase() : "";
+      const entryName = String(entry.name ?? entry.id ?? "");
+      const value = hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue;
+      if (!options?.includeUnset && !hasMeaningfulValue(value)) {
+        return false;
+      }
+      return kind === "reference" && keyMatchesHints(entryName, hints);
+    })
+    .map((entry, index) => ({
+      key: `native-reference-${String(entry.id ?? index)}`,
+      cells: [
+        String(entry.name ?? entry.id ?? options?.defaultType ?? "Reference"),
+        nativeEntryDisplayValue(entry, lookup) || "Not provided",
+        String(entry.valueType ?? entry.kind ?? options?.defaultType ?? ""),
+      ],
+    }));
+}
+
+function nativeStereotypeTagRows(item: ItemDetails, lookup: Record<string, string>): DataTableRow[] {
+  return payloadNativeStereotypeSections(item).flatMap((section, sectionIndex) => {
+    const entries = Array.isArray(section.entries)
+      ? section.entries.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
+      : [];
+    const sectionName = String(section.name ?? section.qualifiedName ?? `Stereotype ${sectionIndex + 1}`);
+    const headerRows: DataTableRow[] = [
+      {
+        key: `native-stereotype-section-${String(section.id ?? sectionIndex)}`,
+        cells: ["Applied Stereotype", humanReadableValue(sectionName, lookup)],
+      },
+    ];
+    const propertyRows = entries
+      .filter((entry) => hasMeaningfulValue(entry.value) || hasMeaningfulValue(entry.defaultValue) || entry.set === true)
+      .map((entry, entryIndex) => ({
+        key: `native-stereotype-tag-${String(section.id ?? sectionIndex)}-${String(entry.id ?? entryIndex)}`,
+        cells: [
+          `${sectionName} / ${String(entry.name ?? entry.id ?? "Property")}`,
+          nativeEntryDisplayValue(entry, lookup) || "Not provided",
+        ],
+      }));
+    return [...headerRows, ...propertyRows];
+  });
 }
 
 function payloadSpecSection(item: ItemDetails, section: SpecificationSectionId): Record<string, unknown> {
@@ -4020,7 +4084,21 @@ export default function WorkspacePage() {
       includeMetadata: true,
       inlineOnly: false,
     });
+    const nativeNavigationRows = nativeReferenceRowsForHints(item, referenceNameById, NAVIGATION_FIELD_HINTS, { defaultType: "Navigation" }).map((row) => ({
+      key: `navigation-${row.key}`,
+      cells: [row.cells[0], row.cells[2], row.cells[1]],
+    }));
     const diagramUsageReferences = collectReferenceMatches(item, ["diagram", "symbol", "usage"]);
+    const nativeUsageRows = nativeReferenceRowsForHints(item, referenceNameById, ["diagram", "symbol", "usage"], { defaultType: "Diagram" }).map((row) => ({
+      key: `usage-${row.key}`,
+      cells: [row.cells[1], row.cells[0]],
+    }));
+    const nativeInnerRows = nativeReferenceRowsForHints(item, referenceNameById, ["owned", "inner", "diagramElement", "element"], {
+      defaultType: "Element",
+    }).map((row) => ({
+      key: `inner-${row.key}`,
+      cells: [row.cells[1], row.cells[0]],
+    }));
     const navigationTableRows = hintRowsToTableRows(navigationRows);
     const relationRows = relationshipTableRows(item, referenceNameById);
     const combineDataRows = (...groups: DataTableRow[][]): DataTableRow[] => {
@@ -4037,12 +4115,20 @@ export default function WorkspacePage() {
     const usageDiagramRows = combineDataRows(
       structuredUsageRows,
       referenceRowsToTableRows(diagramUsageReferences, referenceNameById),
+      nativeUsageRows,
     );
     const innerElementRows = combineDataRows(
       structuredInnerElementRows,
       referenceRowsToTableRows(item.contained_elements, referenceNameById),
+      nativeInnerRows,
     );
-    const combinedRelationRows = combineDataRows(structuredRelationRows, relationRows);
+    const nativeRelationRows = nativeReferenceRowsForHints(item, referenceNameById, ["owner", "owned", "supplier", "client", "relationship", "relation", "dependency", "element"], {
+      defaultType: "Reference",
+    }).map((row) => ({
+      key: `relation-${row.key}`,
+      cells: [row.cells[0], displayEntityName(item.name, item.id, item.item_type, referenceNameById, item.path), "Related", row.cells[1]],
+    }));
+    const combinedRelationRows = combineDataRows(structuredRelationRows, relationRows, nativeRelationRows);
     const tagRows = dedupeInspectorRows([
       ...(item.stereotypes.length
         ? [
@@ -4060,6 +4146,7 @@ export default function WorkspacePage() {
       ...mapInlineInspectorRows(item.metadata ?? {}, referenceNameById).filter((row) => keyMatchesHints(row.key, TAG_FIELD_HINTS)),
     ]);
     const tagTableRows = hintRowsToTableRows(tagRows);
+    const combinedTagRows = combineDataRows(structuredTagRows, tagTableRows, nativeStereotypeTagRows(item, referenceNameById));
     const constraintSectionRows = constraintRows(item, referenceNameById);
     const constraintLinkedItems = constraintReferenceItems(item);
     const constraintTableRows = hintRowsToTableRows(constraintSectionRows);
@@ -4068,9 +4155,14 @@ export default function WorkspacePage() {
       inlineOnly: false,
     });
     const traceabilityReferences = collectReferenceMatches(item, TRACEABILITY_FIELD_HINTS);
+    const nativeTraceabilityRows = nativeReferenceRowsForHints(item, referenceNameById, TRACEABILITY_FIELD_HINTS, { includeUnset: true, defaultType: "Traceability" }).map((row) => ({
+      key: `trace-${row.key}`,
+      cells: [row.cells[0], row.cells[1]],
+    }));
     const traceabilityTableRows = [
       ...hintRowsToTableRows(traceabilityRows),
       ...referenceRowsToTableRows(traceabilityReferences, referenceNameById),
+      ...nativeTraceabilityRows,
     ];
     const combinedTraceabilityRows = combineDataRows(structuredTraceabilityRows, traceabilityTableRows);
     const allocationRows = collectHintRows(item, referenceNameById, ALLOCATION_FIELD_HINTS, {
@@ -4078,9 +4170,14 @@ export default function WorkspacePage() {
       inlineOnly: false,
     });
     const allocationReferences = collectReferenceMatches(item, ALLOCATION_FIELD_HINTS);
+    const nativeAllocationRows = nativeReferenceRowsForHints(item, referenceNameById, ALLOCATION_FIELD_HINTS, { includeUnset: true, defaultType: "Allocation" }).map((row) => ({
+      key: `allocation-${row.key}`,
+      cells: [row.cells[0], row.cells[1]],
+    }));
     const allocationTableRows = [
       ...hintRowsToTableRows(allocationRows),
       ...referenceRowsToTableRows(allocationReferences, referenceNameById),
+      ...nativeAllocationRows,
     ];
     const combinedAllocationRows = combineDataRows(structuredAllocationRows, allocationTableRows);
     const selectedSectionTitle =
@@ -4166,22 +4263,15 @@ export default function WorkspacePage() {
         }
         case "navigation":
           return renderDataTable(
-            structuredNavigationRows.length ? ["Name", "Type", "Value"] : ["Name", "Value"],
-            structuredNavigationRows.length ? structuredNavigationRows : navigationTableRows,
+            ["Name", "Type", "Value"],
+            combineDataRows(structuredNavigationRows, nativeNavigationRows, navigationTableRows.map((row) => ({ key: row.key, cells: [row.cells[0], "Navigation", row.cells[1]] }))),
             "No navigation targets or hyperlinks were published for this item.",
-            structuredNavigationRows.length
-              ? {
-                  columnTemplate: {
-                    xs: "minmax(0, 1fr)",
-                    sm: "minmax(180px, 0.75fr) minmax(160px, 0.55fr) minmax(0, 1.2fr)",
-                  },
-                }
-              : {
-                  columnTemplate: {
-                    xs: "minmax(0, 1fr)",
-                    sm: "minmax(180px, 0.85fr) minmax(0, 1.15fr)",
-                  },
-                },
+            {
+              columnTemplate: {
+                xs: "minmax(0, 1fr)",
+                sm: "minmax(180px, 0.75fr) minmax(160px, 0.55fr) minmax(0, 1.2fr)",
+              },
+            },
           );
         case "usage-diagrams":
           return usageDiagramRows.length
@@ -4209,7 +4299,7 @@ export default function WorkspacePage() {
             },
           });
         case "tags":
-          return renderDataTable(["Tag", "Value"], structuredTagRows.length ? structuredTagRows : tagTableRows, "No tags or stereotypes were published for this item.", {
+          return renderDataTable(["Tag", "Value"], combinedTagRows, "No tags or stereotypes were published for this item.", {
             columnTemplate: {
               xs: "minmax(0, 1fr)",
               sm: "minmax(180px, 0.8fr) minmax(0, 1.2fr)",
