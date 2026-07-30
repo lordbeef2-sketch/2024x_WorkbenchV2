@@ -2577,7 +2577,7 @@ export default function WorkspacePage() {
         developerApiProjectId,
         developerApiBranchId,
         developerApiElementId,
-    ),
+      ),
     [developerApiBranchId, developerApiElementId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
   );
   const specDiagnosticPythonExample = useMemo(
@@ -2601,6 +2601,61 @@ export default function WorkspacePage() {
         developerApiElementId,
       ),
     [developerApiBranchId, developerApiElementId, developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
+  );
+  const developerApiExamples = useMemo(
+    () => [
+      {
+        title: "Discover the API manifest",
+        description: "Start here. Lists the Workbench routes, operation keys, scopes, and schemas available to your API key.",
+        value: manifestPythonExample,
+        minRows: 18,
+      },
+      {
+        title: "Retrieve the complete accessible model tree",
+        description: "Exports the full stored containment tree for the selected project and branch.",
+        value: fullTreePythonExample,
+        minRows: 24,
+      },
+      {
+        title: "Get all stored elements",
+        description: "Pages through every stored element for the selected project and branch.",
+        value: listElementsPythonExample,
+        minRows: 22,
+      },
+      {
+        title: "Search by applied stereotype",
+        description: "Finds elements by stereotype name across the selected stored snapshot.",
+        value: stereotypeSearchPythonExample,
+        minRows: 24,
+      },
+      {
+        title: "Read full Cameo-style specification properties",
+        description: "Loads native Cameo fields, stereotype/tag values, relationships, usages, allocations, and traceability for one element.",
+        value: nativeSpecificationPythonExample,
+        minRows: 24,
+      },
+      {
+        title: "Export spec diagnostic mapping payload",
+        description: "Troubleshooting view that returns raw plugin payloads beside Workbench's derived specification sections.",
+        value: specDiagnosticPythonExample,
+        minRows: 28,
+      },
+      {
+        title: "Edit a stored element",
+        description: "Shows the plugin-backed edit call shape for updating a stored element when the user has edit access.",
+        value: editElementPythonExample,
+        minRows: 22,
+      },
+    ],
+    [
+      editElementPythonExample,
+      fullTreePythonExample,
+      listElementsPythonExample,
+      manifestPythonExample,
+      nativeSpecificationPythonExample,
+      specDiagnosticPythonExample,
+      stereotypeSearchPythonExample,
+    ],
   );
   const apiTags = useMemo(
     () => Object.keys(contractManifest?.tag_counts ?? {}).sort((left, right) => left.localeCompare(right)),
@@ -6961,62 +7016,42 @@ export default function WorkspacePage() {
           <Typography variant="caption" color="text.secondary">
             These are full standalone Python scripts, not snippets. The current Workbench host and selected project context are prefilled when available. The matching repository files live under the examples folder too.
           </Typography>
-          <TextField
-            label="Python script: discover the API manifest"
-            value={manifestPythonExample}
-            fullWidth
-            multiline
-            minRows={18}
-            InputProps={{ readOnly: true }}
-          />
-          <TextField
-            label="Python script: retrieve the complete accessible model tree"
-            value={fullTreePythonExample}
-            fullWidth
-            multiline
-            minRows={24}
-            InputProps={{ readOnly: true }}
-          />
-          <TextField
-            label="Python script: get all stored elements for the selected project and branch"
-            value={listElementsPythonExample}
-            fullWidth
-            multiline
-            minRows={22}
-            InputProps={{ readOnly: true }}
-          />
-          <TextField
-            label="Python script: search all elements by applied stereotype name"
-            value={stereotypeSearchPythonExample}
-            fullWidth
-            multiline
-            minRows={24}
-            InputProps={{ readOnly: true }}
-          />
-          <TextField
-            label="Python script: read every native Cameo and stereotype specification property"
-            value={nativeSpecificationPythonExample}
-            fullWidth
-            multiline
-            minRows={24}
-            InputProps={{ readOnly: true }}
-          />
-          <TextField
-            label="Python script: export Workbench spec diagnostic mapping payload"
-            value={specDiagnosticPythonExample}
-            fullWidth
-            multiline
-            minRows={28}
-            InputProps={{ readOnly: true }}
-          />
-          <TextField
-            label="Python script: edit a stored element"
-            value={editElementPythonExample}
-            fullWidth
-            multiline
-            minRows={22}
-            InputProps={{ readOnly: true }}
-          />
+          <Stack spacing={1.25}>
+            {developerApiExamples.map((example) => (
+              <Accordion
+                key={example.title}
+                disableGutters
+                sx={{
+                  border: 1,
+                  borderColor: "divider",
+                  borderRadius: 2,
+                  "&:before": { display: "none" },
+                }}
+              >
+                <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                  <Stack direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ xs: "flex-start", md: "center" }} sx={{ width: "100%" }}>
+                    <Stack spacing={0.25} sx={{ flex: 1 }}>
+                      <Typography variant="subtitle1">{example.title}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {example.description}
+                      </Typography>
+                    </Stack>
+                    <Chip label="Full Python example" size="small" variant="outlined" />
+                  </Stack>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <TextField
+                    label={`Python script: ${example.title}`}
+                    value={example.value}
+                    fullWidth
+                    multiline
+                    minRows={example.minRows}
+                    InputProps={{ readOnly: true }}
+                  />
+                </AccordionDetails>
+              </Accordion>
+            ))}
+          </Stack>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
             <Chip label="read -> cache reads" />
             <Chip label="write -> cache ingest" variant="outlined" />
