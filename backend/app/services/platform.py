@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import csv
 import hashlib
 import hmac
 import json
 import secrets
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from io import StringIO
@@ -2555,21 +2557,40 @@ class PlatformService:
             ],
         )
 
+        detail_worker_count = self._project_dump_detail_worker_count(len(all_visible_elements), include_details=include_details)
         elements_payload: list[dict[str, Any]] = []
         if include_elements:
-            for element in all_visible_elements:
-                element_payload = element.model_dump(mode="json") if include_raw_payload else element.model_dump(mode="json", exclude={"payload"})
-                if include_details:
-                    details = self._cached_item_details_for_user(
+            if detail_worker_count > 1:
+                with ThreadPoolExecutor(max_workers=detail_worker_count, thread_name_prefix="workbench-dump-detail") as executor:
+                    elements_payload = list(
+                        executor.map(
+                            lambda element: self._project_dump_element_payload(
+                                element,
+                                server_id,
+                                preferred_username,
+                                project_id,
+                                resolved_branch_id,
+                                include_raw_payload=include_raw_payload,
+                                include_details=include_details,
+                                include_all_workbench_admin=include_all_workbench_admin,
+                            ),
+                            all_visible_elements,
+                        )
+                    )
+            else:
+                elements_payload = [
+                    self._project_dump_element_payload(
+                        element,
                         server_id,
                         preferred_username,
                         project_id,
                         resolved_branch_id,
-                        element.element_id,
+                        include_raw_payload=include_raw_payload,
+                        include_details=include_details,
                         include_all_workbench_admin=include_all_workbench_admin,
                     )
-                    element_payload["derived_item_details"] = details.model_dump(mode="json") if details is not None else None
-                elements_payload.append(element_payload)
+                    for element in all_visible_elements
+                ]
 
         permission_attachment = self.repo.get_branch_permission_attachment(server_id, project_id, resolved_branch_id)
         branch_access_records = self.repo.list_branch_access_records(server_id, project_id, resolved_branch_id)
@@ -2620,6 +2641,7 @@ class PlatformService:
                 "include_raw_payload": include_raw_payload,
                 "include_permissions": include_permissions,
                 "admin_full_cache_view": include_all_workbench_admin,
+                "detail_worker_count": detail_worker_count,
                 "visible_model_count": len(visible_models),
                 "visible_element_count": len(all_visible_elements),
                 "total_cached_branch_elements": total_branch_elements,
@@ -2635,6 +2657,41 @@ class PlatformService:
                 "permission_attachment": permission_attachment.model_dump(mode="json") if include_permissions and permission_attachment is not None else None,
             },
         }
+
+    def _project_dump_detail_worker_count(self, element_count: int, *, include_details: bool) -> int:
+        if not include_details or element_count < 50:
+            return 1
+        cpu_count = os.cpu_count() or 2
+        # Detail derivation walks payload references and serializes derived
+        # ItemDetails. Use more CPU on real model dumps, but keep a ceiling so
+        # one export does not starve the server.
+        by_size = max(2, min(8, element_count // 250 + 1))
+        return max(1, min(cpu_count, by_size))
+
+    def _project_dump_element_payload(
+        self,
+        element: CachedElementRecord,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        *,
+        include_raw_payload: bool,
+        include_details: bool,
+        include_all_workbench_admin: bool,
+    ) -> dict[str, Any]:
+        element_payload = element.model_dump(mode="json") if include_raw_payload else element.model_dump(mode="json", exclude={"payload"})
+        if include_details:
+            details = self._cached_item_details_for_user(
+                server_id,
+                preferred_username,
+                project_id,
+                branch_id,
+                element.element_id,
+                include_all_workbench_admin=include_all_workbench_admin,
+            )
+            element_payload["derived_item_details"] = details.model_dump(mode="json") if details is not None else None
+        return element_payload
 
     def _resolve_cached_branch_id(self, server_id: str, project_id: str, branch_id_or_name: str) -> str:
         requested = (branch_id_or_name or "trunk").strip() or "trunk"
