@@ -91,7 +91,7 @@ type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-vi
 type WorkspaceMenuGroup = "views" | "diagrams" | "api";
 type ElementSearchMode = "query" | "stereotype";
 type CompareMode = "branch" | "item";
-type SettingsSubtab = "users" | "groups" | "auth" | "api-keys";
+type SettingsSubtab = "users" | "groups" | "auth" | "api-keys" | "debug";
 
 const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api", "settings"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
@@ -1955,6 +1955,22 @@ function downloadSwaggerResponse(response: SwaggerExecuteResponse) {
   URL.revokeObjectURL(url);
 }
 
+function downloadJsonFile(payload: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function safeDownloadSegment(value: string): string {
+  return value.trim().replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "unknown";
+}
+
 export default function WorkspacePage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -2078,6 +2094,9 @@ export default function WorkspacePage() {
     editable: false,
     admin_access: false,
   });
+  const [debugProjectId, setDebugProjectId] = useState("");
+  const [debugBranchId, setDebugBranchId] = useState("trunk");
+  const [debugDumpDigest, setDebugDumpDigest] = useState<Record<string, unknown> | null>(null);
   const [newServerPreset, setNewServerPreset] = useState<ServerProfileInput>({
     name: "",
     base_url: "",
@@ -2111,7 +2130,7 @@ export default function WorkspacePage() {
   const projectsQuery = useQuery({
     queryKey: ["workspace-projects", ...sessionCacheKey],
     queryFn: () => api.getProjects(),
-    enabled: !settingsTabActive,
+    enabled: !settingsTabActive || settingsSubtab === "users" || settingsSubtab === "groups" || settingsSubtab === "debug",
     staleTime: 10_000,
     gcTime: cacheTimeMs,
     refetchInterval: settingsTabActive ? false : 30_000,
@@ -2353,6 +2372,29 @@ export default function WorkspacePage() {
       }),
     [branchesQuery.data],
   );
+  const debugProject = useMemo(
+    () => projects.find((project) => project.id === debugProjectId) ?? null,
+    [debugProjectId, projects],
+  );
+  const debugBranchesQuery = useQuery({
+    queryKey: ["workspace-branches", ...sessionCacheKey, debugProjectId, debugProject?.workspace_id, "settings-debug"],
+    queryFn: () => api.getProjectBranches(debugProjectId, debugProject?.workspace_id || undefined),
+    enabled: isAdmin && tab === "settings" && settingsSubtab === "debug" && Boolean(debugProjectId),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  const debugBranches = useMemo(
+    () =>
+      [...(debugBranchesQuery.data ?? [])].sort((left, right) => {
+        const nameComparison = compareDisplayValues(left.name || left.id, right.name || right.id);
+        if (nameComparison !== 0) {
+          return nameComparison;
+        }
+        return compareDisplayValues(left.id, right.id);
+      }),
+    [debugBranchesQuery.data],
+  );
 
   useEffect(() => {
     if (!compareLeftProjectId && selectedProjectId) {
@@ -2362,6 +2404,28 @@ export default function WorkspacePage() {
       setCompareRightProjectId(selectedProjectId);
     }
   }, [compareLeftProjectId, compareRightProjectId, selectedProjectId]);
+
+  useEffect(() => {
+    if (debugProjectId || !projects.length) {
+      return;
+    }
+    setDebugProjectId(selectedProjectId || projects[0].id);
+  }, [debugProjectId, projects, selectedProjectId]);
+
+  useEffect(() => {
+    if (!debugProjectId || debugBranchesQuery.isLoading) {
+      return;
+    }
+    if (!debugBranches.length) {
+      setDebugBranchId("trunk");
+      return;
+    }
+    const trunkBranch = debugBranches.find((branch) => normalizeLookupKey(branch.id) === "trunk" || normalizeLookupKey(branch.name) === "trunk");
+    const preferredBranchId = trunkBranch?.id ?? debugBranches[0].id;
+    if (!debugBranches.some((branch) => branch.id === debugBranchId)) {
+      setDebugBranchId(preferredBranchId);
+    }
+  }, [debugBranches, debugBranchesQuery.isLoading, debugBranchId, debugProjectId]);
 
   useEffect(() => {
     if (!compareLeftProjectId || compareLeftBranchesQuery.isLoading) {
@@ -3267,6 +3331,52 @@ export default function WorkspacePage() {
     onSuccess: (projects) => {
       queryClient.setQueryData(["workspace-projects", ...sessionCacheKey], projects);
       setNotice({ severity: "success", message: "Stored project list reloaded." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const exportDebugProjectDumpMutation = useMutation({
+    mutationFn: async () => {
+      if (!debugProjectId) {
+        throw new Error("Select a project before exporting a Workbench digest.");
+      }
+      const branchId = debugBranchId || "trunk";
+      return api.getProjectBranchDump({
+        projectId: debugProjectId,
+        branchId,
+        includeTree: true,
+        includeElements: true,
+        includeDetails: true,
+        includeRawPayload: true,
+        includePermissions: true,
+      });
+    },
+    onSuccess: (payload) => {
+      const selection = (payload.selection && typeof payload.selection === "object" ? payload.selection : {}) as Record<string, unknown>;
+      const resolved = (payload.resolved && typeof payload.resolved === "object" ? payload.resolved : {}) as Record<string, unknown>;
+      const branchSummary = (payload.branch_summary && typeof payload.branch_summary === "object" ? payload.branch_summary : {}) as Record<string, unknown>;
+      const digest = {
+        schema_version: payload.schema_version,
+        project_id: resolved.project_id ?? debugProjectId,
+        project_name: branchSummary.project_name ?? debugProject?.name ?? debugProjectId,
+        branch_id: resolved.branch_id ?? debugBranchId,
+        branch_name: resolved.branch_name ?? branchLabel(debugBranches, debugBranchId),
+        latest_revision: resolved.latest_revision ?? branchSummary.latest_revision ?? null,
+        workspace_id: resolved.workspace_id ?? debugProject?.workspace_id ?? null,
+        visible_model_count: selection.visible_model_count ?? 0,
+        visible_element_count: selection.visible_element_count ?? 0,
+        total_cached_branch_elements: selection.total_cached_branch_elements ?? 0,
+        admin_full_cache_view: selection.admin_full_cache_view ?? false,
+      };
+      setDebugDumpDigest(digest);
+      const filename = [
+        "workbench-digest",
+        safeDownloadSegment(String(digest.project_name || digest.project_id || "project")),
+        safeDownloadSegment(String(digest.branch_name || digest.branch_id || "trunk")),
+        new Date().toISOString().replace(/[:.]/g, "-"),
+      ].join("_") + ".json";
+      downloadJsonFile(payload, filename);
+      setNotice({ severity: "success", message: `Exported full Workbench digest to ${filename}.` });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -7542,6 +7652,109 @@ export default function WorkspacePage() {
     );
   };
 
+  const renderDebugSettings = () => (
+    <Paper sx={{ p: 3, borderRadius: 2 }}>
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box>
+            <Typography variant="h5">Debug Export</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Export the full Workbench digest for one stored project branch. This is admin-only and reads the plugin-backed Workbench cache, including raw payloads and attached permissions.
+            </Typography>
+          </Box>
+          <Chip label="Admin debug" color="warning" variant="outlined" />
+        </Stack>
+        <Alert severity="info">
+          Use this when the model browser, specifications, relationships, or permission mapping needs inspection from one factual JSON package. The default branch target is trunk.
+        </Alert>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+          <TextField
+            select
+            label="Project"
+            value={debugProjectId}
+            onChange={(event) => {
+              setDebugProjectId(event.target.value);
+              setDebugBranchId("trunk");
+              setDebugDumpDigest(null);
+            }}
+            fullWidth
+            helperText={projectsQuery.isFetching ? "Loading stored projects..." : "Admins can export any Workbench-visible stored project."}
+          >
+            <MenuItem value=""><em>Select project</em></MenuItem>
+            {projects.map((project) => (
+              <MenuItem key={project.id} value={project.id}>
+                {project.name || project.id}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField
+            select
+            label="Branch"
+            value={debugBranchId}
+            onChange={(event) => {
+              setDebugBranchId(event.target.value || "trunk");
+              setDebugDumpDigest(null);
+            }}
+            fullWidth
+            helperText={debugBranchesQuery.isFetching ? "Loading branches..." : "Defaults to trunk; branch name/id is resolved by Workbench."}
+          >
+            <MenuItem value="trunk"><em>trunk</em></MenuItem>
+            {debugBranches.map((branch) => (
+              <MenuItem key={branch.id} value={branch.id}>
+                {branch.name || branch.id}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Stack>
+        {projectsQuery.error ? <Alert severity="error">{errorMessage(projectsQuery.error)}</Alert> : null}
+        {debugBranchesQuery.error ? <Alert severity="error">{errorMessage(debugBranchesQuery.error)}</Alert> : null}
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+          <Button
+            variant="outlined"
+            startIcon={<RefreshRoundedIcon />}
+            disabled={projectsQuery.isFetching}
+            onClick={() => void projectsQuery.refetch()}
+          >
+            Refresh Projects
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<SaveRoundedIcon />}
+            disabled={!debugProjectId || exportDebugProjectDumpMutation.isPending}
+            onClick={() => exportDebugProjectDumpMutation.mutate()}
+          >
+            Export Full Digest
+          </Button>
+          {exportDebugProjectDumpMutation.isPending ? <CircularProgress size={22} /> : null}
+        </Stack>
+        {debugDumpDigest ? (
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Stack spacing={1.25}>
+              <Typography variant="subtitle1">Last exported digest</Typography>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <Chip label={`Project: ${String(debugDumpDigest.project_name ?? debugDumpDigest.project_id ?? "unknown")}`} />
+                <Chip label={`Branch: ${String(debugDumpDigest.branch_name ?? debugDumpDigest.branch_id ?? "trunk")}`} variant="outlined" />
+                <Chip label={`${String(debugDumpDigest.visible_model_count ?? 0)} models`} variant="outlined" />
+                <Chip label={`${String(debugDumpDigest.visible_element_count ?? 0)} visible elements`} variant="outlined" />
+                <Chip label={`${String(debugDumpDigest.total_cached_branch_elements ?? 0)} cached elements`} variant="outlined" />
+                {debugDumpDigest.latest_revision ? <Chip label={`Revision: ${String(debugDumpDigest.latest_revision)}`} variant="outlined" /> : null}
+                {debugDumpDigest.admin_full_cache_view ? <Chip label="Admin full cache view" color="warning" variant="outlined" /> : null}
+              </Stack>
+              <TextField
+                label="Digest summary"
+                value={JSON.stringify(debugDumpDigest, null, 2)}
+                multiline
+                minRows={8}
+                fullWidth
+                InputProps={{ readOnly: true }}
+              />
+            </Stack>
+          </Paper>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+
   const renderSettingsPage = () => (
     <Stack spacing={2}>
       <Paper sx={{ p: 3, borderRadius: 2 }}>
@@ -7564,6 +7777,7 @@ export default function WorkspacePage() {
               {canManageGroups ? <Tab value="groups" label="Groups" /> : null}
               {isAdmin ? <Tab value="auth" label="Authentication" /> : null}
               {isAdmin ? <Tab value="api-keys" label="API Access Keys" /> : null}
+              {isAdmin ? <Tab value="debug" label="Debug" /> : null}
             </Tabs>
           ) : null}
         </Stack>
@@ -7615,6 +7829,14 @@ export default function WorkspacePage() {
         <Stack spacing={2}>
           {isAdmin ? renderCacheApiKeys() : (
             <Alert severity="info">API access keys are administrator-only.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "debug" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderDebugSettings() : (
+            <Alert severity="info">Debug exports are administrator-only.</Alert>
           )}
         </Stack>
       ) : null}
