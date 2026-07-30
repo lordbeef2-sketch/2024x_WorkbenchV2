@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 
 from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
 from app.models.domain import (
@@ -17,6 +18,7 @@ from app.models.domain import (
     WorkbenchAgentChatRequest,
     WorkbenchAgentConfigRequest,
     WorkbenchAgentKnowledgeSyncRequest,
+    utcnow,
 )
 from app.services.platform import ApplicationContainer
 
@@ -498,11 +500,12 @@ def model_cache_project_dump(
     includeDetails: bool = Query(default=True),
     includeRawPayload: bool = Query(default=True),
     includePermissions: bool = Query(default=True),
+    download: bool = Query(default=False),
     session=Depends(get_session),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:
-        return container.platform.get_cached_project_branch_dump_for_user(
+        payload = container.platform.get_cached_project_branch_dump_for_user(
             session.server.id,
             session.user.preferred_username,
             projectId,
@@ -514,6 +517,20 @@ def model_cache_project_dump(
             include_permissions=includePermissions,
             include_all_workbench_admin=container.platform.can_manage_server_presets(session),
         )
+        if download:
+            resolved = payload.get("resolved", {}) if isinstance(payload, dict) else {}
+            branch_summary = payload.get("branch_summary", {}) if isinstance(payload, dict) else {}
+            project_name = str(branch_summary.get("project_name") or resolved.get("project_id") or projectId)
+            branch_name = str(resolved.get("branch_name") or resolved.get("branch_id") or branchId or "trunk")
+            safe_project = re.sub(r"[^A-Za-z0-9._-]+", "-", project_name).strip("-") or "project"
+            safe_branch = re.sub(r"[^A-Za-z0-9._-]+", "-", branch_name).strip("-") or "trunk"
+            filename = f"workbench-digest_{safe_project}_{safe_branch}_{utcnow().strftime('%Y%m%dT%H%M%SZ')}.json"
+            return Response(
+                content=json.dumps(payload, default=str, indent=2),
+                media_type="application/json",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+        return payload
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:

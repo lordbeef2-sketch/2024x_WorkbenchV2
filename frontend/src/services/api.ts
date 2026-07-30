@@ -445,6 +445,27 @@ export const api = {
     });
     return request<Record<string, unknown>>(`/workspace/model-cache/project-dump?${params.toString()}`);
   },
+  projectBranchDumpDownloadUrl(payload: {
+    projectId: string;
+    branchId?: string;
+    includeTree?: boolean;
+    includeElements?: boolean;
+    includeDetails?: boolean;
+    includeRawPayload?: boolean;
+    includePermissions?: boolean;
+  }) {
+    const params = new URLSearchParams({
+      projectId: payload.projectId,
+      branchId: payload.branchId || "trunk",
+      includeTree: String(payload.includeTree ?? true),
+      includeElements: String(payload.includeElements ?? true),
+      includeDetails: String(payload.includeDetails ?? true),
+      includeRawPayload: String(payload.includeRawPayload ?? true),
+      includePermissions: String(payload.includePermissions ?? true),
+      download: "true",
+    });
+    return `${API_BASE}/workspace/model-cache/project-dump?${params.toString()}`;
+  },
   refreshBranchAccessManifest(projectId: string, branchId: string, csrfToken: string) {
     const params = new URLSearchParams({ projectId, branchId });
     return request<BranchAccessManifestStatus>(`/workspace/model-cache/access-map/refresh?${params.toString()}`, {

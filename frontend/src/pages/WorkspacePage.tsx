@@ -1955,22 +1955,6 @@ function downloadSwaggerResponse(response: SwaggerExecuteResponse) {
   URL.revokeObjectURL(url);
 }
 
-function downloadJsonFile(payload: unknown, filename: string) {
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function safeDownloadSegment(value: string): string {
-  return value.trim().replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "unknown";
-}
-
 export default function WorkspacePage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -3336,12 +3320,13 @@ export default function WorkspacePage() {
   });
 
   const exportDebugProjectDumpMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (): Promise<Record<string, unknown>> => {
       if (!debugProjectId) {
         throw new Error("Select a project before exporting a Workbench digest.");
       }
       const branchId = debugBranchId || "trunk";
-      return api.getProjectBranchDump({
+      const branch = debugBranches.find((candidate) => candidate.id === branchId);
+      const url = api.projectBranchDumpDownloadUrl({
         projectId: debugProjectId,
         branchId,
         includeTree: true,
@@ -3350,33 +3335,25 @@ export default function WorkspacePage() {
         includeRawPayload: true,
         includePermissions: true,
       });
-    },
-    onSuccess: (payload) => {
-      const selection = (payload.selection && typeof payload.selection === "object" ? payload.selection : {}) as Record<string, unknown>;
-      const resolved = (payload.resolved && typeof payload.resolved === "object" ? payload.resolved : {}) as Record<string, unknown>;
-      const branchSummary = (payload.branch_summary && typeof payload.branch_summary === "object" ? payload.branch_summary : {}) as Record<string, unknown>;
-      const digest = {
-        schema_version: payload.schema_version,
-        project_id: resolved.project_id ?? debugProjectId,
-        project_name: branchSummary.project_name ?? debugProject?.name ?? debugProjectId,
-        branch_id: resolved.branch_id ?? debugBranchId,
-        branch_name: resolved.branch_name ?? branchLabel(debugBranches, debugBranchId),
-        latest_revision: resolved.latest_revision ?? branchSummary.latest_revision ?? null,
-        workspace_id: resolved.workspace_id ?? debugProject?.workspace_id ?? null,
-        visible_model_count: selection.visible_model_count ?? 0,
-        visible_element_count: selection.visible_element_count ?? 0,
-        total_cached_branch_elements: selection.total_cached_branch_elements ?? 0,
-        admin_full_cache_view: selection.admin_full_cache_view ?? false,
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return {
+        project_id: debugProjectId,
+        project_name: debugProject?.name ?? debugProjectId,
+        branch_id: branchId,
+        branch_name: branch?.name || branchId,
+        workspace_id: debugProject?.workspace_id ?? null,
+        export_started_at: new Date().toISOString(),
       };
+    },
+    onSuccess: (digest) => {
       setDebugDumpDigest(digest);
-      const filename = [
-        "workbench-digest",
-        safeDownloadSegment(String(digest.project_name || digest.project_id || "project")),
-        safeDownloadSegment(String(digest.branch_name || digest.branch_id || "trunk")),
-        new Date().toISOString().replace(/[:.]/g, "-"),
-      ].join("_") + ".json";
-      downloadJsonFile(payload, filename);
-      setNotice({ severity: "success", message: `Exported full Workbench digest to ${filename}.` });
+      setNotice({ severity: "success", message: "Started full Workbench digest download. The UI no longer parses the large payload." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -7730,18 +7707,14 @@ export default function WorkspacePage() {
         {debugDumpDigest ? (
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.25}>
-              <Typography variant="subtitle1">Last exported digest</Typography>
+              <Typography variant="subtitle1">Last digest download request</Typography>
               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                 <Chip label={`Project: ${String(debugDumpDigest.project_name ?? debugDumpDigest.project_id ?? "unknown")}`} />
                 <Chip label={`Branch: ${String(debugDumpDigest.branch_name ?? debugDumpDigest.branch_id ?? "trunk")}`} variant="outlined" />
-                <Chip label={`${String(debugDumpDigest.visible_model_count ?? 0)} models`} variant="outlined" />
-                <Chip label={`${String(debugDumpDigest.visible_element_count ?? 0)} visible elements`} variant="outlined" />
-                <Chip label={`${String(debugDumpDigest.total_cached_branch_elements ?? 0)} cached elements`} variant="outlined" />
-                {debugDumpDigest.latest_revision ? <Chip label={`Revision: ${String(debugDumpDigest.latest_revision)}`} variant="outlined" /> : null}
-                {debugDumpDigest.admin_full_cache_view ? <Chip label="Admin full cache view" color="warning" variant="outlined" /> : null}
+                {debugDumpDigest.export_started_at ? <Chip label={`Started: ${new Date(String(debugDumpDigest.export_started_at)).toLocaleString()}`} variant="outlined" /> : null}
               </Stack>
               <TextField
-                label="Digest summary"
+                label="Download request summary"
                 value={JSON.stringify(debugDumpDigest, null, 2)}
                 multiline
                 minRows={8}
