@@ -38,7 +38,7 @@ from app.models.domain import (
     UserContext,
 )
 from app.services.platform import PermissionSnapshotIndeterminateError, PlatformService
-from app.services.platform import WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY
+from app.services.platform import WORKBENCH_PROJECT_DUMP_OPERATION_KEY, WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY
 
 
 class PermissionSnapshotReplacementTests(unittest.TestCase):
@@ -1012,8 +1012,8 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
                     serverId="server",
                     projectId="project",
                     projectName="Project",
-                    branchId="main",
-                    branchName="Main",
+                    branchId="trunk",
+                    branchName="trunk",
                     revisionId="1",
                     sourceUser="publisher",
                     models=[
@@ -1055,7 +1055,7 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
                 "server",
                 "admin",
                 "project",
-                "main",
+                "trunk",
                 element_ids=["element"],
                 include_all_workbench_admin=True,
             )
@@ -1073,8 +1073,10 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
             self.assertIn(("test-case", "verifiedBy"), related)
 
             explorer_operations = service._workbench_api_explorer_operations()
-            self.assertEqual(explorer_operations[0].key, WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY)
-            self.assertEqual(explorer_operations[0].tag, "Workbench API")
+            explorer_operation_keys = {operation.key for operation in explorer_operations}
+            self.assertIn(WORKBENCH_PROJECT_DUMP_OPERATION_KEY, explorer_operation_keys)
+            self.assertIn(WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY, explorer_operation_keys)
+            self.assertTrue(all(operation.tag == "Workbench API" for operation in explorer_operations))
 
             session = SessionData(
                 server=ServerProfile(id="server", name="Server", base_url="https://twc.example"),
@@ -1089,13 +1091,41 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
                     operation_key=WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY,
                     query_params={
                         "projectId": "project",
-                        "branchId": "main",
+                        "branchId": "trunk",
                         "elementId": "element",
                     },
                 ),
             )
             self.assertTrue(response.ok)
             self.assertEqual(response.body["schema_version"], "workbench-spec-diagnostic.v1")
+
+            trunk_dump = service.get_cached_project_branch_dump_for_user(
+                "server",
+                "admin",
+                "project",
+                "trunk",
+                include_all_workbench_admin=True,
+            )
+            self.assertEqual(trunk_dump["schema_version"], "workbench-project-branch-dump.v1")
+            self.assertEqual(trunk_dump["resolved"]["branch_id"], "trunk")
+            self.assertEqual(trunk_dump["selection"]["visible_element_count"], 2)
+            self.assertEqual(trunk_dump["tree"]["total_nodes"], 3)
+            self.assertEqual(len(trunk_dump["elements"]), 2)
+            self.assertIn("derived_item_details", trunk_dump["elements"][0])
+            self.assertIn("permissions", trunk_dump)
+
+            dump_response = service._execute_workbench_project_dump_operation(
+                session,
+                SwaggerExecuteRequest(
+                    operation_key=WORKBENCH_PROJECT_DUMP_OPERATION_KEY,
+                    query_params={
+                        "projectId": "project",
+                        "branchId": "trunk",
+                    },
+                ),
+            )
+            self.assertTrue(dump_response.ok)
+            self.assertEqual(dump_response.body["schema_version"], "workbench-project-branch-dump.v1")
 
     def test_acl_delta_marks_users_due_and_tombstone_revokes_branch_atomically(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:

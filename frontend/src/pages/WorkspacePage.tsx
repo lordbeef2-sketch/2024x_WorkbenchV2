@@ -1241,6 +1241,66 @@ if __name__ == "__main__":
 `;
 }
 
+function workbenchProjectDumpPythonScript(
+  workbenchBaseUrl: string,
+  serverId: string,
+  projectId: string,
+): string {
+  return `from __future__ import annotations
+
+import json
+from pathlib import Path
+from urllib.parse import urlencode
+
+import requests
+
+WORKBENCH_BASE_URL = ${pythonLiteral(workbenchBaseUrl)}
+API_KEY = "replace-with-your-api-key"
+SERVER_ID = ${pythonLiteral(serverId)}
+PROJECT_ID = ${pythonLiteral(projectId)}
+BRANCH_ID = "trunk"
+OUTPUT_FILE = Path("workbench_project_trunk_dump.json")
+VERIFY_TLS = True
+
+
+def main() -> None:
+    # One Workbench API call. This reads the stored Cameo plugin snapshot and
+    # does not try to reconstruct model content from Teamwork Cloud REST.
+    query = urlencode(
+        {
+            "branchId": BRANCH_ID,
+            "includeTree": "true",
+            "includeElements": "true",
+            "includeDetails": "true",
+            "includeRawPayload": "true",
+            "includePermissions": "true",
+        }
+    )
+    response = requests.get(
+        f"{WORKBENCH_BASE_URL}/api/cache/servers/{SERVER_ID}/projects/{PROJECT_ID}/dump?{query}",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        timeout=600,
+        verify=VERIFY_TLS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    OUTPUT_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    selection = payload.get("selection", {})
+    resolved = payload.get("resolved", {})
+    print(f"Saved {OUTPUT_FILE.resolve()}")
+    print(
+        "Dumped "
+        f"{selection.get('visible_model_count', 0)} models and "
+        f"{selection.get('visible_element_count', 0)} elements from "
+        f"{resolved.get('project_id')} / {resolved.get('branch_name') or resolved.get('branch_id')}."
+    )
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
+
 function workbenchEditElementPythonScript(
   workbenchBaseUrl: string,
   serverId: string,
@@ -2539,6 +2599,15 @@ export default function WorkspacePage() {
     () => workbenchManifestPythonScript(workbenchBaseUrlExample),
     [workbenchBaseUrlExample],
   );
+  const projectDumpPythonExample = useMemo(
+    () =>
+      workbenchProjectDumpPythonScript(
+        workbenchBaseUrlExample,
+        developerApiServerId,
+        developerApiProjectId,
+      ),
+    [developerApiProjectId, developerApiServerId, workbenchBaseUrlExample],
+  );
   const listElementsPythonExample = useMemo(
     () =>
       workbenchListElementsPythonScript(
@@ -2611,6 +2680,12 @@ export default function WorkspacePage() {
         minRows: 18,
       },
       {
+        title: "Dump the full project trunk package",
+        description: "One Workbench API call that exports branch metadata, full tree, all cached elements, derived details, project usages, and attached permissions for trunk.",
+        value: projectDumpPythonExample,
+        minRows: 34,
+      },
+      {
         title: "Retrieve the complete accessible model tree",
         description: "Exports the full stored containment tree for the selected project and branch.",
         value: fullTreePythonExample,
@@ -2653,6 +2728,7 @@ export default function WorkspacePage() {
       listElementsPythonExample,
       manifestPythonExample,
       nativeSpecificationPythonExample,
+      projectDumpPythonExample,
       specDiagnosticPythonExample,
       stereotypeSearchPythonExample,
     ],

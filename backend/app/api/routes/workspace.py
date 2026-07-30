@@ -489,6 +489,37 @@ def model_cache_spec_diagnostic(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
+@router.get("/model-cache/project-dump")
+def model_cache_project_dump(
+    projectId: str = Query(...),
+    branchId: str = Query(default="trunk"),
+    includeTree: bool = Query(default=True),
+    includeElements: bool = Query(default=True),
+    includeDetails: bool = Query(default=True),
+    includeRawPayload: bool = Query(default=True),
+    includePermissions: bool = Query(default=True),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.get_cached_project_branch_dump_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            projectId,
+            branchId,
+            include_tree=includeTree,
+            include_elements=includeElements,
+            include_details=includeDetails,
+            include_raw_payload=includeRawPayload,
+            include_permissions=includePermissions,
+            include_all_workbench_admin=container.platform.can_manage_server_presets(session),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.get("/model-cache/models/{model_id}")
 def cached_model(
     model_id: str,

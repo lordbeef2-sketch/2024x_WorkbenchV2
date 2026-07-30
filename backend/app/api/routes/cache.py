@@ -207,6 +207,39 @@ def cached_branch_spec_diagnostic(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
+@router.get("/cache/servers/{server_id}/projects/{project_id}/dump")
+def cached_project_branch_dump(
+    server_id: str,
+    project_id: str,
+    branchId: str = Query(default="trunk"),
+    includeTree: bool = Query(default=True),
+    includeElements: bool = Query(default=True),
+    includeDetails: bool = Query(default=True),
+    includeRawPayload: bool = Query(default=True),
+    includePermissions: bool = Query(default=True),
+    preferred_username: str = Depends(require_cache_api_scope(CacheApiKeyScope.READ)),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.get_cached_project_branch_dump_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branchId,
+            include_tree=includeTree,
+            include_elements=includeElements,
+            include_details=includeDetails,
+            include_raw_payload=includeRawPayload,
+            include_permissions=includePermissions,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.get(
     "/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/tree",
     response_model=CacheTreeResponse,

@@ -164,6 +164,7 @@ Files:
 - `32_permission_refresh_job.py` (session-authenticated background refresh and status polling)
 - `33_workbench_cache_api_tombstone_branch.py` (revision-guarded stored-branch removal; requires explicit confirmation)
 - `34_workbench_cache_api_tombstone_project.py` (atomic all-branch project removal; requires explicit confirmation)
+- `35_workbench_cache_api_project_dump.py` (one-call full cached project branch dump; defaults branch to `trunk`)
 
 They read from:
 
@@ -185,6 +186,7 @@ python .\28_workbench_cache_api_search_elements.py
 python .\29_workbench_cache_api_element_graph.py
 python .\30_workbench_cache_api_tree_children.py
 python .\31_workbench_cache_api_native_specifications.py
+python .\35_workbench_cache_api_project_dump.py
 python .\32_permission_refresh_job.py
 # Destructive: configure expected_revision_id and confirm_tombstone=true first.
 python .\33_workbench_cache_api_tombstone_branch.py
@@ -200,6 +202,12 @@ More background is in:
 the complete accessible model tree. Set `tree_depth` in the cache API config
 only when a bounded response is intentional. Script 30 demonstrates the direct
 children endpoint used by incremental tree clients.
+
+`35_workbench_cache_api_project_dump.py` calls the one-shot Workbench dump route:
+`GET /api/cache/servers/{server_id}/projects/{project_id}/dump?branchId=trunk`.
+It exports branch metadata, visible models, attached project usages, the full
+containment tree, all visible cached elements, derived item details, raw plugin
+payloads, and attached branch permissions into one JSON file.
 
 ## Not included on purpose
 

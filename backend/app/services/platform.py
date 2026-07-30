@@ -156,6 +156,7 @@ from app.services.three_ds_corpus import ThreeDsCorpus
 from app.settings.config import Settings
 
 logger = structlog.get_logger(__name__)
+WORKBENCH_PROJECT_DUMP_OPERATION_KEY = "workbench_get_model_cache_project_dump"
 WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY = "workbench_get_model_cache_spec_diagnostic"
 
 
@@ -2466,6 +2467,190 @@ class PlatformService:
                 )
             )
         return sorted(entries, key=lambda item: (item.server_name.lower(), item.server_id))
+
+    def get_cached_project_branch_dump_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str = "trunk",
+        *,
+        include_tree: bool = True,
+        include_elements: bool = True,
+        include_details: bool = True,
+        include_raw_payload: bool = True,
+        include_permissions: bool = True,
+        include_all_workbench_admin: bool = False,
+    ) -> dict[str, Any]:
+        """Return a single-file Workbench dump for one cached project branch.
+
+        This is intentionally a Workbench cache export. It never tries to build
+        model content from live TWC REST; the plugin snapshot remains the source
+        for model structure and element/specification data.
+        """
+        self._require_server(server_id, include_disabled=True)
+        resolved_branch_id = self._resolve_cached_branch_id(server_id, project_id, branch_id or "trunk")
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, resolved_branch_id)
+        if summary is None:
+            raise ValueError("No cached branch snapshot exists for this project and branch.")
+
+        user_id = self._user_key(preferred_username)
+        visible_models = self._visible_cached_models_for_user(
+            user_id,
+            server_id,
+            project_id,
+            resolved_branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
+        if not visible_models:
+            raise PermissionError("The active Workbench user cannot read that cached project branch.")
+
+        visible_model_ids = {model.model_id for model in visible_models}
+        total_branch_elements = self.repo.count_cached_elements_for_branch(server_id, project_id, resolved_branch_id)
+        all_visible_elements = self._visible_cached_elements_for_user(
+            user_id,
+            server_id,
+            project_id,
+            resolved_branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
+        if not include_all_workbench_admin:
+            all_visible_elements = [element for element in all_visible_elements if element.model_id in visible_model_ids]
+
+        tree = (
+            self.get_cached_branch_tree_for_user(
+                server_id,
+                preferred_username,
+                project_id,
+                resolved_branch_id,
+                depth=None,
+                include_orphans=True,
+                include_all_workbench_admin=include_all_workbench_admin,
+            ).model_dump(mode="json")
+            if include_tree
+            else None
+        )
+        explicitly_primary = [model for model in visible_models if bool(model.payload.get("primary"))]
+        primary = explicitly_primary[0] if explicitly_primary else visible_models[0]
+        project_usages = ProjectUsageResponse(
+            project_id=project_id,
+            branch_id=resolved_branch_id,
+            primary_model_id=primary.model_id,
+            primary_model_name=primary.name,
+            total=max(len(visible_models) - 1, 0),
+            source="snapshot" if explicitly_primary else "legacy-snapshot-inferred",
+            items=[
+                ProjectUsageSummary(
+                    id=model.model_id,
+                    model_id=model.model_id,
+                    name=model.name or str(model.payload.get("human_name") or model.payload.get("name") or model.model_id),
+                    qualified_name=str(model.payload.get("qualified_name") or ""),
+                    usage_type=str(model.payload.get("usage_type") or "attached"),
+                    version=(str(model.payload.get("version")) if model.payload.get("version") else None),
+                    uri=(str(model.payload.get("resource_uri")) if model.payload.get("resource_uri") else None),
+                    automatic=(bool(model.payload.get("automatic")) if model.payload.get("automatic") is not None else None),
+                )
+                for model in visible_models
+                if model.model_id != primary.model_id
+            ],
+        )
+
+        elements_payload: list[dict[str, Any]] = []
+        if include_elements:
+            for element in all_visible_elements:
+                element_payload = element.model_dump(mode="json") if include_raw_payload else element.model_dump(mode="json", exclude={"payload"})
+                if include_details:
+                    details = self._cached_item_details_for_user(
+                        server_id,
+                        preferred_username,
+                        project_id,
+                        resolved_branch_id,
+                        element.element_id,
+                        include_all_workbench_admin=include_all_workbench_admin,
+                    )
+                    element_payload["derived_item_details"] = details.model_dump(mode="json") if details is not None else None
+                elements_payload.append(element_payload)
+
+        permission_attachment = self.repo.get_branch_permission_attachment(server_id, project_id, resolved_branch_id)
+        branch_access_records = self.repo.list_branch_access_records(server_id, project_id, resolved_branch_id)
+        current_branch_access = self._plugin_branch_access_or_source_fallback(
+            user_id,
+            server_id,
+            project_id,
+            resolved_branch_id,
+            summary,
+        )
+        if current_branch_access is None and include_all_workbench_admin:
+            current_branch_access = BranchAccessRecord(
+                user_id=user_id,
+                server_id=server_id,
+                project_id=project_id,
+                branch_id=resolved_branch_id,
+                workspace_id=summary.workspace_id,
+                branch_name=summary.branch_name or resolved_branch_id,
+                latest_revision=summary.latest_revision,
+                accessible=True,
+                editable=True,
+                admin_access=True,
+                roles=["Workbench Administrator"],
+                source="workbench-admin-full-cache-view",
+            )
+
+        return {
+            "schema_version": "workbench-project-branch-dump.v1",
+            "purpose": "One-call Workbench cache export for a stored project branch. Model content comes from the Cameo plugin snapshot; TWC REST is not used to construct model data.",
+            "exported_at": utcnow().isoformat(),
+            "requested": {
+                "server_id": server_id,
+                "project_id": project_id,
+                "branch_id": branch_id or "trunk",
+            },
+            "resolved": {
+                "server_id": server_id,
+                "project_id": project_id,
+                "branch_id": resolved_branch_id,
+                "branch_name": summary.branch_name or resolved_branch_id,
+                "workspace_id": summary.workspace_id,
+                "latest_revision": summary.latest_revision,
+            },
+            "selection": {
+                "include_tree": include_tree,
+                "include_elements": include_elements,
+                "include_details": include_details,
+                "include_raw_payload": include_raw_payload,
+                "include_permissions": include_permissions,
+                "admin_full_cache_view": include_all_workbench_admin,
+                "visible_model_count": len(visible_models),
+                "visible_element_count": len(all_visible_elements),
+                "total_cached_branch_elements": total_branch_elements,
+            },
+            "branch_summary": summary.model_dump(mode="json"),
+            "models": [model.model_dump(mode="json") for model in visible_models],
+            "project_usages": project_usages.model_dump(mode="json"),
+            "tree": tree,
+            "elements": elements_payload,
+            "permissions": {
+                "current_user_branch_access": current_branch_access.model_dump(mode="json") if current_branch_access is not None else None,
+                "branch_access_records": [record.model_dump(mode="json") for record in branch_access_records] if include_permissions else [],
+                "permission_attachment": permission_attachment.model_dump(mode="json") if include_permissions and permission_attachment is not None else None,
+            },
+        }
+
+    def _resolve_cached_branch_id(self, server_id: str, project_id: str, branch_id_or_name: str) -> str:
+        requested = (branch_id_or_name or "trunk").strip() or "trunk"
+        if self.repo.get_branch_cache_summary(server_id, project_id, requested) is not None:
+            return requested
+        requested_key = normalize_lookup_key(requested)
+        for summary in self.repo.list_branch_cache_summaries(server_id):
+            if summary.project_id != project_id:
+                continue
+            branch_names = {
+                normalize_lookup_key(summary.branch_id),
+                normalize_lookup_key(summary.branch_name or ""),
+            }
+            if requested_key in branch_names:
+                return summary.branch_id
+        return requested
 
     def get_branch_access_manifest_status(
         self,
@@ -5558,6 +5743,36 @@ class PlatformService:
     def _workbench_api_explorer_operations(self) -> list[SwaggerOperationSpec]:
         return [
             SwaggerOperationSpec(
+                key=WORKBENCH_PROJECT_DUMP_OPERATION_KEY,
+                method="GET",
+                path="/api/workspace/model-cache/project-dump",
+                tag="Workbench API",
+                tags=["Workbench API", "Model Cache"],
+                operation_id=WORKBENCH_PROJECT_DUMP_OPERATION_KEY,
+                summary="Dump a full Workbench cached project branch",
+                description=(
+                    "Workbench-only one-call export for a stored project branch. Defaults branchId to trunk and returns "
+                    "branch metadata, visible models, project usages, full containment tree, all visible cached elements, "
+                    "optional derived ItemDetails, and attached permission records. Model content comes from Cameo plugin "
+                    "snapshots; this does not call Teamwork Cloud REST."
+                ),
+                query_parameters=[
+                    SwaggerParameterSpec(name="projectId", location="query", required=True, schema_type="string", description="Workbench cached project id."),
+                    SwaggerParameterSpec(name="branchId", location="query", required=False, schema_type="string", default="trunk", description="Workbench cached branch id or branch name. Defaults to trunk."),
+                    SwaggerParameterSpec(name="includeTree", location="query", required=False, schema_type="boolean", default=True, description="Include the full containment tree."),
+                    SwaggerParameterSpec(name="includeElements", location="query", required=False, schema_type="boolean", default=True, description="Include every visible cached element record."),
+                    SwaggerParameterSpec(name="includeDetails", location="query", required=False, schema_type="boolean", default=True, description="Include derived Workbench ItemDetails for each returned element."),
+                    SwaggerParameterSpec(name="includeRawPayload", location="query", required=False, schema_type="boolean", default=True, description="Include raw plugin snapshot payloads on model and element records."),
+                    SwaggerParameterSpec(name="includePermissions", location="query", required=False, schema_type="boolean", default=True, description="Include current user access, branch access records, and attached permission manifest when available."),
+                ],
+                responses=[
+                    SwaggerResponseSpec(status_code="200", description="Full Workbench cached project branch dump.", content_types=["application/json"]),
+                    SwaggerResponseSpec(status_code="403", description="The active Workbench user cannot read the requested cached branch.", content_types=["application/json"]),
+                    SwaggerResponseSpec(status_code="404", description="No cached branch snapshot exists for the requested project and branch.", content_types=["application/json"]),
+                ],
+                destructive=False,
+            ),
+            SwaggerOperationSpec(
                 key=WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY,
                 method="GET",
                 path="/api/workspace/model-cache/spec-diagnostic",
@@ -5589,6 +5804,8 @@ class PlatformService:
         ]
 
     async def execute_swagger_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
+        if payload.operation_key == WORKBENCH_PROJECT_DUMP_OPERATION_KEY:
+            return self._execute_workbench_project_dump_operation(session, payload)
         if payload.operation_key == WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY:
             return self._execute_workbench_spec_diagnostic_operation(session, payload)
         operation, candidate_path = self.contract.build_candidate_path(
@@ -5609,6 +5826,54 @@ class PlatformService:
             timeout=payload.timeout_seconds,
         )
         return self._swagger_response(payload.operation_key, operation.method, operation.path, requested_path, response)
+
+    def _execute_workbench_project_dump_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
+        query_params = payload.query_params or {}
+        project_id = str(query_params.get("projectId") or "").strip()
+        if not project_id:
+            raise ValueError("Missing required query parameter: projectId")
+        project_dump = self.get_cached_project_branch_dump_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            str(query_params.get("branchId") or "trunk").strip() or "trunk",
+            include_tree=_truthy_query_value(query_params.get("includeTree"), default=True),
+            include_elements=_truthy_query_value(query_params.get("includeElements"), default=True),
+            include_details=_truthy_query_value(query_params.get("includeDetails"), default=True),
+            include_raw_payload=_truthy_query_value(query_params.get("includeRawPayload"), default=True),
+            include_permissions=_truthy_query_value(query_params.get("includePermissions"), default=True),
+            include_all_workbench_admin=self.can_manage_server_presets(session),
+        )
+        requested_path = self._workbench_project_dump_requested_path(query_params)
+        content = json.dumps(project_dump, default=str).encode("utf-8")
+        return SwaggerExecuteResponse(
+            operation_key=payload.operation_key,
+            method="GET",
+            path="/api/workspace/model-cache/project-dump",
+            requested_path=requested_path,
+            status_code=200,
+            ok=True,
+            content_type="application/json",
+            headers={"content-type": "application/json"},
+            body=project_dump,
+            text=None,
+            body_base64=None,
+            is_binary=False,
+            size_bytes=len(content),
+        )
+
+    def _workbench_project_dump_requested_path(self, query_params: dict[str, Any]) -> str:
+        query_items: list[tuple[str, str]] = []
+        for key in ("projectId", "branchId", "includeTree", "includeElements", "includeDetails", "includeRawPayload", "includePermissions"):
+            value = query_params.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, list):
+                query_items.extend((key, str(item)) for item in value if item not in (None, ""))
+            else:
+                query_items.append((key, str(value)))
+        suffix = f"?{urlencode(query_items, doseq=True)}" if query_items else ""
+        return f"/api/workspace/model-cache/project-dump{suffix}"
 
     def _execute_workbench_spec_diagnostic_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
         query_params = payload.query_params or {}
