@@ -1857,6 +1857,39 @@ class TeamworkAdapter:
             deduped.append(reference)
         return deduped
 
+    def _is_property_entity(self, entity: dict[str, Any]) -> bool:
+        metaclass = _first_text(entity.get("metaclass"), entity.get("human_type"), entity.get("humanType")).replace(" ", "").lower()
+        return metaclass == "property" or metaclass.endswith("property")
+
+    def _is_value_spec_entity(self, entity: dict[str, Any] | None) -> bool:
+        if not isinstance(entity, dict):
+            return False
+        metaclass = _first_text(entity.get("metaclass"), entity.get("human_type"), entity.get("humanType")).replace(" ", "").lower()
+        return metaclass in {
+            "literalinteger",
+            "literalunlimitednatural",
+            "literalboolean",
+            "literalstring",
+            "literalreal",
+            "literalnull",
+        }
+
+    def _is_property_multiplicity_value_reference(
+        self,
+        entity: dict[str, Any],
+        reference_id: str,
+        resolved_entities: dict[str, dict[str, Any]],
+    ) -> bool:
+        if not self._is_property_entity(entity):
+            return False
+        references = self._plugin_reference_values_from_map(entity.get("references"))
+        multiplicity_ids = {
+            *references.get("lowerValue", []),
+            *references.get("upperValue", []),
+            *references.get("defaultValue", []),
+        }
+        return reference_id in multiplicity_ids and self._is_value_spec_entity(resolved_entities.get(reference_id))
+
     async def _extract_item_references(
         self,
         payload: dict[str, Any],
@@ -2005,7 +2038,7 @@ class TeamworkAdapter:
         related_items: list[ItemReference] = []
         for raw_child_id in [*(_as_list(entity.get("owned_element_ids"))), *(_as_list(entity.get("ownedElementIds")))]:
             child_id = _reference_id(raw_child_id)
-            if child_id:
+            if child_id and not self._is_property_multiplicity_value_reference(entity, child_id, resolved_entities):
                 contained_elements.append(
                     self._plugin_reference_summary(
                         child_id,

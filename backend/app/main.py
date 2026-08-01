@@ -56,6 +56,13 @@ if frontend_dist.exists():
     @app.get("/workspace")
     @app.get("/workspace/{full_path:path}")
     def workspace_spa_fallback(full_path: str = ""):
-        return FileResponse(spa_index)
+        return FileResponse(
+            spa_index,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")

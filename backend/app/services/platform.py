@@ -5,6 +5,7 @@ import base64
 import os
 import csv
 import hashlib
+import html
 import hmac
 import json
 import secrets
@@ -236,7 +237,9 @@ class PlatformService:
         return self.repo.list_servers(include_disabled=True)
 
     def create_server(self, payload: ServerProfileCreate) -> ServerProfile:
-        server = ServerProfile(**payload.model_dump())
+        server = ServerProfile(**payload.model_dump(exclude_none=True))
+        if self.repo.get_server(server.id):
+            raise ValueError(f"Server profile already exists: {server.id}")
         if "display_order" not in payload.model_fields_set:
             server.display_order = self.repo.next_server_display_order()
         return self.repo.upsert_server(server)
@@ -510,14 +513,14 @@ class PlatformService:
         session: SessionData,
         payload: WorkbenchProjectAccessAssignmentRequest,
     ) -> WorkbenchProjectAccessAssignmentResponse:
-        if not session.authorization_context.can_manage_server_presets:
-            raise PermissionError("Only Workbench administrators can assign project access.")
         project_id = payload.project_id.strip()
         if not project_id:
             raise ValueError("Project is required.")
         principal_name = payload.principal_name.strip()
         if not principal_name:
             raise ValueError("User or group is required.")
+        actor_username = self._normalize_workbench_username(session.user.preferred_username)
+        actor_key = self._user_key(actor_username)
 
         if payload.principal_type == "user":
             username = self._normalize_workbench_username(principal_name)
@@ -537,6 +540,8 @@ class PlatformService:
             if not usernames:
                 raise ValueError(f"Workbench group has no valid users: {group_name}")
             normalized_principal = group_name
+        if actor_key in {self._user_key(username) for username in usernames}:
+            raise PermissionError("Project access administrators cannot assign or elevate their own project access.")
 
         summaries = [
             summary
@@ -548,6 +553,24 @@ class PlatformService:
             summaries = [summary for summary in summaries if summary.branch_id == branch_id]
         if not summaries:
             raise ValueError("No plugin-imported Workbench branch matches this project/branch selection.")
+        if not session.authorization_context.can_manage_server_presets:
+            unauthorized_summaries = [
+                summary
+                for summary in summaries
+                if not self._access_admin_access(
+                    self._plugin_branch_access_or_source_fallback(
+                        actor_key,
+                        session.server.id,
+                        summary.project_id,
+                        summary.branch_id,
+                        summary,
+                    )
+                )
+            ]
+            if unauthorized_summaries:
+                if payload.branch_id:
+                    raise PermissionError("The active Workbench user cannot manage access rights for this project branch.")
+                raise PermissionError("The active Workbench user cannot manage access rights for every selected project branch.")
 
         now = utcnow()
         records: list[BranchAccessRecord] = []
@@ -566,7 +589,7 @@ class PlatformService:
                         accessible=payload.accessible,
                         editable=bool(payload.accessible and payload.editable),
                         admin_access=bool(payload.accessible and payload.admin_access),
-                        roles=["Workbench Admin Assignment"],
+                        roles=["Workbench Project Access Assignment"],
                         via_groups=via_groups,
                         source="workbench-admin-assignment",
                         payload={
@@ -574,6 +597,7 @@ class PlatformService:
                             "principal_type": payload.principal_type,
                             "principal_name": normalized_principal,
                             "workbench_assignment": True,
+                            "project_access_assignment": True,
                             "branch_admin_access": bool(payload.accessible and payload.admin_access),
                             "access_admin_access": bool(payload.accessible and payload.admin_access),
                         },
@@ -1610,6 +1634,8 @@ class PlatformService:
     def get_branch_cache_summary(self, session: SessionData, project_id: str, branch_id: str) -> BranchCacheSummary:
         summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
         if summary is not None:
+            if self._has_workbench_admin_model_visibility(session):
+                return summary
             if self._is_plugin_managed_summary(summary):
                 visible_summary = self.get_branch_cache_summary_for_user(
                     session.server.id,
@@ -1631,6 +1657,12 @@ class PlatformService:
 
     def get_branch_cache_snapshot(self, session: SessionData, project_id: str, branch_id: str) -> BranchCacheSnapshot:
         summary = self.get_branch_cache_summary(session, project_id, branch_id)
+        if self._has_workbench_admin_model_visibility(session):
+            models = [
+                CachedModelView(model=model, permissions=None)
+                for model in self.repo.list_cached_models(session.server.id, project_id, branch_id)
+            ]
+            return BranchCacheSnapshot(summary=summary, models=models)
         snapshot = self.get_branch_cache_snapshot_for_user(
             session.server.id,
             session.user.preferred_username,
@@ -1648,6 +1680,9 @@ class PlatformService:
         branch_id: str,
         model_id: str,
     ) -> CachedModelView | None:
+        if self._has_workbench_admin_model_visibility(session):
+            model = self.repo.get_cached_model(session.server.id, project_id, branch_id, model_id)
+            return CachedModelView(model=model, permissions=None) if model is not None else None
         return self.get_cached_branch_model_for_user(
             session.server.id,
             session.user.preferred_username,
@@ -3343,9 +3378,18 @@ class PlatformService:
         project_id: str,
         branch_id: str,
         element_id: str,
+        *,
+        include_all_workbench_admin: bool = False,
     ) -> ItemDetails | None:
         self._require_server(server_id, include_disabled=True)
-        return self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element_id)
+        return self._cached_item_details_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
 
     def get_cached_branch_spec_diagnostic_for_user(
         self,
@@ -3719,14 +3763,29 @@ class PlatformService:
         project_id: str,
         branch_id: str,
         element_id: str,
+        *,
+        include_all_workbench_admin: bool = False,
     ) -> CacheElementGraphResponse | None:
         self._require_server(server_id, include_disabled=True)
-        item = self._cached_item_details_for_user(server_id, preferred_username, project_id, branch_id, element_id)
+        item = self._cached_item_details_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         if item is None:
             return None
 
         user_id = self._user_key(preferred_username)
-        visible_elements = self._visible_cached_elements_for_user(user_id, server_id, project_id, branch_id)
+        visible_elements = self._visible_cached_elements_for_user(
+            user_id,
+            server_id,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         visible_by_id = {record.element_id: record for record in visible_elements}
         current_record = visible_by_id.get(element_id)
 
@@ -3863,6 +3922,12 @@ class PlatformService:
         )
         if record is None:
             return None
+        record = self._canonical_cameo_visible_details_record(
+            server_id,
+            project_id,
+            branch_id,
+            record,
+        )
 
         branch_access = self._branch_access_for_user(self._user_key(preferred_username), server_id, project_id, branch_id)
         editable = False
@@ -3902,15 +3967,72 @@ class PlatformService:
             )
             if referenced_record is not None and isinstance(referenced_record.payload, dict):
                 resolved_payloads[reference_id] = referenced_record.payload
-        return adapter.build_item_details_from_payload(
+        item_details = adapter.build_item_details_from_payload(
             record.payload,
-            element_id,
+            record.element_id,
             project_id,
             branch_id,
             resolved_payloads=resolved_payloads,
             editable=editable,
             version=record.latest_revision or record.synced_at.isoformat(),
         )
+        return self._enrich_cameo_property_item_details(item_details, record.payload, resolved_payloads)
+
+    def _resolved_payload_attribute_value(self, resolved_payloads: dict[str, Any], element_id: str, key: str) -> str:
+        payload = resolved_payloads.get(element_id)
+        if not isinstance(payload, dict):
+            return ""
+        attributes = payload.get("attributes")
+        if not isinstance(attributes, dict):
+            return ""
+        value = attributes.get(key)
+        return "" if value is None else str(value).strip()
+
+    def _cameo_type_path_from_reference(self, reference: ItemReference | None) -> str:
+        if reference is None:
+            return ""
+        return (reference.path or reference.name or "").replace("/", "::").strip()
+
+    def _enrich_cameo_property_item_details(
+        self,
+        item: ItemDetails,
+        payload: dict[str, Any],
+        resolved_payloads: dict[str, Any],
+    ) -> ItemDetails:
+        metaclass = normalize_lookup_key(str(payload.get("metaclass") or item.item_type or ""))
+        if metaclass not in {"property", "port"}:
+            return item
+        attributes = payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {}
+        references = payload.get("references") if isinstance(payload.get("references"), dict) else {}
+        raw_name = str(attributes.get("name") or payload.get("name") or item.name).strip()
+        display_name = raw_name or item.name
+        type_reference = item.type_references[0] if item.type_references else None
+        type_path = self._cameo_type_path_from_reference(type_reference)
+        lower_id = next((str(value).strip() for value in references.get("lowerValue") or [] if str(value).strip()), "")
+        upper_id = next((str(value).strip() for value in references.get("upperValue") or [] if str(value).strip()), "")
+        lower_value = self._resolved_payload_attribute_value(resolved_payloads, lower_id, "value")
+        upper_value = self._resolved_payload_attribute_value(resolved_payloads, upper_id, "value")
+        multiplicity = ""
+        if lower_value or upper_value:
+            multiplicity = f"[{lower_value or '0'}]" if lower_value == upper_value or not upper_value else f"[{lower_value or '0'}..{upper_value}]"
+        signature = display_name
+        if type_path:
+            signature = f"{signature} : {type_path}"
+        if multiplicity:
+            signature = f"{signature} {multiplicity}"
+        next_metadata = {
+            **item.metadata,
+            "cameo_name": display_name,
+            "cameo_signature": signature,
+        }
+        if type_path:
+            next_metadata["cameo_type"] = type_path
+        if multiplicity:
+            next_metadata["multiplicity"] = multiplicity
+        visibility = str(attributes.get("visibility") or "").strip()
+        if visibility:
+            next_metadata["visibility"] = visibility
+        return item.model_copy(update={"metadata": next_metadata})
 
     def edit_cached_branch_element_for_user(
         self,
@@ -4506,15 +4628,30 @@ class PlatformService:
             if referenced_record is not None and isinstance(referenced_record.payload, dict):
                 resolved_payloads[reference_id] = referenced_record.payload
 
-        return adapter.build_item_details_from_payload(
+        canonical_record = self._canonical_cameo_visible_details_record(
+            session.server.id,
+            project_id,
+            branch_id,
+            cached_record,
+        )
+        if canonical_record.element_id != cached_record.element_id:
+            resolved_payloads = {}
+            cached_record = canonical_record
+            for reference_id in adapter.reference_resolution_ids(cached_record.payload):
+                referenced_record = self.get_cached_branch_element(session, project_id, branch_id, reference_id)
+                if referenced_record is not None and isinstance(referenced_record.payload, dict):
+                    resolved_payloads[reference_id] = referenced_record.payload
+
+        item_details = adapter.build_item_details_from_payload(
             cached_record.payload,
-            item_id,
+            cached_record.element_id,
             project_id,
             branch_id,
             resolved_payloads=resolved_payloads,
             editable=editable,
             version=cached_record.latest_revision or cached_record.synced_at.isoformat(),
         )
+        return self._enrich_cameo_property_item_details(item_details, cached_record.payload, resolved_payloads)
 
     def _materialized_model_item_details(
         self,
@@ -4653,29 +4790,50 @@ class PlatformService:
                 return record.path
             if field == "child_count":
                 return record.child_count
+            if field == "body":
+                attributes = record.payload.get("attributes") if isinstance(record.payload.get("attributes"), dict) else {}
+                return attributes.get("body") or record.payload.get("body") or default
             return record.payload.get(field, default)
         return record.get(field, default)
 
-    def _cached_element_sort_key(self, record: CachedElementRecord | dict[str, Any] | None, fallback_id: str = "") -> tuple[int, str]:
+    def _cached_element_sort_key(self, record: CachedElementRecord | dict[str, Any] | None, fallback_id: str = "") -> tuple[int, int, str]:
         if record is None:
-            return (99, fallback_id.lower())
+            return (99, 0, fallback_id.lower())
         item_type = str(self._tree_record_field(record, "item_type") or self._tree_record_field(record, "metaclass") or "element").strip().lower()
-        display_name = str(
+        raw_display_name = str(
             self._tree_record_field(record, "name")
-            or self._tree_record_field(record, "qualified_name")
             or self._tree_record_field(record, "element_id")
             or fallback_id
+        ).strip()
+        display_name = self._presentable_name_from_path(
+            raw_display_name,
+            qualified_name=str(self._tree_record_field(record, "qualified_name") or "").strip(),
+            fallback_path=str(self._tree_record_field(record, "path") or "").strip(),
         ).strip().lower()
-        if item_type in {"package", "model"}:
+        if item_type == "comment":
+            display_name = self._comment_tree_label_from_record(record).strip().lower() or display_name
+        cameo_root_rank = {
+            "auxiliary": 0,
+            "imported packages": 1,
+            "virtual dependencies": 2,
+        }.get(display_name)
+        if cameo_root_rank is not None and item_type == "package":
             rank = 0
-        elif "diagram" in item_type or item_type in {"table", "matrix", "chart"}:
+            secondary_rank = cameo_root_rank
+        elif item_type in {"package", "model"}:
             rank = 1
-        elif item_type in {"block", "class", "requirement", "use case", "activity"}:
+            secondary_rank = 0
+        elif "diagram" in item_type or item_type in {"table", "matrix", "chart"}:
             rank = 2
-        else:
+            secondary_rank = 0 if display_name == "index" else 1 if display_name == "start" else 2
+        elif item_type in {"block", "class", "requirement", "use case", "activity"}:
             rank = 3
+            secondary_rank = 0
+        else:
+            rank = 4
+            secondary_rank = 0
         element_id = str(self._tree_record_field(record, "element_id") or fallback_id).lower()
-        return (rank, display_name or element_id)
+        return (rank, secondary_rank, display_name or element_id)
 
     def _sanitize_model_root_ids(
         self,
@@ -4735,7 +4893,8 @@ class PlatformService:
         return normalized_type in {"model", "sysml model", "uml model"}
 
     def _final_named_segment(self, path: str) -> str:
-        return next((segment.strip() for segment in reversed(path.split("/")) if segment.strip()), "")
+        normalized_path = path.replace("::", "/")
+        return next((segment.strip() for segment in reversed(normalized_path.split("/")) if segment.strip()), "")
 
     def _looks_like_opaque_identifier(self, value: str) -> bool:
         return bool(OPAQUE_IDENTIFIER_RE.fullmatch(value.strip()))
@@ -4753,7 +4912,34 @@ class PlatformService:
             if not final_segment or self._looks_like_opaque_identifier(final_segment):
                 continue
             return final_segment
+        raw_final_segment = self._final_named_segment(clean_label)
+        if raw_final_segment and not self._looks_like_opaque_identifier(raw_final_segment):
+            return raw_final_segment
         return clean_label
+
+    def _plain_text_from_markup(self, value: str) -> str:
+        text = value.strip()
+        if not text:
+            return ""
+        text = re.sub(r"(?is)<(br|/p|/div|/li|/h[1-6])\b[^>]*>", "\n", text)
+        text = re.sub(r"(?is)<style\b.*?</style>", " ", text)
+        text = re.sub(r"(?is)<script\b.*?</script>", " ", text)
+        text = re.sub(r"(?is)<[^>]+>", " ", text)
+        text = html.unescape(text).replace("\xa0", " ")
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _comment_tree_label_from_record(self, record: CachedElementRecord | dict[str, Any]) -> str:
+        documentation = str(self._tree_record_field(record, "documentation") or "").strip()
+        for candidate in (documentation, str(self._tree_record_field(record, "body") or "").strip()):
+            text = self._plain_text_from_markup(candidate)
+            if not text:
+                continue
+            for line in text.splitlines():
+                cleaned = line.strip()
+                if cleaned:
+                    return cleaned[:96]
+            return text[:96]
+        return ""
 
     def _tree_node_summary_from_record(
         self,
@@ -4772,7 +4958,19 @@ class PlatformService:
         child_ids = [str(value).strip() for value in self._tree_record_field(record, "owned_element_ids", []) or [] if str(value).strip()]
         metaclass = str(self._tree_record_field(record, "metaclass") or item_type or "element").strip()
         stereotypes = [str(value).strip() for value in self._tree_record_field(record, "applied_stereotype_ids", []) or [] if str(value).strip()]
-        child_count = max(int(self._tree_record_field(record, "child_count", 0) or 0), len(child_ids))
+        visible_child_ids = [
+            child_id
+            for child_id in child_ids
+            if not self._is_property_multiplicity_value_child(
+                server_id,
+                project_id,
+                branch_id,
+                model_id,
+                record,
+                child_id,
+            )
+        ]
+        child_count = len(visible_child_ids)
         label = self._presentable_tree_label(server_id, project_id, branch_id, record)
         subtitle = self._presentable_tree_subtitle(server_id, project_id, branch_id, record)
         return TreeNode(
@@ -4808,11 +5006,14 @@ class PlatformService:
         qualified_name = str(self._tree_record_field(record, "qualified_name") or self._tree_record_field(record, "path") or "").strip()
         normalized_type = normalize_lookup_key(str(self._tree_record_field(record, "item_type") or self._tree_record_field(record, "metaclass") or "element"))
         if normalized_type == "comment":
-            documentation = str(self._tree_record_field(record, "documentation") or "").strip()
-            if documentation:
-                first_line = documentation.splitlines()[0].strip()
-                if first_line:
-                    return first_line[:96]
+            comment_label = self._comment_tree_label_from_record(record)
+            if comment_label:
+                return comment_label
+        normalized_metaclass = normalize_lookup_key(str(self._tree_record_field(record, "metaclass") or ""))
+        if normalized_metaclass in {"property", "port"}:
+            property_signature = self._property_tree_signature(server_id, project_id, branch_id, record, raw_label)
+            if property_signature:
+                return property_signature
         return self._presentable_name_from_path(
             raw_label,
             qualified_name=qualified_name,
@@ -4833,6 +5034,168 @@ class PlatformService:
         if normalized_type in {"package import", "element import"}:
             return ""
         return ""
+
+    def _tree_record_reference_values(self, record: CachedElementRecord | dict[str, Any], key: str) -> list[str]:
+        references = self._tree_record_field(record, "references", {}) or {}
+        if not isinstance(references, dict):
+            return []
+        return [str(value).strip() for value in references.get(key) or [] if str(value).strip()]
+
+    def _tree_record_attribute_value(self, record: CachedElementRecord | dict[str, Any], key: str) -> str:
+        attributes = self._tree_record_field(record, "attributes", {}) or {}
+        if not isinstance(attributes, dict):
+            return ""
+        value = attributes.get(key)
+        return "" if value is None else str(value).strip()
+
+    def _tree_record_model_id(self, record: CachedElementRecord | dict[str, Any]) -> str:
+        return str(self._tree_record_field(record, "model_id") or "").strip()
+
+    def _is_value_spec_tree_record(self, record: CachedElementRecord | dict[str, Any] | None) -> bool:
+        if record is None:
+            return False
+        metaclass = normalize_lookup_key(str(self._tree_record_field(record, "metaclass") or self._tree_record_field(record, "item_type") or ""))
+        return metaclass in {
+            "literalinteger",
+            "literalunlimitednatural",
+            "literalboolean",
+            "literalstring",
+            "literalreal",
+            "literalnull",
+        }
+
+    def _is_property_multiplicity_value_child(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        parent_record: CachedElementRecord | dict[str, Any],
+        child_id: str,
+        child_record: CachedElementRecord | dict[str, Any] | None = None,
+    ) -> bool:
+        parent_metaclass = normalize_lookup_key(str(self._tree_record_field(parent_record, "metaclass") or self._tree_record_field(parent_record, "item_type") or ""))
+        if parent_metaclass != "property":
+            return False
+        multiplicity_ids = {
+            *self._tree_record_reference_values(parent_record, "lowerValue"),
+            *self._tree_record_reference_values(parent_record, "upperValue"),
+            *self._tree_record_reference_values(parent_record, "defaultValue"),
+        }
+        if child_id not in multiplicity_ids:
+            return False
+        if child_record is None:
+            child_record = self.repo.get_cached_element_tree_summary(
+                server_id,
+                project_id,
+                branch_id,
+                child_id,
+                model_id=model_id or self._tree_record_model_id(parent_record) or None,
+            )
+        return self._is_value_spec_tree_record(child_record)
+
+    def _tree_reference_record(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        reference_id: str,
+    ) -> CachedElementRecord | dict[str, Any] | None:
+        if not reference_id:
+            return None
+        return self.repo.get_cached_element(
+            server_id,
+            project_id,
+            branch_id,
+            reference_id,
+            model_id=model_id or None,
+        ) or self.repo.get_cached_element_tree_summary(
+            server_id,
+            project_id,
+            branch_id,
+            reference_id,
+            model_id=model_id or None,
+        )
+
+    def _canonical_cameo_visible_details_record(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        record: CachedElementRecord,
+    ) -> CachedElementRecord:
+        if not self._is_value_spec_tree_record(record):
+            return record
+        owner_candidates = [
+            *self._tree_record_reference_values(record, "owningLower"),
+            *self._tree_record_reference_values(record, "owningUpper"),
+            str(record.payload.get("owner_id") or "").strip(),
+        ]
+        for owner_id in owner_candidates:
+            if not owner_id:
+                continue
+            owner_record = self.repo.get_cached_element(
+                server_id,
+                project_id,
+                branch_id,
+                owner_id,
+                model_id=record.model_id,
+            )
+            if owner_record is None:
+                continue
+            owner_metaclass = normalize_lookup_key(str(owner_record.payload.get("metaclass") or owner_record.item_type or ""))
+            if owner_metaclass == "property":
+                references = owner_record.payload.get("references") if isinstance(owner_record.payload.get("references"), dict) else {}
+                multiplicity_ids = {
+                    *[str(value).strip() for value in references.get("lowerValue") or [] if str(value).strip()],
+                    *[str(value).strip() for value in references.get("upperValue") or [] if str(value).strip()],
+                    *[str(value).strip() for value in references.get("defaultValue") or [] if str(value).strip()],
+                }
+                if record.element_id in multiplicity_ids:
+                    return owner_record
+        return record
+
+    def _tree_record_cameo_qualified_name(self, record: CachedElementRecord | dict[str, Any] | None) -> str:
+        if record is None:
+            return ""
+        qualified_name = str(self._tree_record_field(record, "qualified_name") or self._tree_record_field(record, "path") or "").strip()
+        if qualified_name:
+            return qualified_name.replace("/", "::")
+        return str(self._tree_record_field(record, "name") or "").strip()
+
+    def _property_tree_signature(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        record: CachedElementRecord | dict[str, Any],
+        raw_label: str,
+    ) -> str:
+        property_name = self._presentable_name_from_path(
+            raw_label,
+            qualified_name=str(self._tree_record_field(record, "qualified_name") or "").strip(),
+            fallback_path=str(self._tree_record_field(record, "path") or "").strip(),
+        ) or raw_label
+        model_id = self._tree_record_model_id(record)
+        type_id = next(iter(self._tree_record_reference_values(record, "type")), "")
+        type_record = self._tree_reference_record(server_id, project_id, branch_id, model_id, type_id)
+        type_name = self._tree_record_cameo_qualified_name(type_record)
+        lower_id = next(iter(self._tree_record_reference_values(record, "lowerValue")), "")
+        upper_id = next(iter(self._tree_record_reference_values(record, "upperValue")), "")
+        lower_record = self._tree_reference_record(server_id, project_id, branch_id, model_id, lower_id)
+        upper_record = self._tree_reference_record(server_id, project_id, branch_id, model_id, upper_id)
+        lower_value = self._tree_record_attribute_value(lower_record, "value") if lower_record is not None else ""
+        upper_value = self._tree_record_attribute_value(upper_record, "value") if upper_record is not None else ""
+        multiplicity = ""
+        if lower_value or upper_value:
+            multiplicity = f"[{lower_value or '0'}]" if lower_value == upper_value or not upper_value else f"[{lower_value or '0'}..{upper_value}]"
+        signature = property_name
+        if type_name:
+            signature = f"{signature} : {type_name}"
+        if multiplicity:
+            signature = f"{signature} {multiplicity}"
+        return signature
 
     def _tree_children_for_model_root(
         self,
@@ -4860,7 +5223,10 @@ class PlatformService:
                 model_id=model.model_id,
             ):
                 records_by_id[str(record["element_id"])] = record
-        ordered_records = [records_by_id[root_id] for root_id in root_ids if root_id in records_by_id]
+        ordered_records = sorted(
+            [records_by_id[root_id] for root_id in root_ids if root_id in records_by_id],
+            key=lambda record: self._cached_element_sort_key(record, str(record.get("element_id") or "")),
+        )
         return [
             self._tree_node_summary_from_record(
                 project_id=project_id,
@@ -4908,9 +5274,35 @@ class PlatformService:
                 if str(record["element_id"]) != str(self._tree_record_field(parent_record, "element_id")):
                     child_records[str(record["element_id"])] = record
 
-        ordered_records = [child_records[child_id] for child_id in owned_child_ids if child_id in child_records]
+        ordered_records = [
+            child_records[child_id]
+            for child_id in owned_child_ids
+            if child_id in child_records
+            and not self._is_property_multiplicity_value_child(
+                server_id,
+                project_id,
+                branch_id,
+                model_id,
+                parent_record,
+                child_id,
+                child_records.get(child_id),
+            )
+        ]
         extra_records = sorted(
-            [record for child_id, record in child_records.items() if child_id not in owned_child_ids],
+            [
+                record
+                for child_id, record in child_records.items()
+                if child_id not in owned_child_ids
+                and not self._is_property_multiplicity_value_child(
+                    server_id,
+                    project_id,
+                    branch_id,
+                    model_id,
+                    parent_record,
+                    child_id,
+                    record,
+                )
+            ],
             key=lambda item: self._cached_element_sort_key(item, str(item.get("element_id") or "")),
         )
         return [
@@ -4973,12 +5365,21 @@ class PlatformService:
             if owner_id:
                 append_child(owner_id, record.element_id)
 
-        root_ids = self._sanitize_model_root_ids(model, model_records)
+        root_ids = sorted(
+            self._sanitize_model_root_ids(model, model_records),
+            key=lambda element_id: self._cached_element_sort_key(model_records.get(element_id), element_id),
+        )
 
         detached_root_ids = [
             element_id
             for element_id, record in model_records.items()
-            if element_id != model.model_id and str(record.payload.get("owner_id") or "").strip() not in model_records and element_id not in root_ids
+            if element_id != model.model_id
+            and element_id not in root_ids
+            and str(record.payload.get("owner_id") or "").strip() not in model_records
+            and not (
+                self._is_modelish_record(record)
+                and normalize_lookup_key(str(record.name or record.payload.get("human_name") or "")) == normalize_lookup_key(str(model.name or model.payload.get("human_name") or ""))
+            )
         ]
         root_ids.extend(
             sorted(
@@ -5040,7 +5441,19 @@ class PlatformService:
             )
 
         covered.add(record.element_id)
-        child_ids = list(parent_to_children.get(record.element_id, []))
+        child_ids = [
+            child_id
+            for child_id in parent_to_children.get(record.element_id, [])
+            if not self._is_property_multiplicity_value_child(
+                server_id,
+                project_id,
+                branch_id,
+                model_id,
+                record,
+                child_id,
+                model_records.get(child_id),
+            )
+        ]
         if depth is not None and current_depth >= depth:
             child_nodes: list[TreeNode] = []
         else:
@@ -5059,8 +5472,16 @@ class PlatformService:
                     depth=depth,
                     current_depth=current_depth + 1,
                 )
-                for child_id in child_ids
+            for child_id in child_ids
             ]
+        child_nodes = self._group_cameo_relation_children(
+            parent_id=record.element_id,
+            parent_path=node_path,
+            project_id=project_id,
+            branch_id=branch_id,
+            model_id=model_id,
+            children=child_nodes,
+        )
         stereotypes = [str(value).strip() for value in record.payload.get("applied_stereotype_ids") or [] if str(value).strip()]
         metaclass = str(record.payload.get("metaclass") or record.item_type or "element").strip()
         subtitle = self._presentable_tree_subtitle(
@@ -5080,13 +5501,70 @@ class PlatformService:
                 "branch_id": branch_id,
                 "model_id": model_id,
                 "owner_id": str(record.payload.get("owner_id") or "").strip(),
-                "child_count": len(child_ids),
+                "child_count": len(child_nodes),
                 "qualified_name": qualified_name,
                 "metaclass": metaclass,
                 "stereotypes": stereotypes,
                 "subtitle": subtitle,
             },
         )
+
+    def _is_cameo_relation_tree_node(self, node: TreeNode) -> bool:
+        node_type = normalize_lookup_key(node.node_type)
+        metaclass = normalize_lookup_key(str(node.metadata.get("metaclass") or ""))
+        return node_type in {"association", "associationclass", "dependency", "relationship"} or metaclass in {
+            "association",
+            "associationclass",
+            "dependency",
+            "relationship",
+        }
+
+    def _group_cameo_relation_children(
+        self,
+        *,
+        parent_id: str,
+        parent_path: str,
+        project_id: str,
+        branch_id: str,
+        model_id: str,
+        children: list[TreeNode],
+        ) -> list[TreeNode]:
+        relation_nodes = [child for child in children if self._is_cameo_relation_tree_node(child)]
+        if not relation_nodes:
+            return children
+        normal_nodes = sorted(
+            [child for child in children if not self._is_cameo_relation_tree_node(child)],
+            key=self._cameo_tree_node_sort_key,
+        )
+        relations = TreeNode(
+            id=f"{parent_id}::relations",
+            label="Relations",
+            node_type="group",
+            path=f"{parent_path}/Relations",
+            children=relation_nodes,
+            metadata={
+                "project_id": project_id,
+                "branch_id": branch_id,
+                "model_id": model_id,
+                "child_count": len(relation_nodes),
+                "synthetic": True,
+                "cameo_virtual_folder": "relations",
+                "subtitle": f"{len(relation_nodes)} relationships",
+            },
+        )
+        return [relations, *normal_nodes]
+
+    def _cameo_tree_node_sort_key(self, node: TreeNode) -> tuple[int, str, str]:
+        node_type = normalize_lookup_key(node.node_type)
+        metaclass = normalize_lookup_key(str(node.metadata.get("metaclass") or ""))
+        short_label = str(node.label or "").split("::")[-1].strip().lower()
+        if "diagram" in node_type or "diagram" in metaclass:
+            rank = 0
+        elif node_type in {"package", "model"} or metaclass in {"package", "model"}:
+            rank = 1
+        else:
+            rank = 2
+        return (rank, short_label, node.id.lower())
 
     def _tree_nodes_for_model(
         self,
@@ -5143,7 +5621,7 @@ class PlatformService:
             )
 
         parent_to_children, root_ids = self._tree_indexes_for_model(model, model_records)
-        covered: set[str] = set()
+        covered: set[str] = {model.model_id}
 
         if root_id:
             seed_ids = [root_id] if root_id in model_records else []
@@ -5169,7 +5647,7 @@ class PlatformService:
 
         if include_orphans and not root_id:
             unlinked_ids = sorted(
-                [element_id for element_id in model_records if element_id not in covered],
+                [element_id for element_id in model_records if element_id != model.model_id and element_id not in covered],
                 key=lambda element_id: self._cached_element_sort_key(model_records.get(element_id), element_id),
             )
             if unlinked_ids:
@@ -8425,12 +8903,35 @@ class PlatformService:
         project_id: str,
         branch_id: str,
     ) -> BranchAccessRecord | None:
+        summary = self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id)
+        if self._has_workbench_admin_model_visibility(session) and summary is not None:
+            return BranchAccessRecord(
+                user_id=self._user_key(session.user.preferred_username),
+                server_id=session.server.id,
+                project_id=project_id,
+                branch_id=branch_id,
+                workspace_id=summary.workspace_id,
+                branch_name=summary.branch_name or branch_id,
+                latest_revision=summary.latest_revision,
+                accessible=True,
+                editable=False,
+                admin_access=True,
+                roles=["Workbench Administrator"],
+                source="workbench-admin-cache-visibility",
+                payload={
+                    "workbench_admin_cache_visibility": True,
+                    "branch_admin_access": False,
+                    "access_admin_access": False,
+                    "live_twc_permission": False,
+                },
+                updated_at=summary.updated_at,
+            )
         return self._plugin_branch_access_or_source_fallback(
             self._user_key(session.user.preferred_username),
             session.server.id,
             project_id,
             branch_id,
-            self.repo.get_branch_cache_summary(session.server.id, project_id, branch_id),
+            summary,
         )
 
     def _require_effective_branch_access(
@@ -8476,6 +8977,8 @@ class PlatformService:
         *,
         summary: BranchCacheSummary | None = None,
     ) -> bool:
+        if self._has_workbench_admin_model_visibility(session) and summary is not None:
+            return True
         # Branch/model load is where we refresh live permissions. Browsing paths
         # should trust the stored branch access we already established there.
         return (

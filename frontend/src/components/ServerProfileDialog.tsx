@@ -25,6 +25,7 @@ interface ServerProfileDialogProps {
 
 function createDefaultProfile(defaultDisplayOrder = 0): ServerProfileInput {
   return {
+    id: "",
     name: "",
     base_url: "",
     version: "2024x",
@@ -48,6 +49,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
       return;
     }
     setForm({
+      id: initialValue.id,
       name: initialValue.name,
       base_url: initialValue.base_url,
       version: initialValue.version,
@@ -63,6 +65,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
     try {
       await onSubmit({
         ...form,
+        id: form.id?.trim() || undefined,
         base_url: form.base_url.trim(),
         ca_bundle_path: form.ca_bundle_path?.trim() || null,
       });
@@ -78,9 +81,31 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-      <DialogTitle>{initialValue ? "Edit Preset Teamwork Cloud Server" : "Add Preset Teamwork Cloud Server"}</DialogTitle>
+      <DialogTitle>{initialValue ? "Edit Workbench Server" : "Add Workbench Server"}</DialogTitle>
       <DialogContent>
         <Grid container spacing={2} sx={{ mt: 0.5 }}>
+          {!initialValue ? (
+            <Grid item xs={12} md={6}>
+              <TextField
+                label="Server Key"
+                value={form.id ?? ""}
+                onChange={(event) => setField("id", event.target.value.trim())}
+                helperText="This becomes the Cameo plugin metadata.serverId. Example: prod-2024x"
+                fullWidth
+                required
+              />
+            </Grid>
+          ) : (
+            <Grid item xs={12} md={6}>
+              <TextField
+                label="Server Key"
+                value={initialValue.id}
+                helperText="Copy this into the Cameo plugin as metadata.serverId."
+                fullWidth
+                InputProps={{ readOnly: true }}
+              />
+            </Grid>
+          )}
           <Grid item xs={12} md={6}>
             <TextField
               label="Display Name"
@@ -169,7 +194,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
               <div>
                 <Typography fontWeight={600}>Preset Enabled</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Disabled presets remain visible to administrators but are hidden from normal user sign-in flows.
+                  Disabled servers remain visible to administrators but are hidden from normal user sign-in flows.
                 </Typography>
               </div>
             </Stack>
@@ -181,9 +206,9 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
         <Button
           variant="contained"
           onClick={handleSubmit}
-          disabled={submitting || !form.name || !form.base_url}
+          disabled={submitting || !form.name || !form.base_url || (!initialValue && !form.id)}
         >
-          {initialValue ? "Save Changes" : "Create Preset"}
+          {initialValue ? "Save Changes" : "Create Server"}
         </Button>
       </DialogActions>
     </Dialog>

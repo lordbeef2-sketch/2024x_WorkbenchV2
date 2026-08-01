@@ -81,7 +81,12 @@ class ServerProfileBase(BaseModel):
 
 
 class ServerProfileCreate(ServerProfileBase):
-    pass
+    id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+    )
 
 
 class ServerProfileUpdate(BaseModel):
@@ -213,6 +218,9 @@ class SessionPreferences(BaseModel):
     presentation_font_scale: float = 1.2
     compact_ui: bool = True
     show_hidden_packages_in_tree: bool = False
+    show_auxiliary_resources_in_tree: bool = False
+    show_applied_stereotypes_in_tree: bool = False
+    show_full_types_in_tree: bool = True
     item_detail_view_mode: Literal["standard", "expert", "all"] = "standard"
 
 

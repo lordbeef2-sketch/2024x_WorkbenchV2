@@ -91,7 +91,11 @@ public class TWCWorkbenchCameoPlugin extends Plugin {
                 }
                 catch (Exception exception) {
                     Throwable cause = exception.getCause() == null ? exception : exception.getCause();
-                    String failure = "Manual snapshot export failed: " + cause.getMessage();
+                    String causeMessage = cause.getMessage();
+                    if (causeMessage == null || causeMessage.isBlank()) {
+                        causeMessage = cause.getClass().getName();
+                    }
+                    String failure = "Manual snapshot export failed: " + causeMessage;
                     progressDialog.markFailure(failure);
                     Application.getInstance().getGUILog().log("[ERROR] " + failure);
                     cause.printStackTrace();

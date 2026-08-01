@@ -21,6 +21,7 @@ export interface ServerProfile {
 }
 
 export interface ServerProfileInput {
+  id?: string;
   name: string;
   base_url: string;
   version: TWCVersion;
@@ -78,6 +79,9 @@ export interface SessionPreferences {
   presentation_font_scale: number;
   compact_ui: boolean;
   show_hidden_packages_in_tree: boolean;
+  show_auxiliary_resources_in_tree: boolean;
+  show_applied_stereotypes_in_tree: boolean;
+  show_full_types_in_tree: boolean;
   item_detail_view_mode: ItemDetailViewMode;
 }
 

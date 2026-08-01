@@ -14,10 +14,16 @@ from app.api.routes import auth, workspace
 from app.auth.twc import build_twc_oidc_authorization_url, exchange_twc_auth_code
 from app.core.storage import SqliteRepository
 from app.models.domain import (
+    BranchAccessRecord,
+    BranchCacheSummary,
     ServerProfile,
+    ServerProfileCreate,
+    CachedElementRecord,
+    CachedModelRecord,
     WorkbenchAuthSettingsUpdate,
     WorkbenchGroupCreateRequest,
     WorkbenchGroupUpdateRequest,
+    WorkbenchProjectAccessAssignmentRequest,
     WorkbenchUserCreateRequest,
     WorkbenchUserRole,
     WorkbenchUserUpdateRequest,
@@ -339,6 +345,224 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
         self.assertFalse(context.can_manage_server_presets)
         self.assertFalse(service._claims_grant_group_manager(["Project Group Managers"], []))
 
+    def test_project_access_admin_can_assign_only_their_project_branch(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.settings = Settings(data_dir=Path(directory) / "data")
+            service.repo.upsert_branch_cache_summary(
+                BranchCacheSummary(
+                    server_id="twc",
+                    project_id="project-a",
+                    branch_id="master",
+                    workspace_id="workspace-a",
+                    project_name="Project A",
+                    branch_name="master",
+                    source_kind="cameo-plugin",
+                )
+            )
+            service.repo.upsert_branch_cache_summary(
+                BranchCacheSummary(
+                    server_id="twc",
+                    project_id="project-b",
+                    branch_id="master",
+                    workspace_id="workspace-b",
+                    project_name="Project B",
+                    branch_name="master",
+                    source_kind="cameo-plugin",
+                )
+            )
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="project-admin",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.USER,
+                    enabled=True,
+                )
+            )
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="target",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.USER,
+                    enabled=True,
+                )
+            )
+            service.repo.upsert_branch_access_records([
+                BranchAccessRecord(
+                    user_id="project-admin",
+                    server_id="twc",
+                    project_id="project-a",
+                    branch_id="master",
+                    workspace_id="workspace-a",
+                    accessible=True,
+                    editable=True,
+                    admin_access=True,
+                    payload={"access_admin_access": True, "branch_admin_access": True},
+                )
+            ])
+            session = SimpleNamespace(
+                user=SimpleNamespace(preferred_username="project-admin"),
+                server=SimpleNamespace(id="twc"),
+                authorization_context=SimpleNamespace(
+                    can_manage_server_presets=False,
+                    can_manage_groups=False,
+                ),
+            )
+
+            result = service.assign_workbench_project_access(
+                session,
+                WorkbenchProjectAccessAssignmentRequest(
+                    principal_type="user",
+                    principal_name="target",
+                    project_id="project-a",
+                    branch_id="master",
+                    accessible=True,
+                    editable=True,
+                    admin_access=False,
+                ),
+            )
+
+            self.assertEqual(result.assigned_usernames, ["target"])
+            with self.assertRaisesRegex(PermissionError, "cannot manage access rights"):
+                service.assign_workbench_project_access(
+                    session,
+                    WorkbenchProjectAccessAssignmentRequest(
+                        principal_type="user",
+                        principal_name="target",
+                        project_id="project-b",
+                        branch_id="master",
+                        accessible=True,
+                    ),
+                )
+
+    def test_workbench_admin_can_assign_project_access_but_not_self_grant(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.repo.upsert_branch_cache_summary(
+                BranchCacheSummary(
+                    server_id="twc",
+                    project_id="project-a",
+                    branch_id="master",
+                    workspace_id="workspace-a",
+                    project_name="Project A",
+                    branch_name="master",
+                    source_kind="cameo-plugin",
+                )
+            )
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="admin",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.ADMIN,
+                    enabled=True,
+                )
+            )
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="target",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.USER,
+                    enabled=True,
+                )
+            )
+            session = SimpleNamespace(
+                user=SimpleNamespace(preferred_username="admin"),
+                server=SimpleNamespace(id="twc"),
+                authorization_context=SimpleNamespace(
+                    can_manage_server_presets=True,
+                    can_manage_groups=True,
+                ),
+            )
+
+            with self.assertRaisesRegex(PermissionError, "cannot assign or elevate their own project access"):
+                service.assign_workbench_project_access(
+                    session,
+                    WorkbenchProjectAccessAssignmentRequest(
+                        principal_type="user",
+                        principal_name="admin",
+                        project_id="project-a",
+                        branch_id="master",
+                        accessible=True,
+                        editable=True,
+                        admin_access=True,
+                    ),
+                )
+
+            result = service.assign_workbench_project_access(
+                session,
+                WorkbenchProjectAccessAssignmentRequest(
+                    principal_type="user",
+                    principal_name="target",
+                    project_id="project-a",
+                    branch_id="master",
+                    accessible=True,
+                    editable=True,
+                    admin_access=True,
+                )
+            )
+            self.assertEqual(result.assigned_usernames, ["target"])
+
+    def test_workbench_admin_has_cached_branch_access_without_twc_permission_record(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.settings = Settings(data_dir=Path(directory) / "data")
+            service.repo.upsert_branch_cache_summary(
+                BranchCacheSummary(
+                    server_id="twc",
+                    project_id="water",
+                    branch_id="master",
+                    workspace_id="workspace-water",
+                    project_name="WaterSupply",
+                    branch_name="trunk",
+                    source_kind="cameo-plugin",
+                )
+            )
+            service.repo.upsert_cached_models(
+                [
+                    CachedModelRecord(
+                        server_id="twc",
+                        project_id="water",
+                        branch_id="master",
+                        model_id="model-water",
+                        workspace_id="workspace-water",
+                        name="Water Supply",
+                        root_ids=["root-water"],
+                        element_count=1,
+                        source_user="cameo",
+                    )
+                ]
+            )
+            session = SimpleNamespace(
+                user=SimpleNamespace(preferred_username="admin"),
+                server=SimpleNamespace(id="twc"),
+                authorization_context=SimpleNamespace(
+                    can_manage_server_presets=True,
+                    can_manage_groups=True,
+                ),
+            )
+
+            summary = service.get_branch_cache_summary(session, "water", "master")
+            access = service._branch_access_for_session(session, "water", "master")
+            status = service.current_permission_status(session, "water", "master")
+            manifest = service.get_branch_access_manifest_status(session, "water", "master")
+            snapshot = service.get_branch_cache_snapshot(session, "water", "master")
+            model = service.get_cached_branch_model(session, "water", "master", "model-water")
+
+            self.assertEqual(summary.project_id, "water")
+            self.assertIsNotNone(access)
+            self.assertTrue(access.accessible)
+            self.assertFalse(access.editable)
+            self.assertTrue(status.branch_accessible)
+            self.assertTrue(status.project_accessible)
+            self.assertTrue(manifest.current_user_accessible)
+            self.assertFalse(manifest.current_user_access_admin_access)
+            self.assertEqual([view.model.model_id for view in snapshot.models], ["model-water"])
+            self.assertIsNotNone(model)
+            self.assertIsNone(model.permissions)
+
     def test_empty_env_preset_catalog_does_not_delete_app_managed_servers(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             database_path = Path(directory) / "workbench.db"
@@ -350,6 +574,199 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
             ApplicationContainer(Settings(database_path=database_path, twc_preset_servers=[]))
 
             self.assertEqual(len(SqliteRepository(database_path).list_servers(include_disabled=True)), 1)
+
+    def test_admin_created_server_profile_can_use_explicit_plugin_key(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            database_path = Path(directory) / "workbench.db"
+            from app.services.platform import ApplicationContainer
+
+            container = ApplicationContainer(Settings(database_path=database_path, twc_preset_servers=[]))
+            created = container.platform.create_server(
+                ServerProfileCreate(
+                    id="prod-2024x",
+                    name="Production 2024x",
+                    base_url="https://twc.example:8111",
+                    version="2024x",
+                    verify_tls=True,
+                    enabled=True,
+                )
+            )
+
+            self.assertEqual(created.id, "prod-2024x")
+            self.assertEqual(SqliteRepository(database_path).get_server("prod-2024x").base_url, "https://twc.example:8111")
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                container.platform.create_server(
+                    ServerProfileCreate(
+                        id="prod-2024x",
+                        name="Duplicate",
+                        base_url="https://duplicate.example",
+                    )
+                )
+
+    def test_cached_element_tree_summary_reads_inner_cameo_payload(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            database_path = Path(directory) / "workbench.db"
+            repo = SqliteRepository(database_path)
+            repo.upsert_cached_elements(
+                [
+                    CachedElementRecord(
+                        server_id="server",
+                        project_id="project",
+                        branch_id="branch",
+                        model_id="model",
+                        element_id="parent",
+                        name="Parent",
+                        item_type="Package",
+                        path="Model/Parent",
+                        child_count=1,
+                        payload={
+                            "owner_id": "model",
+                            "qualified_name": "Model::Parent",
+                            "metaclass": "Package",
+                            "owned_element_ids": ["child"],
+                            "applied_stereotype_ids": ["stereotype"],
+                            "diagram_type": "Package Diagram",
+                        },
+                    )
+                ]
+            )
+
+            summary = repo.get_cached_element_tree_summary("server", "project", "branch", "parent", model_id="model")
+
+            self.assertEqual(summary["owner_id"], "model")
+            self.assertEqual(summary["child_count"], 1)
+            self.assertEqual(summary["owned_element_ids"], ["child"])
+            self.assertEqual(summary["applied_stereotype_ids"], ["stereotype"])
+            self.assertEqual(summary["diagram_type"], "Package Diagram")
+
+    def test_cameo_tree_root_display_order_and_comment_body_labels(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            repo = SqliteRepository(Path(directory) / "workbench.db")
+            service = object.__new__(PlatformService)
+            service.repo = repo
+            model = CachedModelRecord(
+                server_id="server",
+                project_id="project",
+                branch_id="branch",
+                model_id="model",
+                name="Model Distiller_Example",
+                root_ids=["distiller", "power", "virtual", "imported", "aux", "start", "index", "comment"],
+                element_count=8,
+            )
+            repo.upsert_cached_elements(
+                [
+                    CachedElementRecord(
+                        server_id="server",
+                        project_id="project",
+                        branch_id="branch",
+                        model_id="model",
+                        element_id="distiller",
+                        name="Model Distiller",
+                        item_type="Model",
+                        path="Distiller",
+                        payload={"owner_id": "model", "metaclass": "Model"},
+                    ),
+                    CachedElementRecord(
+                        server_id="server",
+                        project_id="project",
+                        branch_id="branch",
+                        model_id="model",
+                        element_id="power",
+                        name="Model Power Station",
+                        item_type="Model",
+                        path="Power Station",
+                        payload={"owner_id": "model", "metaclass": "Model"},
+                    ),
+                    CachedElementRecord(
+                        server_id="server",
+                        project_id="project",
+                        branch_id="branch",
+                        model_id="model",
+                        element_id="virtual",
+                        name="Package Virtual dependencies",
+                        item_type="Package",
+                        path="Virtual dependencies",
+                        payload={"owner_id": "model", "metaclass": "Package"},
+                    ),
+                    CachedElementRecord(
+                        server_id="server",
+                        project_id="project",
+                        branch_id="branch",
+                        model_id="model",
+                        element_id="imported",
+                        name="Package Imported Packages",
+                        item_type="Package",
+                        path="Imported Packages",
+                        payload={"owner_id": "model", "metaclass": "Package"},
+                    ),
+                    CachedElementRecord(
+                        server_id="server",
+                        project_id="project",
+                        branch_id="branch",
+                        model_id="model",
+                        element_id="aux",
+                        name="Package Auxiliary",
+                        item_type="Package",
+                        path="Auxiliary",
+                        payload={"owner_id": "model", "metaclass": "Package"},
+                    ),
+                    CachedElementRecord(
+                        server_id="server",
+                        project_id="project",
+                        branch_id="branch",
+                        model_id="model",
+                        element_id="start",
+                        name="Diagram Start",
+                        item_type="Diagram",
+                        path="Start",
+                        payload={"owner_id": "model", "metaclass": "Diagram"},
+                    ),
+                    CachedElementRecord(
+                        server_id="server",
+                        project_id="project",
+                        branch_id="branch",
+                        model_id="model",
+                        element_id="index",
+                        name="Diagram Index",
+                        item_type="Diagram",
+                        path="Index",
+                        payload={"owner_id": "model", "metaclass": "Diagram"},
+                    ),
+                    CachedElementRecord(
+                        server_id="server",
+                        project_id="project",
+                        branch_id="branch",
+                        model_id="model",
+                        element_id="comment",
+                        name="Comment",
+                        item_type="Comment",
+                        path="Comment",
+                        payload={
+                            "owner_id": "model",
+                            "metaclass": "Comment",
+                            "attributes": {
+                                "body": "<html><body><p><b>Interface Control Document (ICD) Tables</b></p></body></html>"
+                            },
+                        },
+                    ),
+                ]
+            )
+
+            nodes = service._tree_children_for_model_root("server", "project", "branch", model)
+
+            self.assertEqual(
+                [node.label for node in nodes],
+                [
+                    "Auxiliary",
+                    "Imported Packages",
+                    "Virtual dependencies",
+                    "Distiller",
+                    "Power Station",
+                    "Index",
+                    "Start",
+                    "Interface Control Document (ICD) Tables",
+                ],
+            )
 
     def test_unsupported_oslc_authentication_routes_are_not_exposed(self) -> None:
         paths = {

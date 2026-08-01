@@ -27,7 +27,10 @@ def create_server(
     _session=Depends(require_admin_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
-    return container.platform.create_server(payload)
+    try:
+        return container.platform.create_server(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/reorder")

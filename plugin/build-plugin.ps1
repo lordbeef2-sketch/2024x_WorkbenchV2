@@ -192,8 +192,8 @@ function Build-PluginTarget([string]$label, [string]$cameoHome, [string]$javaVer
     Compress-Archive -Path (Join-Path $targetDir "*") -DestinationPath $zipPath
 }
 
-foreach ($target in $cameoTargets) {
-    Build-PluginTarget -label $target.Label -cameoHome $target.CameoHome -javaVersion $target.JavaVersion
+foreach ($cameoTarget in $cameoTargets) {
+    Build-PluginTarget -label $cameoTarget.Label -cameoHome $cameoTarget.CameoHome -javaVersion $cameoTarget.JavaVersion
 }
 
 Write-Host "Plugin builds complete."

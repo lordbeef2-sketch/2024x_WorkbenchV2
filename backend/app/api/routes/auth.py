@@ -531,7 +531,7 @@ def delete_workbench_group(
 @router.post("/management/project-access")
 def assign_workbench_project_access(
     payload: WorkbenchProjectAccessAssignmentRequest,
-    session=Depends(require_admin_csrf),
+    session=Depends(require_csrf),
     container: ApplicationContainer = Depends(get_container),
 ):
     try:

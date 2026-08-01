@@ -91,7 +91,7 @@ type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-vi
 type WorkspaceMenuGroup = "views" | "diagrams" | "api";
 type ElementSearchMode = "query" | "stereotype";
 type CompareMode = "branch" | "item";
-type SettingsSubtab = "users" | "groups" | "auth" | "api-keys" | "debug";
+type SettingsSubtab = "users" | "groups" | "servers" | "auth" | "api-keys" | "debug";
 
 const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api", "settings"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
@@ -102,43 +102,69 @@ const ITEM_DETAIL_VIEW_LABELS: Record<ItemDetailViewMode, string> = {
 };
 type SpecificationSectionId =
   | "properties"
-  | "native-properties"
-  | "stereotype-properties"
   | "documentation"
   | "navigation"
   | "usage-diagrams"
+  | "usage-in"
+  | "ports-interfaces"
+  | "element-properties"
+  | "attributes"
+  | "ports"
+  | "operations"
+  | "receptions"
+  | "behaviors"
   | "inner-elements"
   | "relations"
   | "tags"
   | "constraints"
   | "traceability"
-  | "allocations";
+  | "allocations"
+  | "template-parameters"
+  | "instances";
 
 const SPECIFICATION_SECTION_LABELS: Record<SpecificationSectionId, string> = {
   properties: "Properties",
-  "native-properties": "All Cameo Properties",
-  "stereotype-properties": "Stereotypes / Tags",
   documentation: "Documentation/Comments",
   navigation: "Navigation/Hyperlinks",
   "usage-diagrams": "Usage in Diagrams",
+  "usage-in": "Usage In",
+  "ports-interfaces": "Ports/Interfaces",
+  "element-properties": "Properties",
+  attributes: "Attributes",
+  ports: "Ports",
+  operations: "Operations",
+  receptions: "Receptions",
+  behaviors: "Behaviors",
   "inner-elements": "Inner Elements",
   relations: "Relations",
   tags: "Tags",
   constraints: "Constraints",
   traceability: "Traceability",
   allocations: "Allocations",
+  "template-parameters": "Template Parameters",
+  instances: "Instances",
 };
 
 const SPECIFICATION_CHILD_SECTIONS: SpecificationSectionId[] = [
-  "navigation",
   "documentation",
+  "navigation",
   "usage-diagrams",
-  "traceability",
+  "usage-in",
+  "constraints",
+  "ports-interfaces",
+  "element-properties",
+  "attributes",
+  "ports",
+  "operations",
+  "receptions",
+  "behaviors",
   "relations",
   "tags",
-  "constraints",
-  "inner-elements",
+  "traceability",
   "allocations",
+  "inner-elements",
+  "template-parameters",
+  "instances",
 ];
 
 function parseWorkspaceTab(value: string | null): WorkspaceTab {
@@ -349,7 +375,15 @@ function replaceNodeChildren(nodes: TreeNode[], targetId: string, children: Tree
 }
 
 function mergeTreeNodesPreservingLoadedChildren(baseNodes: TreeNode[], currentNodes: TreeNode[]): TreeNode[] {
-  const currentById = new Map(currentNodes.map((node) => [node.id, node]));
+  const collectNodesById = (nodes: TreeNode[], lookup = new Map<string, TreeNode>()): Map<string, TreeNode> => {
+    for (const node of nodes) {
+      lookup.set(node.id, node);
+      collectNodesById(node.children, lookup);
+    }
+    return lookup;
+  };
+  const baseById = collectNodesById(baseNodes);
+  const currentById = collectNodesById(currentNodes);
   const mergeNode = (baseNode: TreeNode): TreeNode => {
     const currentNode = currentById.get(baseNode.id);
     if (!currentNode) {
@@ -357,14 +391,14 @@ function mergeTreeNodesPreservingLoadedChildren(baseNodes: TreeNode[], currentNo
     }
     const hasLoadedChildren = currentNode.children.length > 0 || currentNode.metadata.children_loaded === true;
     const nextChildren = hasLoadedChildren
-      ? currentNode.children.map((child) => mergeNode(child))
+      ? currentNode.children.map((child) => mergeNode(baseById.get(child.id) ?? child))
       : baseNode.children.map((child) => mergeNode(child));
     return {
       ...baseNode,
       children: nextChildren,
       metadata: {
-        ...baseNode.metadata,
         ...currentNode.metadata,
+        ...baseNode.metadata,
       },
     };
   };
@@ -434,15 +468,68 @@ function isHiddenContainmentPackage(node: TreeNode): boolean {
   return nodeType === "package import" || nodeType === "element import" || metaclass === "package import" || metaclass === "element import";
 }
 
-function filterContainmentTree(nodes: TreeNode[], showHiddenPackages: boolean): TreeNode[] {
-  if (showHiddenPackages) {
-    return nodes;
+function isAuxiliaryResourceNode(node: TreeNode): boolean {
+  const label = normalizeContainmentKind(node.label);
+  const path = normalizeContainmentKind(node.path);
+  const nodeType = normalizeContainmentKind(node.node_type);
+  const metaclass = normalizeContainmentKind(node.metadata.metaclass);
+  const rawLabel = String(node.label ?? "").trim();
+  const rawPath = String(node.path ?? "").trim();
+  const combined = `${label} ${path} ${nodeType} ${metaclass}`;
+  if (isHiddenContainmentPackage(node)) {
+    return true;
   }
+  if (/\[[^\]]+\.mdzip\]/i.test(rawLabel) || /\[[^\]]+\.mdzip\]/i.test(rawPath)) {
+    return true;
+  }
+  return (
+    label === "author" ||
+    label.startsWith("author ") ||
+    label === "additional elements" ||
+    label === "derived properties" ||
+    label === "iso 80000" ||
+    label.startsWith("iso 80000 ") ||
+    label.startsWith("md customization ") ||
+    label === "uml standard profile" ||
+    label === "sysml" ||
+    label === "sysml profile" ||
+    label === "si valuetype library" ||
+    label === "sidefinitions" ||
+    label === "qudv" ||
+    combined.includes("auxiliary resource") ||
+    combined.includes("applied project") ||
+    combined.includes("resource usage") ||
+    combined.includes("used project")
+  );
+}
+
+function isAppliedStereotypeNode(node: TreeNode): boolean {
+  const label = normalizeContainmentKind(node.label);
+  const path = normalizeContainmentKind(node.path);
+  const nodeType = normalizeContainmentKind(node.node_type);
+  const metaclass = normalizeContainmentKind(node.metadata.metaclass);
+  const combined = `${label} ${path} ${nodeType} ${metaclass}`;
+  return (
+    combined.includes("stereotype") ||
+    combined.includes("tagged value") ||
+    combined.includes("profile application") ||
+    combined.includes("extension") ||
+    combined.includes("diagraminfo")
+  );
+}
+
+interface ContainmentTreeVisibility {
+  showAuxiliaryResources: boolean;
+  showAppliedStereotypes: boolean;
+}
+
+function filterContainmentTree(nodes: TreeNode[], visibility: ContainmentTreeVisibility): TreeNode[] {
   return nodes
-    .filter((node) => !isHiddenContainmentPackage(node))
+    .filter((node) => visibility.showAuxiliaryResources || !isAuxiliaryResourceNode(node))
+    .filter((node) => visibility.showAppliedStereotypes || !isAppliedStereotypeNode(node))
     .map((node) => ({
       ...node,
-      children: filterContainmentTree(node.children, showHiddenPackages),
+      children: filterContainmentTree(node.children, visibility),
     }));
 }
 
@@ -509,11 +596,11 @@ function humanReadableReference(value: string, lookup: Record<string, string>): 
 }
 
 function displayEntityName(name: string, id: string, itemType: string, lookup: Record<string, string>, path = ""): string {
-  const pathTail = finalPathSegment(path, lookup);
+  const pathTail = finalPathSegment(path, lookup).split("::").pop()?.trim() ?? "";
   if (pathTail && normalizeLookupKey(pathTail) !== normalizeLookupKey(id)) {
     return pathTail;
   }
-  const cleanedName = name.trim();
+  const cleanedName = (name.trim().split("::").pop() ?? "").trim();
   if (cleanedName && normalizeLookupKey(cleanedName) !== normalizeLookupKey(id)) {
     return cleanedName;
   }
@@ -614,6 +701,7 @@ interface InspectorRow {
 interface DataTableRow {
   key: string;
   cells: Array<string | ReactNode>;
+  targetIds?: Record<number, string>;
 }
 
 const SPECIFICATION_FIELD_HINTS = ["specification", "expression", "formula", "guard", "condition", "language", "body", "constraint"];
@@ -727,17 +815,25 @@ function payloadReferences(item: ItemDetails): Record<string, unknown> {
 
 const SPECIFICATION_SECTION_SOURCE_KEYS: Record<SpecificationSectionId, string[]> = {
   properties: ["properties"],
-  "native-properties": ["metamodel"],
-  "stereotype-properties": ["stereotypes"],
   documentation: ["documentation"],
   navigation: ["navigation"],
   "usage-diagrams": ["usageDiagrams", "usage_diagrams"],
+  "usage-in": ["usageIn", "usage_in"],
+  "ports-interfaces": ["portsInterfaces", "ports_interfaces"],
+  "element-properties": ["properties", "metamodel"],
+  attributes: ["attributes"],
+  ports: ["ports"],
+  operations: ["operations"],
+  receptions: ["receptions"],
+  behaviors: ["behaviors"],
   "inner-elements": ["innerElements", "inner_elements"],
   relations: ["relations"],
   tags: ["tags"],
   constraints: ["constraints"],
   traceability: ["traceability"],
   allocations: ["allocations"],
+  "template-parameters": ["templateParameters", "template_parameters"],
+  instances: ["instances"],
 };
 
 function payloadSpecSections(item: ItemDetails): Record<string, unknown> {
@@ -779,6 +875,26 @@ function nativeEntryDisplayValue(entry: Record<string, unknown>, lookup: Record<
   return humanReadableValue(hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue, lookup);
 }
 
+function firstReferencedElementId(value: unknown): string {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const id = firstReferencedElementId(entry);
+      if (id) {
+        return id;
+      }
+    }
+    return "";
+  }
+  if (value && typeof value === "object") {
+    const id = (value as Record<string, unknown>).id;
+    return typeof id === "string" && id.trim() ? id.trim() : "";
+  }
+  if (typeof value === "string" && isOpaqueIdentifier(value.trim())) {
+    return value.trim();
+  }
+  return "";
+}
+
 function nativeReferenceRowsForHints(
   item: ItemDetails,
   lookup: Record<string, string>,
@@ -795,14 +911,19 @@ function nativeReferenceRowsForHints(
       }
       return kind === "reference" && keyMatchesHints(entryName, hints);
     })
-    .map((entry, index) => ({
-      key: `native-reference-${String(entry.id ?? index)}`,
-      cells: [
-        String(entry.name ?? entry.id ?? options?.defaultType ?? "Reference"),
-        nativeEntryDisplayValue(entry, lookup) || "Not provided",
-        String(entry.valueType ?? entry.kind ?? options?.defaultType ?? ""),
-      ],
-    }));
+    .map((entry, index) => {
+      const value = hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue;
+      const targetId = firstReferencedElementId(value);
+      return {
+        key: `native-reference-${String(entry.id ?? index)}`,
+        targetIds: targetId ? { 1: targetId } : undefined,
+        cells: [
+          String(entry.name ?? entry.id ?? options?.defaultType ?? "Reference"),
+          nativeEntryDisplayValue(entry, lookup) || "Not provided",
+          String(entry.valueType ?? entry.kind ?? options?.defaultType ?? ""),
+        ],
+      };
+    });
 }
 
 function nativeStereotypeTagRows(item: ItemDetails, lookup: Record<string, string>): DataTableRow[] {
@@ -1372,6 +1493,34 @@ function overviewRows(item: ItemDetails, lookup: Record<string, string>): Inspec
   return mapToInspectorRows(fields, lookup);
 }
 
+function cameoPropertySpecificationRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
+  const metadata = item.metadata ?? {};
+  const sourcePayload = item.source_payload ?? {};
+  const metaclass = String(sourcePayload.metaclass ?? item.item_type ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  if (metaclass !== "property" && metaclass !== "port") {
+    return [];
+  }
+  const rows: InspectorRow[] = [];
+  const push = (key: string, label: string, value: unknown) => {
+    if (!hasMeaningfulValue(value)) {
+      return;
+    }
+    rows.push({
+      key,
+      label,
+      value: humanReadableValue(value, lookup),
+    });
+  };
+  push("cameo.signature", "Signature", metadata.cameo_signature);
+  push("cameo.name", "Name", metadata.cameo_name);
+  push("cameo.type", "Type", metadata.cameo_type || item.type_references[0]?.path || item.type_references[0]?.name);
+  push("cameo.multiplicity", "Multiplicity", metadata.multiplicity);
+  push("cameo.visibility", "Visibility", metadata.visibility);
+  push("cameo.owner", "Owner", item.owner ? itemReferenceDisplayName(item.owner, lookup) : "");
+  push("cameo.stereotype", "Applied Stereotypes", item.stereotypes);
+  return rows;
+}
+
 function specificationRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
   const structuredRows = payloadSpecSectionEntries(item, "properties").map((entry, index) => ({
     key: `spec.properties.${index}.${structuredEntryName(entry)}`,
@@ -1381,7 +1530,7 @@ function specificationRows(item: ItemDetails, lookup: Record<string, string>): I
   const sourcePayload = item.source_payload ?? {};
   const attributes = payloadAttributes(item);
   const references = payloadReferences(item);
-  const rows: InspectorRow[] = [...structuredRows];
+  const rows: InspectorRow[] = [...cameoPropertySpecificationRows(item, lookup), ...structuredRows];
 
   const pushRows = (source: Record<string, unknown>, sectionPrefix = "") => {
     for (const [key, value] of Object.entries(source)) {
@@ -1624,6 +1773,7 @@ function hintRowsToTableRows(rows: InspectorRow[]): DataTableRow[] {
 function referenceRowsToTableRows(references: ItemReference[], lookup: Record<string, string>, typeSelector?: (reference: ItemReference) => string): DataTableRow[] {
   return references.map((reference) => ({
     key: `${reference.relationship_type}:${reference.id}`,
+    targetIds: { 0: reference.id },
     cells: [
       itemReferenceDisplayName(reference, lookup),
       typeSelector?.(reference) ?? itemReferenceTypeLabel(reference),
@@ -1638,6 +1788,7 @@ function relationshipTableRows(item: ItemDetails, lookup: Record<string, string>
   if (item.owner) {
     rows.push({
       key: `owner:${item.owner.id}`,
+      targetIds: { 3: item.owner.id },
       cells: ["Owner", entityName, "Parent", itemReferenceDisplayName(item.owner, lookup)],
     });
   }
@@ -1645,6 +1796,7 @@ function relationshipTableRows(item: ItemDetails, lookup: Record<string, string>
   for (const reference of item.contained_elements) {
     rows.push({
       key: `contained:${reference.id}`,
+      targetIds: { 3: reference.id },
       cells: ["Owned Element", entityName, "Contains", itemReferenceDisplayName(reference, lookup)],
     });
   }
@@ -1652,6 +1804,7 @@ function relationshipTableRows(item: ItemDetails, lookup: Record<string, string>
   for (const reference of item.type_references) {
     rows.push({
       key: `typed:${reference.id}`,
+      targetIds: { 3: reference.id },
       cells: [humanizeFieldLabel(reference.relationship_type), entityName, "References", itemReferenceDisplayName(reference, lookup)],
     });
   }
@@ -1659,6 +1812,7 @@ function relationshipTableRows(item: ItemDetails, lookup: Record<string, string>
   for (const reference of item.related_items) {
     rows.push({
       key: `related:${reference.relationship_type}:${reference.id}`,
+      targetIds: { 3: reference.id },
       cells: [humanizeFieldLabel(reference.relationship_type), entityName, "Related", itemReferenceDisplayName(reference, lookup)],
     });
   }
@@ -1675,6 +1829,7 @@ function relationshipTableRows(item: ItemDetails, lookup: Record<string, string>
     }
     rows.push({
       key: `relationship:${index}`,
+      targetIds: typeof relationship.target === "string" ? { 3: relationship.target } : undefined,
       cells: [
         humanizeFieldLabel(String(relationship.type ?? `Relationship ${index + 1}`)),
         entityName,
@@ -1700,16 +1855,28 @@ function specificationSectionIntro(section: SpecificationSectionId, item: ItemDe
   switch (section) {
     case "properties":
       return `Review the published ${typeLabel} properties. Switch between Standard, Expert, and All to surface more fields.`;
-    case "native-properties":
-      return `Review every Cameo metamodel feature for this ${typeLabel}, including unset defaults, derived values, multiplicity, type, and editability metadata.`;
-    case "stereotype-properties":
-      return `Review applied stereotype properties in Cameo order, including inherited, default, explicit, and calculated tag values.`;
     case "documentation":
       return `Review documentation and comments published for the selected ${typeLabel}.`;
     case "navigation":
       return `Review navigation targets and hyperlinks published for the selected ${typeLabel}.`;
     case "usage-diagrams":
       return `Review published diagram usage references for the selected ${typeLabel}.`;
+    case "usage-in":
+      return `Review where the selected ${typeLabel} is used as a type, member, classifier, or referenced element.`;
+    case "ports-interfaces":
+      return `Review ports, interfaces, provided/required ends, and interface-related references for the selected ${typeLabel}.`;
+    case "element-properties":
+      return `Review property and member features for the selected ${typeLabel}.`;
+    case "attributes":
+      return `Review attributes owned by or published on the selected ${typeLabel}.`;
+    case "ports":
+      return `Review ports owned by or published on the selected ${typeLabel}.`;
+    case "operations":
+      return `Review operations owned by or published on the selected ${typeLabel}.`;
+    case "receptions":
+      return `Review receptions owned by or published on the selected ${typeLabel}.`;
+    case "behaviors":
+      return `Review behaviors owned by or published on the selected ${typeLabel}.`;
     case "inner-elements":
       return `Review the contained elements published under the selected ${typeLabel}.`;
     case "relations":
@@ -1722,6 +1889,10 @@ function specificationSectionIntro(section: SpecificationSectionId, item: ItemDe
       return `Review traceability references published for the selected ${typeLabel}.`;
     case "allocations":
       return `Review allocation references published for the selected ${typeLabel}.`;
+    case "template-parameters":
+      return `Review template parameters published for the selected ${typeLabel}.`;
+    case "instances":
+      return `Review instances and slots published for the selected ${typeLabel}.`;
     default:
       return "";
   }
@@ -1963,7 +2134,7 @@ export default function WorkspacePage() {
   const applyingSearchParamsRef = useRef(false);
   const queryClient = useQueryClient();
   const { session, refreshSession, setSessionSnapshot } = useSession();
-  const currentPreferences: SessionPreferences = session?.preferences ?? {
+  const defaultPreferences: SessionPreferences = {
     theme_mode: "system",
     font_scale: 1,
     request_timeout_seconds: 30,
@@ -1971,11 +2142,22 @@ export default function WorkspacePage() {
     presentation_font_scale: 1.2,
     compact_ui: true,
     show_hidden_packages_in_tree: false,
+    show_auxiliary_resources_in_tree: false,
+    show_applied_stereotypes_in_tree: false,
+    show_full_types_in_tree: true,
     item_detail_view_mode: "standard",
+  };
+  const currentPreferences: SessionPreferences = {
+    ...defaultPreferences,
+    ...(session?.preferences ?? {}),
   };
   const csrfToken = session?.csrf_token ?? "";
   const capabilities = session?.capabilities?.capabilities ?? {};
   const canEdit = capabilities.edit?.state === "ready";
+  const isTwcAuthenticated = session?.user?.auth_source === "twc";
+  const hasVerifiedTwcPermissionConnection = Boolean(
+    isTwcAuthenticated && capabilities.user_access?.state === "ready" && !session?.permission_snapshot_warning,
+  );
   const isAdmin = Boolean(session?.can_manage_server_presets);
   const canManageGroups = isAdmin || Boolean(session?.can_manage_groups);
   const canOpenSettings = Boolean(session?.user?.preferred_username);
@@ -2082,6 +2264,7 @@ export default function WorkspacePage() {
   const [debugBranchId, setDebugBranchId] = useState("trunk");
   const [debugDumpDigest, setDebugDumpDigest] = useState<Record<string, unknown> | null>(null);
   const [newServerPreset, setNewServerPreset] = useState<ServerProfileInput>({
+    id: "",
     name: "",
     base_url: "",
     version: "2024x",
@@ -2637,6 +2820,19 @@ export default function WorkspacePage() {
     refetchOnWindowFocus: false,
   });
   const branchAccessManifestStatus: BranchAccessManifestStatus | null = branchAccessManifestQuery.data ?? null;
+  const hasTcwProjectAccessAdmin = Boolean(branchAccessManifestStatus?.current_user_access_admin_access);
+  const canAssignProjectAccess = Boolean(isAdmin || hasTcwProjectAccessAdmin);
+  const canRefreshAccessMap = Boolean(hasVerifiedTwcPermissionConnection && hasTcwProjectAccessAdmin);
+  useEffect(() => {
+    if (!canAssignProjectAccess || !selectedProjectId || !selectedBranchId) {
+      return;
+    }
+    setWorkbenchAccessAssignment((current) => ({
+      ...current,
+      project_id: selectedProjectId,
+      branch_id: selectedBranchId,
+    }));
+  }, [canAssignProjectAccess, selectedBranchId, selectedProjectId]);
   const contractManifest = contractQuery.data ?? null;
   const workbenchBaseUrlExample = typeof window !== "undefined" ? window.location.origin : "https://your-workbench-host";
   const developerApiServerId = session?.server?.id ?? "<server_id>";
@@ -2907,7 +3103,7 @@ export default function WorkspacePage() {
   ]);
 
   const itemQuery = useQuery({
-    queryKey: ["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId, selectedTreeModelId],
+    queryKey: ["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId],
     queryFn: () =>
       api.getItem(
         selectedItemId,
@@ -2915,7 +3111,7 @@ export default function WorkspacePage() {
         selectedBranchId || undefined,
         selectedProject?.workspace_id || undefined,
         false,
-        selectedTreeModelId || undefined,
+        undefined,
       ),
     enabled: Boolean(selectedItemId),
     staleTime: cacheTimeMs,
@@ -3067,10 +3263,17 @@ export default function WorkspacePage() {
     .split(" / ")
     .map((segment) => segment.trim())
     .filter(Boolean);
-  const showHiddenPackagesInTree = Boolean(session?.preferences.show_hidden_packages_in_tree);
+  const showAuxiliaryResourcesInTree = Boolean(
+    currentPreferences.show_hidden_packages_in_tree || currentPreferences.show_auxiliary_resources_in_tree,
+  );
+  const showAppliedStereotypesInTree = Boolean(currentPreferences.show_applied_stereotypes_in_tree);
   const visibleTreeNodes = useMemo(
-    () => filterContainmentTree(treeNodes, showHiddenPackagesInTree),
-    [showHiddenPackagesInTree, treeNodes],
+    () =>
+      filterContainmentTree(treeNodes, {
+        showAuxiliaryResources: showAuxiliaryResourcesInTree,
+        showAppliedStereotypes: showAppliedStereotypesInTree,
+      }),
+    [showAppliedStereotypesInTree, showAuxiliaryResourcesInTree, treeNodes],
   );
   const selectedWorkbenchAgentModel = useMemo<OpenWebUIModelEntry | null>(
     () => workbenchAgentModels.find((entry) => entry.id === agentSelectedModelId) ?? null,
@@ -3393,11 +3596,11 @@ export default function WorkspacePage() {
         selectedBranchId || undefined,
         selectedProject?.workspace_id || undefined,
         true,
-        selectedTreeModelId || undefined,
+        undefined,
       );
     },
     onSuccess: (item) => {
-      queryClient.setQueryData(["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId, selectedTreeModelId], item);
+      queryClient.setQueryData(["workspace-item", ...sessionCacheKey, selectedItemId, selectedProjectId, selectedBranchId], item);
       setItemDraft(item);
       setNotice({ severity: "success", message: "Stored model item reloaded and permissions rechecked." });
     },
@@ -3646,6 +3849,7 @@ export default function WorkspacePage() {
     mutationFn: (payload: ServerProfileInput) => api.createServer(payload, csrfToken),
     onSuccess: async () => {
       setNewServerPreset({
+        id: "",
         name: "",
         base_url: "",
         version: "2024x",
@@ -3658,7 +3862,7 @@ export default function WorkspacePage() {
         queryClient.invalidateQueries({ queryKey: ["managed-servers", ...sessionCacheKey] }),
         queryClient.invalidateQueries({ queryKey: ["workspace-projects", ...sessionCacheKey] }),
       ]);
-      setNotice({ severity: "success", message: "TWC server preset created in Workbench Settings." });
+      setNotice({ severity: "success", message: "Workbench server profile created. Use its server key as the Cameo plugin metadata.serverId." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -3956,11 +4160,31 @@ export default function WorkspacePage() {
       setTab("models");
       return;
     }
-    const rawSegments = item.path
-      .split("/")
-      .map((segment) => segment.trim())
-      .filter(Boolean);
-    const pathIds = [...new Set([...rawSegments, item.id])];
+    const ownerChainIds: string[] = [];
+    const visitedOwnerIds = new Set<string>([item.id]);
+    let currentOwnerId = item.owner?.id || (typeof item.source_payload.owner_id === "string" ? item.source_payload.owner_id : "");
+    while (currentOwnerId && !visitedOwnerIds.has(currentOwnerId)) {
+      visitedOwnerIds.add(currentOwnerId);
+      ownerChainIds.unshift(currentOwnerId);
+      const loadedOwner = findNodeById(treeNodesRef.current, currentOwnerId);
+      if (loadedOwner) {
+        break;
+      }
+      try {
+        const ownerDetails = await api.getItem(
+          currentOwnerId,
+          selectedProjectId,
+          selectedBranchId,
+          selectedProject?.workspace_id || undefined,
+          false,
+          typeof item.source_payload.model_id === "string" ? item.source_payload.model_id : undefined,
+        );
+        currentOwnerId = ownerDetails.owner?.id || (typeof ownerDetails.source_payload.owner_id === "string" ? ownerDetails.source_payload.owner_id : "");
+      } catch {
+        break;
+      }
+    }
+    const pathIds = [...new Set([...ownerChainIds, item.id])];
     if (!pathIds.length) {
       return;
     }
@@ -3986,6 +4210,31 @@ export default function WorkspacePage() {
     setTab("models");
     if (!findNodeById(treeNodesRef.current, item.id)) {
       setNotice({ severity: "warning", message: "Workbench selected the item, but its containment parents are not loaded in the current tree yet. Expand its parent package or search for the item to reveal it." });
+    }
+  };
+
+  const navigateToSpecificationElement = async (elementId: string, modelId?: string) => {
+    const cleanElementId = elementId.trim();
+    if (!cleanElementId || !selectedProjectId || !selectedBranchId) {
+      return;
+    }
+    setSelectedItemId(cleanElementId);
+    setTab("models");
+    try {
+      const targetDetails = await api.getItem(
+        cleanElementId,
+        selectedProjectId,
+        selectedBranchId,
+        selectedProject?.workspace_id || undefined,
+        false,
+        modelId,
+      );
+      await revealElementPathInTree(targetDetails);
+    } catch {
+      setNotice({
+        severity: "warning",
+        message: "Workbench selected the referenced item, but could not fully reveal it in the current containment tree yet.",
+      });
     }
   };
 
@@ -4259,17 +4508,108 @@ export default function WorkspacePage() {
               alignItems: "start",
             }}
           >
-            {row.cells.map((cell, index) => (
-              <Typography key={`${row.key}-${index}`} variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                {cell || "Not provided"}
-              </Typography>
-            ))}
+            {row.cells.map((cell, index) => {
+              const targetId = row.targetIds?.[index];
+              if (targetId && (typeof cell === "string" || typeof cell === "number")) {
+                return (
+                  <Button
+                    key={`${row.key}-${index}`}
+                    size="small"
+                    variant="text"
+                    sx={{ justifyContent: "flex-start", minWidth: 0, px: 0.5, py: 0, textTransform: "none", textAlign: "left" }}
+                    onClick={() => void navigateToSpecificationElement(targetId)}
+                  >
+                    {cell || "Not provided"}
+                  </Button>
+                );
+              }
+              return typeof cell === "string" || typeof cell === "number" ? (
+                <Typography key={`${row.key}-${index}`} variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {cell || "Not provided"}
+                </Typography>
+              ) : (
+                <Box key={`${row.key}-${index}`} sx={{ minWidth: 0, "& .MuiButton-root": { maxWidth: "100%" } }}>
+                  {cell || "Not provided"}
+                </Box>
+              );
+            })}
           </Box>
         ))}
       </Paper>
     ) : (
       <Typography color="text.secondary">{emptyText}</Typography>
     );
+
+  const renderSpecificationValue = (value: unknown): ReactNode => {
+    if (!hasMeaningfulValue(value)) {
+      return "<unset>";
+    }
+    if (Array.isArray(value)) {
+      return (
+        <Stack spacing={0.5} alignItems="flex-start">
+          {value.map((entry, index) => (
+            <Box key={`spec-value-${index}`} sx={{ minWidth: 0 }}>
+              {renderSpecificationValue(entry)}
+            </Box>
+          ))}
+        </Stack>
+      );
+    }
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      const id = typeof record.id === "string" ? record.id.trim() : "";
+      const modelId = typeof record.model_id === "string"
+        ? record.model_id.trim()
+        : typeof record.modelId === "string"
+          ? record.modelId.trim()
+          : undefined;
+      const display = [
+        record.qualifiedName,
+        record.qualified_name,
+        record.human_name,
+        record.humanName,
+        record.name,
+        record.label,
+        record.title,
+        id,
+      ]
+        .map((candidate) => (typeof candidate === "string" ? candidate.trim() : ""))
+        .find(Boolean);
+      if (id) {
+        return (
+          <Button
+            size="small"
+            variant="text"
+            sx={{ justifyContent: "flex-start", minWidth: 0, px: 0.5, py: 0, textTransform: "none", textAlign: "left" }}
+            onClick={() => void navigateToSpecificationElement(id, modelId)}
+          >
+            {humanReadableReference(display || id, referenceNameById)}
+          </Button>
+        );
+      }
+      return (
+        <Typography component="span" variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+          {humanReadableValue(value, referenceNameById)}
+        </Typography>
+      );
+    }
+    if (typeof value === "string") {
+      const id = value.trim();
+      if (id && isOpaqueIdentifier(id)) {
+        return (
+          <Button
+            size="small"
+            variant="text"
+            sx={{ justifyContent: "flex-start", minWidth: 0, px: 0.5, py: 0, textTransform: "none", textAlign: "left" }}
+            onClick={() => void navigateToSpecificationElement(id)}
+          >
+            {humanReadableReference(id, referenceNameById)}
+          </Button>
+        );
+      }
+    }
+    return humanReadableValue(value, referenceNameById);
+  };
 
   const renderTextBlocks = (blocks: string[], emptyText: string) =>
     blocks.length ? (
@@ -4304,25 +4644,42 @@ export default function WorkspacePage() {
   ) => {
     const sourcePayload = item.source_payload ?? {};
     const propertiesRows = specificationWindowRows(item, referenceNameById, itemDetailViewMode);
-    const nativePropertyRows: DataTableRow[] = payloadNativeMetamodelEntries(item).map((entry, index) => ({
-      key: `native-property-${String(entry.id ?? index)}`,
-      cells: [
-        String(entry.name ?? entry.id ?? "Property"),
-        humanReadableValue(hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue, referenceNameById),
-        String(entry.valueType ?? entry.kind ?? ""),
-        nativeSpecificationState(entry),
-      ],
-    }));
+    const nativeMetamodelEntries = payloadNativeMetamodelEntries(item);
+    const nativePropertyRows: DataTableRow[] = nativeMetamodelEntries.map((entry, index) => {
+      const value = hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue;
+      const targetId = firstReferencedElementId(value);
+      return {
+        key: `native-property-${String(entry.id ?? index)}`,
+        targetIds: targetId ? { 1: targetId } : undefined,
+        cells: [
+          String(entry.name ?? entry.id ?? "Property"),
+          hasMeaningfulValue(entry.value)
+            ? renderSpecificationValue(entry.value)
+            : hasMeaningfulValue(entry.defaultValue)
+              ? renderSpecificationValue(entry.defaultValue)
+              : "<unset>",
+          String(entry.valueType ?? entry.kind ?? ""),
+          nativeSpecificationState(entry),
+        ],
+      };
+    });
     const nativeStereotypeRows: DataTableRow[] = payloadNativeStereotypeSections(item).flatMap((section, sectionIndex) => {
       const entries = Array.isArray(section.entries)
         ? section.entries.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
         : [];
       return entries.map((entry, entryIndex) => ({
         key: `native-stereotype-${String(section.id ?? sectionIndex)}-${String(entry.id ?? entryIndex)}`,
+        targetIds: firstReferencedElementId(hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue)
+          ? { 2: firstReferencedElementId(hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue) }
+          : undefined,
         cells: [
           String(section.name ?? entry.stereotypeName ?? "Stereotype"),
           String(entry.name ?? entry.id ?? "Property"),
-          humanReadableValue(hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue, referenceNameById),
+          hasMeaningfulValue(entry.value)
+            ? renderSpecificationValue(entry.value)
+            : hasMeaningfulValue(entry.defaultValue)
+              ? renderSpecificationValue(entry.defaultValue)
+              : "<unset>",
           String(entry.valueType ?? ""),
           nativeSpecificationState(entry),
         ],
@@ -4382,17 +4739,20 @@ export default function WorkspacePage() {
     });
     const nativeNavigationRows = nativeReferenceRowsForHints(item, referenceNameById, NAVIGATION_FIELD_HINTS, { defaultType: "Navigation" }).map((row) => ({
       key: `navigation-${row.key}`,
+      targetIds: row.targetIds?.[1] ? { 2: row.targetIds[1] } : undefined,
       cells: [row.cells[0], row.cells[2], row.cells[1]],
     }));
     const diagramUsageReferences = collectReferenceMatches(item, ["diagram", "symbol", "usage"]);
     const nativeUsageRows = nativeReferenceRowsForHints(item, referenceNameById, ["diagram", "symbol", "usage"], { defaultType: "Diagram" }).map((row) => ({
       key: `usage-${row.key}`,
+      targetIds: row.targetIds?.[1] ? { 0: row.targetIds[1] } : undefined,
       cells: [row.cells[1], row.cells[0]],
     }));
     const nativeInnerRows = nativeReferenceRowsForHints(item, referenceNameById, ["owned", "inner", "diagramElement", "element"], {
       defaultType: "Element",
     }).map((row) => ({
       key: `inner-${row.key}`,
+      targetIds: row.targetIds?.[1] ? { 0: row.targetIds[1] } : undefined,
       cells: [row.cells[1], row.cells[0]],
     }));
     const navigationTableRows = hintRowsToTableRows(navigationRows);
@@ -4408,6 +4768,65 @@ export default function WorkspacePage() {
         return true;
       });
     };
+    const nativeRowsForHints = (
+      sectionKey: string,
+      hints: string[],
+      options?: { includeUnset?: boolean; onlyReferences?: boolean },
+    ): DataTableRow[] =>
+      nativeMetamodelEntries
+        .filter((entry) => {
+          const entryName = String(entry.name ?? entry.id ?? "");
+          const value = hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue;
+          if (!keyMatchesHints(entryName, hints)) {
+            return false;
+          }
+          if (options?.onlyReferences && String(entry.kind ?? "").toLowerCase() !== "reference") {
+            return false;
+          }
+          return options?.includeUnset || hasMeaningfulValue(value);
+        })
+        .map((entry, index) => {
+          const value = hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue;
+          const targetId = firstReferencedElementId(value);
+          return {
+            key: `${sectionKey}-${String(entry.id ?? index)}`,
+            targetIds: targetId ? { 1: targetId } : undefined,
+            cells: [
+              String(entry.name ?? entry.id ?? "Property"),
+              hasMeaningfulValue(value) ? renderSpecificationValue(value) : "<unset>",
+              String(entry.valueType ?? entry.kind ?? ""),
+              nativeSpecificationState(entry),
+            ],
+          };
+        });
+    const nativeSectionTable = (rows: DataTableRow[], emptyText: string) =>
+      renderDataTable(["Property", "Value", "Type", "State"], rows, emptyText, {
+        columnTemplate: {
+          xs: "minmax(0, 1fr)",
+          sm: "minmax(180px, 0.8fr) minmax(0, 1.4fr) minmax(130px, 0.55fr) minmax(150px, 0.65fr)",
+        },
+      });
+    const usageInRows = combineDataRows(
+      nativeRowsForHints("usage-in", ["used", "usage", "typedElement", "classifier", "member", "use"], { onlyReferences: true }),
+      referenceRowsToTableRows(collectReferenceMatches(item, ["used", "usage", "typed", "classifier", "member"]), referenceNameById).map((row) => ({
+        key: `usage-in-${row.key}`,
+        targetIds: row.targetIds?.[0] ? { 1: row.targetIds[0] } : undefined,
+        cells: [row.cells[1] ?? "Reference", row.cells[0] ?? "Referenced item", "Reference", "set"],
+      })),
+    );
+    const portsInterfaceRows = nativeRowsForHints("ports-interfaces", ["port", "interface", "provided", "required", "connector"], {
+      includeUnset: itemDetailViewMode === "all",
+    });
+    const elementPropertyRows = nativeRowsForHints("element-properties", ["property", "ownedAttribute", "attribute", "part", "role", "member"], {
+      includeUnset: itemDetailViewMode === "all",
+    });
+    const attributeRows = nativeRowsForHints("attributes", ["attribute", "ownedAttribute"], { includeUnset: itemDetailViewMode === "all" });
+    const portRows = nativeRowsForHints("ports", ["port"], { includeUnset: itemDetailViewMode === "all" });
+    const operationRows = nativeRowsForHints("operations", ["operation"], { includeUnset: itemDetailViewMode === "all" });
+    const receptionRows = nativeRowsForHints("receptions", ["reception"], { includeUnset: itemDetailViewMode === "all" });
+    const behaviorRows = nativeRowsForHints("behaviors", ["behavior", "activity", "stateMachine", "interaction"], { includeUnset: itemDetailViewMode === "all" });
+    const templateParameterRows = nativeRowsForHints("template-parameters", ["template", "parameter"], { includeUnset: itemDetailViewMode === "all" });
+    const instanceRows = nativeRowsForHints("instances", ["instance", "slot"], { includeUnset: itemDetailViewMode === "all" });
     const usageDiagramRows = combineDataRows(
       structuredUsageRows,
       referenceRowsToTableRows(diagramUsageReferences, referenceNameById),
@@ -4422,6 +4841,7 @@ export default function WorkspacePage() {
       defaultType: "Reference",
     }).map((row) => ({
       key: `relation-${row.key}`,
+      targetIds: row.targetIds?.[1] ? { 3: row.targetIds[1] } : undefined,
       cells: [row.cells[0], displayEntityName(item.name, item.id, item.item_type, referenceNameById, item.path), "Related", row.cells[1]],
     }));
     const combinedRelationRows = combineDataRows(structuredRelationRows, relationRows, nativeRelationRows);
@@ -4453,6 +4873,7 @@ export default function WorkspacePage() {
     const traceabilityReferences = collectReferenceMatches(item, TRACEABILITY_FIELD_HINTS);
     const nativeTraceabilityRows = nativeReferenceRowsForHints(item, referenceNameById, TRACEABILITY_FIELD_HINTS, { includeUnset: true, defaultType: "Traceability" }).map((row) => ({
       key: `trace-${row.key}`,
+      targetIds: row.targetIds?.[1] ? { 1: row.targetIds[1] } : undefined,
       cells: [row.cells[0], row.cells[1]],
     }));
     const traceabilityTableRows = [
@@ -4468,6 +4889,7 @@ export default function WorkspacePage() {
     const allocationReferences = collectReferenceMatches(item, ALLOCATION_FIELD_HINTS);
     const nativeAllocationRows = nativeReferenceRowsForHints(item, referenceNameById, ALLOCATION_FIELD_HINTS, { includeUnset: true, defaultType: "Allocation" }).map((row) => ({
       key: `allocation-${row.key}`,
+      targetIds: row.targetIds?.[1] ? { 1: row.targetIds[1] } : undefined,
       cells: [row.cells[0], row.cells[1]],
     }));
     const allocationTableRows = [
@@ -4511,31 +4933,39 @@ export default function WorkspacePage() {
                 </Paper>
               ) : null}
               {renderSpecificationTable(propertiesRows, "No published properties were returned for this item.")}
+              {itemDetailViewMode === "all" && nativePropertyRows.length ? (
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2">All Cameo Properties</Typography>
+                  {renderDataTable(
+                    ["Property", "Value", "Type", "State"],
+                    nativePropertyRows,
+                    "No native Cameo metamodel properties were published for this item.",
+                    {
+                      columnTemplate: {
+                        xs: "minmax(0, 1fr)",
+                        sm: "minmax(180px, 0.8fr) minmax(0, 1.4fr) minmax(130px, 0.55fr) minmax(150px, 0.65fr)",
+                      },
+                    },
+                  )}
+                </Stack>
+              ) : null}
+              {itemDetailViewMode === "all" && nativeStereotypeRows.length ? (
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2">Stereotype Properties</Typography>
+                  {renderDataTable(
+                    ["Stereotype", "Property", "Value", "Type", "State"],
+                    nativeStereotypeRows,
+                    "No applied stereotype properties were published for this item.",
+                    {
+                      columnTemplate: {
+                        xs: "minmax(0, 1fr)",
+                        sm: "minmax(140px, 0.65fr) minmax(160px, 0.75fr) minmax(0, 1.3fr) minmax(120px, 0.55fr) minmax(140px, 0.65fr)",
+                      },
+                    },
+                  )}
+                </Stack>
+              ) : null}
             </Stack>
-          );
-        case "native-properties":
-          return renderDataTable(
-            ["Property", "Value", "Type", "State"],
-            nativePropertyRows,
-            "This snapshot predates the native Cameo specification schema. Publish a new plugin snapshot to populate every metamodel property.",
-            {
-              columnTemplate: {
-                xs: "minmax(0, 1fr)",
-                sm: "minmax(180px, 0.8fr) minmax(0, 1.4fr) minmax(130px, 0.55fr) minmax(150px, 0.65fr)",
-              },
-            },
-          );
-        case "stereotype-properties":
-          return renderDataTable(
-            ["Stereotype", "Property", "Value", "Type", "State"],
-            nativeStereotypeRows,
-            "No applied stereotype properties were published. Republish with the updated Cameo plugin to include inherited, default, and calculated tag values.",
-            {
-              columnTemplate: {
-                xs: "minmax(0, 1fr)",
-                sm: "minmax(140px, 0.65fr) minmax(160px, 0.75fr) minmax(0, 1.3fr) minmax(120px, 0.55fr) minmax(140px, 0.65fr)",
-              },
-            },
           );
         case "documentation": {
           const hasDocumentation = documentationSections.documentation.length > 0;
@@ -4578,6 +5008,22 @@ export default function WorkspacePage() {
                 },
               })
             : renderReferenceTable(diagramUsageReferences, "No diagram usage references were published for this item.");
+        case "usage-in":
+          return nativeSectionTable(usageInRows, "No usage-in references were published for this item.");
+        case "ports-interfaces":
+          return nativeSectionTable(portsInterfaceRows, "No ports or interface properties were published for this item.");
+        case "element-properties":
+          return nativeSectionTable(elementPropertyRows.length ? elementPropertyRows : nativePropertyRows, "No properties were published for this item.");
+        case "attributes":
+          return nativeSectionTable(attributeRows, "No attributes were published for this item.");
+        case "ports":
+          return nativeSectionTable(portRows, "No ports were published for this item.");
+        case "operations":
+          return nativeSectionTable(operationRows, "No operations were published for this item.");
+        case "receptions":
+          return nativeSectionTable(receptionRows, "No receptions were published for this item.");
+        case "behaviors":
+          return nativeSectionTable(behaviorRows, "No behaviors were published for this item.");
         case "inner-elements":
           return innerElementRows.length
             ? renderDataTable(["Name", "Type"], innerElementRows, "No contained elements were published for this item.", {
@@ -4627,6 +5073,10 @@ export default function WorkspacePage() {
               sm: "minmax(180px, 0.8fr) minmax(0, 1.2fr)",
             },
           });
+        case "template-parameters":
+          return nativeSectionTable(templateParameterRows, "No template parameters were published for this item.");
+        case "instances":
+          return nativeSectionTable(instanceRows, "No instances were published for this item.");
         default:
           return null;
       }
@@ -5001,20 +5451,21 @@ export default function WorkspacePage() {
           >
             Reload Stored Project
           </Button>
-          <Button
-            variant="outlined"
-            startIcon={<RefreshRoundedIcon />}
-            onClick={() => refreshBranchAccessManifestMutation.mutate()}
-            disabled={
-              !csrfToken
-              || !selectedProjectId
-              || !selectedBranchId
-              || !branchAccessManifestStatus?.current_user_access_admin_access
-              || refreshBranchAccessManifestMutation.isPending
-            }
-          >
-            Refresh Access Map
-          </Button>
+          {canRefreshAccessMap ? (
+            <Button
+              variant="outlined"
+              startIcon={<RefreshRoundedIcon />}
+              onClick={() => refreshBranchAccessManifestMutation.mutate()}
+              disabled={
+                !csrfToken
+                || !selectedProjectId
+                || !selectedBranchId
+                || refreshBranchAccessManifestMutation.isPending
+              }
+            >
+              Refresh Access Map
+            </Button>
+          ) : null}
         </Stack>
       </Stack>
       {!selectedProject ? (
@@ -5099,6 +5550,57 @@ export default function WorkspacePage() {
                   <Typography variant="body2" color="text.secondary">
                     Browse the published branch containment just like Cameo, then inspect the selected node in the specification window on the right.
                   </Typography>
+                  <Stack spacing={0.25} sx={{ pt: 0.75 }}>
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={showAuxiliaryResourcesInTree}
+                          disabled={!csrfToken || settingsMutation.isPending}
+                          onChange={(event) =>
+                            settingsMutation.mutate({
+                              ...currentPreferences,
+                              show_hidden_packages_in_tree: event.target.checked,
+                              show_auxiliary_resources_in_tree: event.target.checked,
+                            })
+                          }
+                        />
+                      }
+                      label="Show Auxiliary Resources"
+                    />
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={showAppliedStereotypesInTree}
+                          disabled={!csrfToken || settingsMutation.isPending}
+                          onChange={(event) =>
+                            settingsMutation.mutate({
+                              ...currentPreferences,
+                              show_applied_stereotypes_in_tree: event.target.checked,
+                            })
+                          }
+                        />
+                      }
+                      label="Show Applied Stereotypes"
+                    />
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={Boolean(currentPreferences.show_full_types_in_tree)}
+                          disabled={!csrfToken || settingsMutation.isPending}
+                          onChange={(event) =>
+                            settingsMutation.mutate({
+                              ...currentPreferences,
+                              show_full_types_in_tree: event.target.checked,
+                            })
+                          }
+                        />
+                      }
+                      label="Show Full Types"
+                    />
+                  </Stack>
                 </Stack>
               </Paper>
               <Box sx={{ minHeight: 0, flex: 1, overflow: "auto", pr: 0.5 }}>
@@ -5111,6 +5613,7 @@ export default function WorkspacePage() {
                   loadingIds={loadingTreeNodeIds}
                   expandedIds={expandedTreeNodeIds}
                   onExpandedChange={setExpandedTreeNodeIds}
+                  showFullTypes={Boolean(currentPreferences.show_full_types_in_tree)}
                 />
               </Box>
             </Stack>
@@ -5862,9 +6365,9 @@ export default function WorkspacePage() {
         <Stack spacing={2}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
             <Box>
-              <Typography variant="h5">TWC Server Presets</Typography>
+              <Typography variant="h5">Workbench Servers</Typography>
               <Typography variant="body2" color="text.secondary">
-                Manage the Teamwork Cloud servers from Workbench Settings. <code>TWC_PRESET_SERVERS</code> is now only an optional seed path, not the normal admin workflow.
+                Add every Teamwork Cloud / Workbench target admins want users to sign into or receive plugin snapshots from. The server key is the exact value the Cameo plugin uses as <code>metadata.serverId</code>.
               </Typography>
             </Box>
             <Button
@@ -5879,8 +6382,17 @@ export default function WorkspacePage() {
           {managedServersQuery.error ? <Alert severity="error">{errorMessage(managedServersQuery.error)}</Alert> : null}
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.5}>
-              <Typography variant="subtitle1">Add TWC server</Typography>
+              <Typography variant="subtitle1">Add server</Typography>
               <Grid container spacing={1.5}>
+                <Grid item xs={12} md={2}>
+                  <TextField
+                    label="Server key"
+                    value={newServerPreset.id ?? ""}
+                    onChange={(event) => setNewServerPreset((current) => ({ ...current, id: event.target.value.trim() }))}
+                    helperText="Example: localhost, prod-2024x"
+                    fullWidth
+                  />
+                </Grid>
                 <Grid item xs={12} md={3}>
                   <TextField
                     label="Name"
@@ -5889,7 +6401,7 @@ export default function WorkspacePage() {
                     fullWidth
                   />
                 </Grid>
-                <Grid item xs={12} md={4}>
+                <Grid item xs={12} md={3}>
                   <TextField
                     label="Base URL"
                     value={newServerPreset.base_url}
@@ -5919,7 +6431,7 @@ export default function WorkspacePage() {
                     fullWidth
                   />
                 </Grid>
-                <Grid item xs={12} md={1}>
+                <Grid item xs={12} md={12}>
                   <Stack>
                     <FormControlLabel
                       control={
@@ -5944,10 +6456,10 @@ export default function WorkspacePage() {
               </Grid>
               <Button
                 variant="contained"
-                disabled={!csrfToken || !newServerPreset.name.trim() || !newServerPreset.base_url.trim() || createServerMutation.isPending}
-                onClick={() => createServerMutation.mutate({ ...newServerPreset, display_order: servers.length })}
+                disabled={!csrfToken || !(newServerPreset.id ?? "").trim() || !newServerPreset.name.trim() || !newServerPreset.base_url.trim() || createServerMutation.isPending}
+                onClick={() => createServerMutation.mutate({ ...newServerPreset, id: (newServerPreset.id ?? "").trim(), display_order: servers.length })}
               >
-                Add Server Preset
+                Add Server
               </Button>
             </Stack>
           </Paper>
@@ -5969,10 +6481,41 @@ export default function WorkspacePage() {
                   <Paper key={server.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
                     <Stack spacing={1.5}>
                       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                        <Chip label={server.id} variant="outlined" />
+                        <Chip label={`server key: ${server.id}`} variant="outlined" />
                         <Chip label={draft.enabled ? "enabled" : "disabled"} color={draft.enabled ? "success" : "warning"} variant="outlined" />
                         <Chip label={draft.verify_tls ? "TLS verified" : "TLS relaxed"} variant="outlined" />
                       </Stack>
+                      <Grid container spacing={1.5}>
+                        <Grid item xs={12} md={5}>
+                          <TextField
+                            label="Cameo plugin server key"
+                            value={server.id}
+                            fullWidth
+                            InputProps={{ readOnly: true }}
+                            helperText="Copy this into the Cameo plugin as metadata.serverId."
+                          />
+                        </Grid>
+                        <Grid item xs={12} md={5}>
+                          <TextField
+                            label="Plugin config line"
+                            value={`metadata.serverId=${server.id}`}
+                            fullWidth
+                            InputProps={{ readOnly: true }}
+                          />
+                        </Grid>
+                        <Grid item xs={12} md={2}>
+                          <Button
+                            variant="outlined"
+                            fullWidth
+                            onClick={() => {
+                              void navigator.clipboard?.writeText(`metadata.serverId=${server.id}`);
+                              setNotice({ severity: "success", message: `Copied metadata.serverId for ${server.id}.` });
+                            }}
+                          >
+                            Copy Key
+                          </Button>
+                        </Grid>
+                      </Grid>
                       <Grid container spacing={1.5}>
                         <Grid item xs={12} md={3}>
                           <TextField
@@ -6070,7 +6613,7 @@ export default function WorkspacePage() {
                 );
               })
             ) : (
-              <Typography color="text.secondary">No TWC server presets have been created yet.</Typography>
+              <Typography color="text.secondary">No Workbench server profiles have been created yet. Add one here; users will then choose it from the landing page/sign-in flow.</Typography>
             )}
           </Stack>
         </Stack>
@@ -6657,22 +7200,36 @@ export default function WorkspacePage() {
   const renderWorkbenchProjectAccessAssignment = () => {
     const localUsers = workbenchUsersQuery.data ?? [];
     const localGroups = workbenchGroupsQuery.data ?? [];
-    const assignmentProject = projects.find((project) => project.id === workbenchAccessAssignment.project_id) ?? null;
-    const assignmentBranches = assignmentProject?.branches ?? [];
+    const assignmentProject = selectedProjectId
+      ? projects.find((project) => project.id === selectedProjectId) ?? null
+      : null;
+    const assignmentBranches = assignmentProject?.branches.filter((branch) => branch.id === selectedBranchId) ?? [];
+    const assignmentBranchOptions = assignmentBranches.length
+      ? assignmentBranches
+      : selectedBranchId
+        ? [{ id: selectedBranchId, name: selectedBranchId }]
+        : [];
     const principalOptions = workbenchAccessAssignment.principal_type === "group"
       ? localGroups.filter((group) => group.enabled).map((group) => ({ value: group.name, label: `${group.name} (${group.users.length} users)` }))
       : localUsers.filter((user) => user.enabled).map((user) => ({ value: user.username, label: user.display_name ? `${user.display_name} (${user.username})` : user.username }));
+    if (!canAssignProjectAccess || !selectedProjectId || !selectedBranchId || !assignmentProject) {
+      return (
+        <Alert severity="info">
+          Select a project branch. Workbench administrators can manage Workbench-local access for stored projects; TWC project access administrators can manage only branches where TWC grants access-administration rights.
+        </Alert>
+      );
+    }
     return (
       <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
         <Stack spacing={1.5}>
           <Box>
             <Typography variant="subtitle1">Assign project access</Typography>
             <Typography variant="body2" color="text.secondary">
-              Grant or revoke WorkBench-local access to plugin-imported projects. Group assignment expands to the group&apos;s current users.
+              Grant or revoke WorkBench-local access for the currently selected project branch. Group assignment expands to the group&apos;s current users.
             </Typography>
           </Box>
           <Alert severity="info">
-            This affects WorkBench visibility only. It does not change Teamwork Cloud permissions or create live TWC credentials.
+            This affects WorkBench visibility only. It does not change Teamwork Cloud permissions or create live TWC credentials. Workbench administrators always retain Workbench cache visibility; TWC project administrators are scoped to branches where TWC grants access-administration rights.
           </Alert>
           <Grid container spacing={1.5}>
             <Grid item xs={12} md={2}>
@@ -6695,57 +7252,49 @@ export default function WorkspacePage() {
             </Grid>
             <Grid item xs={12} md={3}>
               <TextField
-                select
+                select={canManageGroups}
                 label={workbenchAccessAssignment.principal_type === "group" ? "Group" : "User"}
                 value={workbenchAccessAssignment.principal_name}
                 onChange={(event) => setWorkbenchAccessAssignment((current) => ({ ...current, principal_name: event.target.value }))}
+                helperText={canManageGroups ? undefined : "Enter an existing Workbench username or group name."}
                 fullWidth
               >
-                <MenuItem value="">
-                  <em>Select {workbenchAccessAssignment.principal_type}</em>
-                </MenuItem>
-                {principalOptions.map((option) => (
-                  <MenuItem key={`${workbenchAccessAssignment.principal_type}-${option.value}`} value={option.value}>
-                    {option.label}
-                  </MenuItem>
-                ))}
+                {canManageGroups ? [
+                  <MenuItem key="empty-principal" value="">
+                    <em>Select {workbenchAccessAssignment.principal_type}</em>
+                  </MenuItem>,
+                  ...principalOptions.map((option) => (
+                    <MenuItem key={`${workbenchAccessAssignment.principal_type}-${option.value}`} value={option.value}>
+                      {option.label}
+                    </MenuItem>
+                  )),
+                ] : null}
               </TextField>
             </Grid>
             <Grid item xs={12} md={3}>
               <TextField
                 select
                 label="Project"
-                value={workbenchAccessAssignment.project_id}
-                onChange={(event) =>
-                  setWorkbenchAccessAssignment((current) => ({
-                    ...current,
-                    project_id: event.target.value,
-                    branch_id: null,
-                  }))
-                }
+                value={selectedProjectId}
+                onChange={() => undefined}
+                disabled
                 fullWidth
               >
-                <MenuItem value="">
-                  <em>Select project</em>
+                <MenuItem value={assignmentProject.id}>
+                  {assignmentProject.name} ({assignmentBranchOptions.length || 1} branch)
                 </MenuItem>
-                {projects.map((project) => (
-                  <MenuItem key={`assign-project-${project.id}`} value={project.id}>
-                    {project.name} ({project.branches.length} branches)
-                  </MenuItem>
-                ))}
               </TextField>
             </Grid>
             <Grid item xs={12} md={2}>
               <TextField
                 select
                 label="Branch"
-                value={workbenchAccessAssignment.branch_id ?? ""}
-                onChange={(event) => setWorkbenchAccessAssignment((current) => ({ ...current, branch_id: event.target.value || null }))}
-                disabled={!assignmentBranches.length}
+                value={selectedBranchId}
+                onChange={() => undefined}
+                disabled
                 fullWidth
               >
-                <MenuItem value="">All branches</MenuItem>
-                {assignmentBranches.map((branch) => (
+                {assignmentBranchOptions.map((branch) => (
                   <MenuItem key={`assign-branch-${branch.id}`} value={branch.id}>
                     {branch.name}
                   </MenuItem>
@@ -6774,10 +7323,17 @@ export default function WorkspacePage() {
             disabled={
               !csrfToken ||
               !workbenchAccessAssignment.principal_name ||
-              !workbenchAccessAssignment.project_id ||
+              !selectedProjectId ||
+              !selectedBranchId ||
               assignWorkbenchProjectAccessMutation.isPending
             }
-            onClick={() => assignWorkbenchProjectAccessMutation.mutate(workbenchAccessAssignment)}
+            onClick={() =>
+              assignWorkbenchProjectAccessMutation.mutate({
+                ...workbenchAccessAssignment,
+                project_id: selectedProjectId,
+                branch_id: selectedBranchId,
+              })
+            }
           >
             Apply Project Access
           </Button>
@@ -7607,11 +8163,32 @@ export default function WorkspacePage() {
           <FormControlLabel
             control={
               <Checkbox
-                checked={preferencesDraft.show_hidden_packages_in_tree}
-                onChange={(event) => setPreferenceField("show_hidden_packages_in_tree", event.target.checked)}
+                checked={Boolean(preferencesDraft.show_hidden_packages_in_tree || preferencesDraft.show_auxiliary_resources_in_tree)}
+                onChange={(event) => {
+                  setPreferenceField("show_hidden_packages_in_tree", event.target.checked);
+                  setPreferenceField("show_auxiliary_resources_in_tree", event.target.checked);
+                }}
               />
             }
-            label="Show hidden packages in containment tree"
+            label="Show Auxiliary Resources in containment tree"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={Boolean(preferencesDraft.show_applied_stereotypes_in_tree)}
+                onChange={(event) => setPreferenceField("show_applied_stereotypes_in_tree", event.target.checked)}
+              />
+            }
+            label="Show Applied Stereotypes in containment tree"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={Boolean(preferencesDraft.show_full_types_in_tree)}
+                onChange={(event) => setPreferenceField("show_full_types_in_tree", event.target.checked)}
+              />
+            }
+            label="Show Full Types in containment tree"
           />
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
             <Button
@@ -7746,8 +8323,9 @@ export default function WorkspacePage() {
               scrollButtons="auto"
               aria-label="Workbench settings sections"
             >
-              {canManageGroups ? <Tab value="users" label="Users" /> : null}
-              {canManageGroups ? <Tab value="groups" label="Groups" /> : null}
+              {canManageGroups || canAssignProjectAccess ? <Tab value="users" label="Users" /> : null}
+              {canManageGroups || canAssignProjectAccess ? <Tab value="groups" label="Groups" /> : null}
+              {isAdmin ? <Tab value="servers" label="Servers" /> : null}
               {isAdmin ? <Tab value="auth" label="Authentication" /> : null}
               {isAdmin ? <Tab value="api-keys" label="API Access Keys" /> : null}
               {isAdmin ? <Tab value="debug" label="Debug" /> : null}
@@ -7756,15 +8334,15 @@ export default function WorkspacePage() {
         </Stack>
       </Paper>
 
-      {!canManageGroups && !isAdmin ? (
+      {!canManageGroups && !isAdmin && !canAssignProjectAccess ? (
         <Alert severity="info">
-          Settings are available to Workbench administrators and group managers. If this account should manage settings, sign in with a Workbench admin account or have an administrator update the account role.
+          Settings are available to Workbench administrators, group managers, and project access administrators for their selected project branch.
         </Alert>
       ) : null}
 
       {settingsSubtab === "users" ? (
         <Stack spacing={2}>
-          {isAdmin ? renderWorkbenchProjectAccessAssignment() : null}
+          {canAssignProjectAccess ? renderWorkbenchProjectAccessAssignment() : null}
           {canManageGroups ? renderWorkbenchUserManagement() : (
             <Alert severity="info">User management is available to Workbench administrators and group managers.</Alert>
           )}
@@ -7773,7 +8351,7 @@ export default function WorkspacePage() {
 
       {settingsSubtab === "groups" ? (
         <Stack spacing={2}>
-          {isAdmin ? renderWorkbenchProjectAccessAssignment() : null}
+          {canAssignProjectAccess ? renderWorkbenchProjectAccessAssignment() : null}
           {canManageGroups ? renderWorkbenchGroupManagement() : (
             <Alert severity="info">Group management is available to Workbench administrators and group managers.</Alert>
           )}
@@ -7787,13 +8365,20 @@ export default function WorkspacePage() {
             <>
               {renderAuthenticationSettings()}
               {renderWorkspacePreferences()}
-              {renderServerPresetManagement()}
               {renderCacheIngestToken()}
               {renderWorkbenchAgentSettings()}
               {renderTombstoneAudit()}
             </>
           ) : (
             <Alert severity="info">Authentication settings are administrator-only.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "servers" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderServerPresetManagement() : (
+            <Alert severity="info">Server management is administrator-only.</Alert>
           )}
         </Stack>
       ) : null}

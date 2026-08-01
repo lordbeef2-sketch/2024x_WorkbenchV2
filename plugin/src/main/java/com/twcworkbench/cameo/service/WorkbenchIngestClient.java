@@ -9,18 +9,23 @@ import com.twcworkbench.cameo.model.BranchDeltaPayload;
 import com.twcworkbench.cameo.model.BranchSnapshotPayload;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.SocketTimeoutException;
+import java.net.URL;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -195,22 +200,18 @@ public class WorkbenchIngestClient {
         int requestTimeoutSeconds = longRunning
                 ? Math.max(config.readTimeoutSeconds, MIN_LONG_RUNNING_POST_TIMEOUT_SECONDS)
                 : config.readTimeoutSeconds;
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(trimTrailingSlash(config.workbenchBaseUrl) + path))
-                .timeout(Duration.ofSeconds(requestTimeoutSeconds))
-                .header("Authorization", "Bearer " + config.workbenchIngestToken)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "twc-workbench-cameo-plugin/0.1.0")
-                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
-                .build();
-
-        HttpClient httpClient = createHttpClient();
         report(progress, "Posting payload to Workbench: " + path);
-        HttpResponse<String> response;
         try {
-            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            HttpResponseText response = postJsonWithUrlConnection(path, body, requestTimeoutSeconds);
+            int statusCode = response.statusCode;
+            if (statusCode < 200 || statusCode >= 300) {
+                throw new IOException("Workbench ingest failed with status " + statusCode + ": " + response.body);
+            }
+            report(progress, "Workbench ingest accepted the payload.");
+            Application.getInstance().getGUILog().log("[INFO] Posted payload to Workbench ingest endpoint: " + path);
+            return;
         }
-        catch (HttpTimeoutException exception) {
+        catch (SocketTimeoutException exception) {
             if (branchContext != null && expectedSnapshotHash != null) {
                 report(progress, "Workbench publish timed out while waiting for a response. Checking whether the stored branch finished processing...");
                 if (waitForSnapshotHash(branchContext, expectedSnapshotHash, progress)) {
@@ -223,12 +224,52 @@ public class WorkbenchIngestClient {
                     exception
             );
         }
-        int statusCode = response.statusCode();
-        if (statusCode < 200 || statusCode >= 300) {
-            throw new IOException("Workbench ingest failed with status " + statusCode + ": " + response.body());
+    }
+
+    private HttpResponseText postJsonWithUrlConnection(String path, byte[] body, int timeoutSeconds) throws IOException {
+        URL url = URI.create(trimTrailingSlash(config.workbenchBaseUrl) + path).toURL();
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        configureUrlConnection(connection, timeoutSeconds);
+        connection.setRequestMethod("POST");
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Authorization", "Bearer " + config.workbenchIngestToken);
+        connection.setRequestProperty("Accept", "application/json");
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        connection.setRequestProperty("User-Agent", "twc-workbench-cameo-plugin/0.1.0");
+        connection.setFixedLengthStreamingMode(body.length);
+        try (OutputStream output = connection.getOutputStream()) {
+            output.write(body);
         }
-        report(progress, "Workbench ingest accepted the payload.");
-        Application.getInstance().getGUILog().log("[INFO] Posted payload to Workbench ingest endpoint: " + path);
+        int statusCode = connection.getResponseCode();
+        String responseBody = readResponseBody(connection, statusCode);
+        connection.disconnect();
+        return new HttpResponseText(statusCode, responseBody);
+    }
+
+    private void configureUrlConnection(HttpURLConnection connection, int timeoutSeconds) throws IOException {
+        connection.setConnectTimeout(Math.max(config.connectTimeoutSeconds, 1) * 1000);
+        connection.setReadTimeout(Math.max(timeoutSeconds, 1) * 1000);
+        connection.setUseCaches(false);
+        if (connection instanceof HttpsURLConnection && config.insecureTls) {
+            try {
+                HttpsURLConnection httpsConnection = (HttpsURLConnection) connection;
+                httpsConnection.setSSLSocketFactory(buildInsecureSslContext().getSocketFactory());
+                httpsConnection.setHostnameVerifier((hostname, session) -> true);
+            }
+            catch (GeneralSecurityException exception) {
+                throw new IOException("Failed to initialize insecure TLS mode for Workbench ingest.", exception);
+            }
+        }
+    }
+
+    private String readResponseBody(HttpURLConnection connection, int statusCode) throws IOException {
+        InputStream stream = statusCode >= 400 ? connection.getErrorStream() : connection.getInputStream();
+        if (stream == null) {
+            return "";
+        }
+        try (InputStream input = stream) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     private BranchSnapshotPayload branchContext(BranchDeltaPayload payload) {
@@ -283,6 +324,7 @@ public class WorkbenchIngestClient {
 
     private HttpClient createHttpClient() throws IOException {
         HttpClient.Builder builder = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(config.connectTimeoutSeconds));
         if (config.insecureTls) {
             try {
@@ -390,6 +432,16 @@ public class WorkbenchIngestClient {
     private void report(Consumer<String> progress, String message) {
         if (progress != null) {
             progress.accept(message);
+        }
+    }
+
+    private static final class HttpResponseText {
+        private final int statusCode;
+        private final String body;
+
+        private HttpResponseText(int statusCode, String body) {
+            this.statusCode = statusCode;
+            this.body = body == null ? "" : body;
         }
     }
 

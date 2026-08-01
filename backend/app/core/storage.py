@@ -96,12 +96,17 @@ class SqliteRepository:
     def _cached_element_tree_summary_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
         payload_text = str(row["payload"] or "")
         try:
-            payload = json.loads(payload_text) if payload_text else {}
+            stored_payload = json.loads(payload_text) if payload_text else {}
         except json.JSONDecodeError:
+            stored_payload = {}
+        payload = stored_payload.get("payload") if isinstance(stored_payload, dict) and isinstance(stored_payload.get("payload"), dict) else stored_payload
+        if not isinstance(payload, dict):
             payload = {}
         owned_element_ids = [str(value).strip() for value in payload.get("owned_element_ids") or [] if str(value).strip()]
         applied_stereotype_ids = [str(value).strip() for value in payload.get("applied_stereotype_ids") or [] if str(value).strip()]
         child_count_value = payload.get("child_count")
+        if child_count_value is None and isinstance(stored_payload, dict):
+            child_count_value = stored_payload.get("child_count")
         try:
             child_count = int(child_count_value) if child_count_value is not None else len(owned_element_ids)
         except (TypeError, ValueError):
@@ -123,6 +128,7 @@ class SqliteRepository:
             "applied_stereotype_ids": applied_stereotype_ids,
             "diagram_type": str(payload.get("diagram_type") or "").strip(),
             "documentation": str(payload.get("documentation") or "").strip(),
+            "body": str((payload.get("attributes") or {}).get("body") or payload.get("body") or "").strip(),
         }
 
     def _ensure_schema(self) -> None:

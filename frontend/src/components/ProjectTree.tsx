@@ -12,10 +12,19 @@ import {
   Typography,
 } from "@mui/material";
 import AccountTreeRoundedIcon from "@mui/icons-material/AccountTreeRounded";
+import ArticleRoundedIcon from "@mui/icons-material/ArticleRounded";
+import CategoryRoundedIcon from "@mui/icons-material/CategoryRounded";
 import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
+import ClassRoundedIcon from "@mui/icons-material/ClassRounded";
+import CommentRoundedIcon from "@mui/icons-material/CommentRounded";
 import DescriptionRoundedIcon from "@mui/icons-material/DescriptionRounded";
+import DeviceHubRoundedIcon from "@mui/icons-material/DeviceHubRounded";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
+import ExtensionRoundedIcon from "@mui/icons-material/ExtensionRounded";
 import FolderRoundedIcon from "@mui/icons-material/FolderRounded";
+import FolderSpecialRoundedIcon from "@mui/icons-material/FolderSpecialRounded";
+import HubRoundedIcon from "@mui/icons-material/HubRounded";
+import PolylineRoundedIcon from "@mui/icons-material/PolylineRounded";
 import SchemaRoundedIcon from "@mui/icons-material/SchemaRounded";
 import TableChartRoundedIcon from "@mui/icons-material/TableChartRounded";
 import ViewQuiltRoundedIcon from "@mui/icons-material/ViewQuiltRounded";
@@ -32,29 +41,66 @@ interface ProjectTreeProps {
   loadingIds?: string[];
   expandedIds?: string[];
   onExpandedChange?: (expandedIds: string[]) => void;
+  showFullTypes?: boolean;
 }
 
-function iconForNode(nodeType: string) {
-  const normalized = nodeType.toLowerCase();
-  if (normalized === "package" || normalized === "group" || normalized === "model") {
-    return <FolderRoundedIcon fontSize="small" />;
+function iconForNode(node: TreeNode) {
+  const nodeType = node.node_type || "";
+  const metaclass = typeof node.metadata.metaclass === "string" ? node.metadata.metaclass : "";
+  const subtitle = typeof node.metadata.subtitle === "string" ? node.metadata.subtitle : "";
+  const label = node.label || "";
+  const normalized = `${nodeType} ${metaclass} ${subtitle} ${label}`.toLowerCase();
+  const iconSx = { fontSize: 18 };
+
+  if (node.metadata.cameo_virtual_folder === "relations" || label.toLowerCase() === "relations") {
+    return <HubRoundedIcon sx={{ ...iconSx, color: "#b48cff" }} />;
+  }
+  if (normalized.includes("package import") || normalized.includes("element import") || normalized.includes("imported")) {
+    return <FolderSpecialRoundedIcon sx={{ ...iconSx, color: "#d7b35f" }} />;
+  }
+  if (normalized.includes("profile") || normalized.includes("stereotype")) {
+    return <ExtensionRoundedIcon sx={{ ...iconSx, color: "#c7a7ff" }} />;
+  }
+  if (normalized === "model" || nodeType.toLowerCase() === "model") {
+    return <FolderRoundedIcon sx={{ ...iconSx, color: "#e7c466" }} />;
+  }
+  if (normalized.includes("package") || nodeType.toLowerCase() === "group") {
+    return <FolderRoundedIcon sx={{ ...iconSx, color: "#f1c75b" }} />;
   }
   if (normalized.includes("diagram")) {
-    return <SchemaRoundedIcon fontSize="small" />;
+    return <SchemaRoundedIcon sx={{ ...iconSx, color: "#78b7ff" }} />;
   }
   if (normalized.includes("table") || normalized.includes("matrix")) {
-    return <TableChartRoundedIcon fontSize="small" />;
+    return <TableChartRoundedIcon sx={{ ...iconSx, color: "#80d8ff" }} />;
   }
   if (normalized.includes("block") || normalized.includes("class")) {
-    return <AccountTreeRoundedIcon fontSize="small" />;
+    return <ClassRoundedIcon sx={{ ...iconSx, color: "#9ee493" }} />;
   }
-  if (normalized.includes("activity") || normalized.includes("requirement") || normalized.includes("part")) {
-    return <ViewQuiltRoundedIcon fontSize="small" />;
+  if (normalized.includes("activity")) {
+    return <DeviceHubRoundedIcon sx={{ ...iconSx, color: "#91d5ff" }} />;
+  }
+  if (normalized.includes("requirement")) {
+    return <ViewQuiltRoundedIcon sx={{ ...iconSx, color: "#ffcf7a" }} />;
+  }
+  if (normalized.includes("part") || normalized.includes("property") || normalized.includes("port")) {
+    return <CategoryRoundedIcon sx={{ ...iconSx, color: "#8ee6c8" }} />;
   }
   if (normalized.includes("connector") || normalized.includes("association") || normalized.includes("relationship")) {
-    return <DatasetLinkedRoundedIcon fontSize="small" />;
+    return <PolylineRoundedIcon sx={{ ...iconSx, color: "#b48cff" }} />;
   }
-  return <DescriptionRoundedIcon fontSize="small" />;
+  if (normalized.includes("comment")) {
+    return <CommentRoundedIcon sx={{ ...iconSx, color: "#c5ccd8" }} />;
+  }
+  if (normalized.includes("document") || normalized.includes("text")) {
+    return <ArticleRoundedIcon sx={{ ...iconSx, color: "#c5ccd8" }} />;
+  }
+  if (normalized.includes("reference") || normalized.includes("dependency")) {
+    return <DatasetLinkedRoundedIcon sx={{ ...iconSx, color: "#b48cff" }} />;
+  }
+  if (normalized.includes("constraint") || normalized.includes("value")) {
+    return <AccountTreeRoundedIcon sx={{ ...iconSx, color: "#f3a6ff" }} />;
+  }
+  return <DescriptionRoundedIcon sx={{ ...iconSx, color: "#c5ccd8" }} />;
 }
 
 function pruneTreeForFilter(nodes: TreeNode[], filter: string): TreeNode[] {
@@ -100,6 +146,7 @@ export default function ProjectTree({
   loadingIds = [],
   expandedIds,
   onExpandedChange,
+  showFullTypes = true,
 }: ProjectTreeProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -174,7 +221,10 @@ export default function ProjectTree({
     const stereotypes = Array.isArray(node.metadata.stereotypes)
       ? (node.metadata.stereotypes as unknown[]).filter((value) => typeof value === "string" && value.trim()).slice(0, 2) as string[]
       : [];
+    const metaclass = typeof node.metadata.metaclass === "string" ? node.metadata.metaclass.trim() : "";
+    const typeLabel = metaclass && metaclass !== node.node_type ? `${node.node_type} / ${metaclass}` : node.node_type;
     const details = [
+      showFullTypes ? typeLabel : "",
       Number.isFinite(childCount) && childCount > 0 ? `${childCount} children` : "",
       ...stereotypes,
     ].filter(Boolean);
@@ -238,7 +288,7 @@ export default function ProjectTree({
               </IconButton>
             ) : null}
           </Box>
-          <ListItemIcon sx={{ minWidth: 26 }}>{iconForNode(node.node_type)}</ListItemIcon>
+          <ListItemIcon sx={{ minWidth: 26, mt: 0.1 }}>{iconForNode(node)}</ListItemIcon>
           <ListItemText
             primary={node.label}
             primaryTypographyProps={{ variant: "body2", fontWeight: 500 }}

@@ -14,6 +14,7 @@ from redis import Redis
 from app.models.domain import (
     AuthorizationContext,
     Bookmark,
+    CapabilityState,
     SavedSearch,
     ServerProfile,
     SessionData,
@@ -226,6 +227,26 @@ class SessionManager:
                 f"Teamwork Cloud permission refresh has failed {session.permission_snapshot_failure_count} time(s). "
                 "The last valid access snapshot remains active while Workbench retries."
             )
+        capabilities = session.capabilities
+        if warning and capabilities is not None and getattr(capabilities, "capabilities", None):
+            capability_map = dict(capabilities.capabilities)
+            user_access = capability_map.get("user_access")
+            if user_access is not None:
+                capability_map["user_access"] = user_access.model_copy(
+                    update={
+                        "state": CapabilityState.RESTRICTED,
+                        "reason": warning,
+                        "source": "last-valid-permission-snapshot",
+                    }
+                )
+            reachable_endpoints = dict(capabilities.reachable_endpoints)
+            reachable_endpoints["permissions"] = False
+            capabilities = capabilities.model_copy(
+                update={
+                    "reachable_endpoints": reachable_endpoints,
+                    "capabilities": capability_map,
+                }
+            )
         return SessionSnapshot(
             authenticated=True,
             session_id=session.session_id,
@@ -234,7 +255,7 @@ class SessionManager:
             server=session.server,
             can_manage_server_presets=session.authorization_context.can_manage_server_presets,
             can_manage_groups=session.authorization_context.can_manage_groups,
-            capabilities=session.capabilities,
+            capabilities=capabilities,
             preferences=session.preferences,
             bookmarks=session.bookmarks,
             saved_searches=session.saved_searches,
