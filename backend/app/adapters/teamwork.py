@@ -234,6 +234,9 @@ def _changed_element_ids(payload: Any) -> tuple[list[str], list[str], list[str]]
 
 def _payload_dicts(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
+        nested = payload.get("payload")
+        if isinstance(nested, dict):
+            return [payload, nested]
         return [payload]
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
@@ -2142,6 +2145,7 @@ class TeamworkAdapter:
             }
             for reference in [*contained_elements, *type_references, *related_items, *([owner] if owner else [])]
         ]
+        source_payload = self._with_cameo_compatibility_specification(entity)
         return ItemDetails(
             id=item_id,
             name=name,
@@ -2163,8 +2167,138 @@ class TeamworkAdapter:
             editable=bool(entity.get("editable", editable if editable is not None else False)),
             attachment_supported=False,
             collaborators=[],
-            source_payload=entity,
+            source_payload=source_payload,
         )
+
+    def _with_cameo_compatibility_specification(self, entity: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(entity)
+        spec_sections = payload.get("spec_sections") or payload.get("specSections")
+        if not isinstance(spec_sections, dict):
+            spec_sections = {}
+        else:
+            spec_sections = dict(spec_sections)
+        native_entries = self._native_specification_entries(spec_sections)
+        native_index = {
+            self._normal_key(str(candidate)): entry
+            for entry in native_entries
+            for candidate in (entry.get("id"), entry.get("name"))
+            if isinstance(candidate, str) and candidate.strip()
+        }
+        references = payload.get("references") if isinstance(payload.get("references"), dict) else {}
+
+        def native_value(*keys: str) -> Any:
+            for key in keys:
+                entry = native_index.get(self._normal_key(key))
+                if not entry:
+                    continue
+                value = entry.get("value") if self._meaningful_value(entry.get("value")) else entry.get("defaultValue")
+                if self._meaningful_value(value):
+                    return value
+            return None
+
+        def reference_value(*keys: str) -> Any:
+            for key in keys:
+                normalized = self._normal_key(key)
+                for ref_key, ref_value in references.items():
+                    if self._normal_key(str(ref_key)) == normalized and self._meaningful_value(ref_value):
+                        return ref_value
+            return None
+
+        def first_value(*values: Any) -> Any:
+            for value in values:
+                if self._meaningful_value(value):
+                    return value
+            return None
+
+        entries: list[dict[str, Any]] = []
+
+        def add(name: str, value: Any) -> None:
+            entries.append({"name": name, "value": value if self._meaningful_value(value) else None})
+
+        add("Name", first_value(native_value("name", "Name"), payload.get("human_name"), payload.get("name")))
+        add("Used As Type", first_value(reference_value("_typedElementOfType", "typedElementOfType"), native_value("typedElement", "type")))
+        add("Sync Element", native_value("syncElement", "sync element"))
+        add("General", native_value("general", "General"))
+        add("Element ID", first_value(native_value("ID", "elementId", "Element ID"), payload.get("element_id"), payload.get("elementId"), payload.get("ID")))
+        add("Specific Classifier", native_value("specificClassifier", "specific classifier"))
+        add("Verifies", first_value(reference_value("verify", "verifies"), native_value("verifies", "verify")))
+        add("Participates In Interaction", native_value("participatesInInteraction", "participates in interaction"))
+        add("Allocated To", first_value(reference_value("allocatedTo"), native_value("allocatedTo", "allocated to")))
+        add("Specifying Component", native_value("specifyingComponent", "specifying component"))
+        add("All Specifying Elements", native_value("allSpecifyingElements", "all specifying elements"))
+        add("Realizing Element", native_value("realizingElement", "realizing element"))
+        add("Refines", first_value(reference_value("refine", "refines"), native_value("refines", "refine")))
+        add("Participates In Activity", native_value("participatesInActivity", "participates in activity"))
+        add("Traced From", first_value(reference_value("tracedFrom", "trace"), native_value("tracedFrom", "traced from")))
+        add("All Realizing Elements", native_value("allRealizingElements", "all realizing elements"))
+        add("Allocated From", first_value(reference_value("allocatedFrom"), native_value("allocatedFrom", "allocated from")))
+        add("Specifying Use Case", native_value("specifyingUseCase", "specifying use case"))
+        add("All Specific Classifiers", native_value("allSpecificClassifiers", "all specific classifiers"))
+        add("Owner", first_value(native_value("owner", "Owner"), payload.get("owner_id"), payload.get("ownerId")))
+        add("Qualified Name", first_value(native_value("qualifiedName", "Qualified Name"), payload.get("qualified_name"), payload.get("qualifiedName")))
+        add("Is Encapsulated", native_value("isEncapsulated", "is encapsulated"))
+        add("Realizing Component", native_value("realizingComponent", "realizing component"))
+        add("Satisfies", first_value(reference_value("satisfy", "satisfies"), native_value("satisfies", "satisfy")))
+        add("Specifying Element", native_value("specifyingElement", "specifying element"))
+        add("All General Classifiers", first_value(native_value("allGeneralClassifiers", "all general classifiers"), native_value("general", "superClass")))
+        add("Applied Stereotype", first_value(native_value("appliedStereotype", "Applied Stereotype"), payload.get("applied_stereotype_ids"), payload.get("appliedStereotypeIds")))
+        add("Is Active", native_value("isActive", "is active"))
+        add("Is Abstract", native_value("isAbstract", "is abstract"))
+        add("Use Case", native_value("useCase", "use case"))
+        add("Template Parameter", native_value("templateParameter", "template parameter"))
+        add("Owned Comment", native_value("ownedComment", "owned comment"))
+        add("Owned Element", first_value(native_value("ownedElement", "owned element"), payload.get("owned_element_ids"), payload.get("ownedElementIds")))
+        add("Super Class", native_value("superClass", "super class"))
+        add("Tagged Value", native_value("taggedValue", "tagged value"))
+        add("Owning Package", first_value(native_value("owningPackage", "owning package"), reference_value("owningPackage")))
+        add("Name Expression", native_value("nameExpression", "name expression"))
+        add("Namespace", native_value("namespace", "Namespace"))
+        add("Owned Template Signature", native_value("ownedTemplateSignature", "owned template signature"))
+        add("Template Binding", native_value("templateBinding", "template binding"))
+        add("Client Dependency", native_value("clientDependency", "client dependency"))
+        add("Supplier Dependency", native_value("supplierDependency", "supplier dependency"))
+        add("Owned Connector", native_value("ownedConnector", "owned connector"))
+        add("Role", native_value("role", "Role"))
+        add("Part", native_value("part", "Part"))
+        add("Owned Attribute", native_value("ownedAttribute", "owned attribute"))
+        add("Owned Diagram", native_value("ownedDiagram", "owned diagram"))
+        add("Imported Member", native_value("importedMember", "imported member"))
+        add("Member", native_value("member", "Member"))
+        add("Owned Member", native_value("ownedMember", "owned member"))
+        add("Owned Rule", native_value("ownedRule", "owned rule"))
+
+        if entries:
+            old_properties = spec_sections.get("properties")
+            if isinstance(old_properties, dict) and isinstance(old_properties.get("entries"), list):
+                seen = {self._normal_key(str(entry.get("name") or entry.get("id") or "")) for entry in entries}
+                for entry in old_properties["entries"]:
+                    if isinstance(entry, dict) and self._normal_key(str(entry.get("name") or entry.get("id") or "")) not in seen:
+                        entries.append(dict(entry))
+            spec_sections["properties"] = {"entries": entries}
+            payload["spec_sections"] = spec_sections
+            payload.pop("specSections", None)
+        return payload
+
+    def _native_specification_entries(self, spec_sections: dict[str, Any]) -> list[dict[str, Any]]:
+        metamodel = spec_sections.get("metamodel")
+        if not isinstance(metamodel, dict):
+            return []
+        entries = metamodel.get("entries")
+        if not isinstance(entries, list):
+            return []
+        return [entry for entry in entries if isinstance(entry, dict)]
+
+    def _normal_key(self, value: str) -> str:
+        return "".join(character for character in value.lower() if character.isalnum())
+
+    def _meaningful_value(self, value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, tuple, set, dict)):
+            return bool(value)
+        return True
 
     def _extract_relationships(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         entity = _payload_entity(payload) or {}
@@ -4040,6 +4174,7 @@ class TeamworkAdapter:
             }
             for reference in [*contained_elements, *type_references, *related_items, *([owner] if owner else [])]
         ]
+        source_payload = self._with_cameo_compatibility_specification(entity)
         item = ItemDetails(
             id=item_id,
             name=name,
@@ -4061,7 +4196,7 @@ class TeamworkAdapter:
             editable=True,
             attachment_supported=False,
             collaborators=[],
-            source_payload=entity,
+            source_payload=source_payload,
         )
         return item
 

@@ -763,25 +763,82 @@ public class SnapshotExportService {
         sections.put("documentation", buildDocumentationSection(record));
         sections.put("navigation", buildHintSection(record, NAVIGATION_HINTS));
         sections.put("usageDiagrams", buildUsageDiagramsSection(record));
-        sections.put("innerElements", buildInnerElementsSection(record));
+        sections.put("usageIn", buildUsageInSection(record));
+        sections.put("constraints", buildConstraintsSection(record));
+        sections.put("portsInterfaces", buildHintSection(record, List.of("port", "interface", "provided", "required", "connector")));
+        sections.put("attributes", buildHintSection(record, List.of("attribute", "ownedAttribute")));
+        sections.put("ports", buildHintSection(record, List.of("port")));
+        sections.put("operations", buildHintSection(record, List.of("operation")));
+        sections.put("receptions", buildHintSection(record, List.of("reception")));
+        sections.put("behaviors", buildHintSection(record, List.of("behavior", "activity", "stateMachine", "interaction")));
         sections.put("relations", buildRelationsSection(record));
         sections.put("tags", buildTagsSection(record));
-        sections.put("constraints", buildConstraintsSection(record));
         sections.put("traceability", buildTraceabilitySection(record));
         sections.put("allocations", buildAllocationsSection(record));
+        sections.put("innerElements", buildInnerElementsSection(record));
+        sections.put("templateParameters", buildHintSection(record, List.of("template", "parameter")));
+        sections.put("instances", buildHintSection(record, List.of("instance", "slot")));
         return sections;
     }
 
     private Map<String, Object> buildPropertiesSection(ElementRecord record) {
         List<Map<String, Object>> entries = new ArrayList<>();
+        addEntry(entries, "Name", record.name);
+        addEntry(entries, "Used As Type", referenceValue(record, "_typedElementOfType", "typedElementOfType"));
+        addEntry(entries, "Sync Element", attributeValueByKeys(record, "syncElement"));
+        addEntry(entries, "General", referenceValue(record, "general"));
+        addEntry(entries, "Element ID", record.elementId);
+        addEntry(entries, "Specific Classifier", referenceValue(record, "specificClassifier"));
+        addEntry(entries, "Verifies", referenceValue(record, "verify", "verifies"));
+        addEntry(entries, "Participates In Interaction", referenceValue(record, "participatesInInteraction"));
+        addEntry(entries, "Allocated To", referenceValue(record, "allocatedTo"));
+        addEntry(entries, "Specifying Component", referenceValue(record, "specifyingComponent"));
+        addEntry(entries, "All Specifying Elements", referenceValue(record, "allSpecifyingElements"));
+        addEntry(entries, "Realizing Element", referenceValue(record, "realizingElement"));
+        addEntry(entries, "Refines", referenceValue(record, "refine", "refines"));
+        addEntry(entries, "Participates In Activity", referenceValue(record, "participatesInActivity"));
+        addEntry(entries, "Traced From", referenceValue(record, "tracedFrom", "trace"));
+        addEntry(entries, "All Realizing Elements", referenceValue(record, "allRealizingElements"));
+        addEntry(entries, "Allocated From", referenceValue(record, "allocatedFrom"));
+        addEntry(entries, "Specifying Use Case", referenceValue(record, "specifyingUseCase"));
+        addEntry(entries, "All Specific Classifiers", referenceValue(record, "allSpecificClassifiers"));
+        addEntry(entries, "Owner", record.ownerId);
+        addEntry(entries, "Qualified Name", record.qualifiedName);
+        addEntry(entries, "Is Encapsulated", attributeValueByKeys(record, "isEncapsulated"));
+        addEntry(entries, "Realizing Component", referenceValue(record, "realizingComponent"));
+        addEntry(entries, "Satisfies", referenceValue(record, "satisfy", "satisfies"));
+        addEntry(entries, "Specifying Element", referenceValue(record, "specifyingElement"));
+        addEntry(entries, "All General Classifiers", referenceValue(record, "allGeneralClassifiers", "general", "superClass"));
+        addEntry(entries, "Applied Stereotype", record.appliedStereotypeIds);
+        addEntry(entries, "Is Active", attributeValueByKeys(record, "isActive"));
+        addEntry(entries, "Is Abstract", attributeValueByKeys(record, "isAbstract"));
+        addEntry(entries, "Use Case", referenceValue(record, "useCase"));
+        addEntry(entries, "Template Parameter", referenceValue(record, "templateParameter"));
+        addEntry(entries, "Owned Comment", referenceValue(record, "ownedComment"));
+        addEntry(entries, "Owned Element", record.ownedElementIds);
+        addEntry(entries, "Super Class", referenceValue(record, "superClass"));
+        addEntry(entries, "Tagged Value", attributeValueByKeys(record, "taggedValue"));
+        addEntry(entries, "Owning Package", referenceValue(record, "owningPackage"));
+        addEntry(entries, "Name Expression", attributeValueByKeys(record, "nameExpression"));
+        addEntry(entries, "Namespace", referenceValue(record, "namespace"));
+        addEntry(entries, "Owned Template Signature", referenceValue(record, "ownedTemplateSignature"));
+        addEntry(entries, "Template Binding", referenceValue(record, "templateBinding"));
+        addEntry(entries, "Client Dependency", referenceValue(record, "clientDependency"));
+        addEntry(entries, "Supplier Dependency", referenceValue(record, "supplierDependency"));
+        addEntry(entries, "Owned Connector", referenceValue(record, "ownedConnector"));
+        addEntry(entries, "Role", referenceValue(record, "role"));
+        addEntry(entries, "Part", referenceValue(record, "part"));
+        addEntry(entries, "Owned Attribute", referenceValue(record, "ownedAttribute"));
+        addEntry(entries, "Owned Diagram", referenceValue(record, "ownedDiagram"));
+        addEntry(entries, "Imported Member", referenceValue(record, "importedMember"));
+        addEntry(entries, "Member", referenceValue(record, "member"));
+        addEntry(entries, "Owned Member", referenceValue(record, "ownedMember"));
+        addEntry(entries, "Owned Rule", referenceValue(record, "ownedRule"));
         addEntry(entries, "Documentation", record.documentation);
         addEntry(entries, "Human Name", record.humanName);
         addEntry(entries, "Human Type", record.humanType);
-        addEntry(entries, "ID", record.elementId);
         addEntry(entries, "Local ID", record.localId);
         addEntry(entries, "Metaclass", record.metaclass);
-        addEntry(entries, "Name", record.name);
-        addEntry(entries, "Qualified Name", record.qualifiedName);
         addEntry(entries, "Type", record.humanType);
         addEntry(entries, "Representation", attributeValue(record.attributes.get("representation")));
         addEntry(entries, "Visibility", attributeValue(record.attributes.get("visibility")));
@@ -799,6 +856,12 @@ public class SnapshotExportService {
                 addEntry(entries, humanizeFeatureName(entry.getKey()), entry.getValue());
             }
         }
+        return sectionWithEntries(entries);
+    }
+
+    private Map<String, Object> buildUsageInSection(ElementRecord record) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        appendReferenceHintEntries(entries, record.references, List.of("used", "usage", "typedElement", "classifier", "member", "use"), "Usage");
         return sectionWithEntries(entries);
     }
 
@@ -904,6 +967,41 @@ public class SnapshotExportService {
                 entries.add(referenceEntry(label, defaultType, referenceId));
             }
         }
+    }
+
+    private Object referenceValue(ElementRecord record, String... keys) {
+        for (String key : keys) {
+            List<String> exact = record.references.get(key);
+            if (exact != null && !exact.isEmpty()) {
+                return exact;
+            }
+            String normalizedKey = normalizeFeatureKey(key);
+            for (Map.Entry<String, List<String>> entry : record.references.entrySet()) {
+                if (normalizeFeatureKey(entry.getKey()).equals(normalizedKey) && !entry.getValue().isEmpty()) {
+                    return entry.getValue();
+                }
+            }
+        }
+        return null;
+    }
+
+    private Object attributeValueByKeys(ElementRecord record, String... keys) {
+        for (String key : keys) {
+            Object exact = attributeValue(record.attributes.get(key));
+            if (exact != null) {
+                return exact;
+            }
+            String normalizedKey = normalizeFeatureKey(key);
+            for (Map.Entry<String, Object> entry : record.attributes.entrySet()) {
+                if (normalizeFeatureKey(entry.getKey()).equals(normalizedKey)) {
+                    Object value = attributeValue(entry.getValue());
+                    if (value != null) {
+                        return value;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private Map<String, Object> sectionWithEntries(List<Map<String, Object>> entries) {

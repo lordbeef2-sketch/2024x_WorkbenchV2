@@ -37,6 +37,7 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
             "attributes": {"visibility": "public", "isAbstract": False},
             "references": {
                 "classifier": ["type-1"],
+                "_typedElementOfType": ["usage-1"],
                 "satisfy": ["req-1"],
                 "verifiedBy": ["test-1"],
                 "usageDiagrams": ["diagram-1"],
@@ -50,6 +51,7 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
             "owner-1": {"element_id": "owner-1", "human_name": "Owner Package", "human_type": "Package"},
             "part-1": {"element_id": "part-1", "human_name": "Owned Part", "human_type": "Part Property"},
             "type-1": {"element_id": "type-1", "human_name": "Type Block", "human_type": "Block"},
+            "usage-1": {"element_id": "usage-1", "human_name": "Typed Usage", "human_type": "Property"},
             "req-1": {"element_id": "req-1", "human_name": "Requirement 1", "human_type": "Requirement"},
             "test-1": {"element_id": "test-1", "human_name": "Verification Case", "human_type": "Test Case"},
             "diagram-1": {"element_id": "diagram-1", "human_name": "Context Diagram", "human_type": "Diagram"},
@@ -71,16 +73,30 @@ class GroupPermissionScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details.owner.name, "Owner Package")
         self.assertIn("SafetyCritical", details.stereotypes)
         self.assertEqual(details.source_payload["spec_sections"]["metamodel"]["entries"][0]["value"], "public")
+        property_rows = {
+            row["name"]: row["value"]
+            for row in details.source_payload["spec_sections"]["properties"]["entries"]
+            if isinstance(row, dict) and "name" in row
+        }
+        self.assertEqual(property_rows["Element ID"], "element-1")
+        self.assertEqual(property_rows["Used As Type"], ["usage-1"])
+        self.assertEqual(property_rows["Satisfies"], ["req-1"])
         self.assertEqual([(item.id, item.relationship_type) for item in details.contained_elements], [("part-1", "ownedElement")])
         self.assertIn(("type-1", "classifier"), [(item.id, item.relationship_type) for item in details.type_references])
         related = {(item.id, item.relationship_type) for item in details.related_items}
+        self.assertIn(("usage-1", "_typedElementOfType"), related)
         self.assertIn(("req-1", "satisfy"), related)
         self.assertIn(("test-1", "verifiedBy"), related)
         self.assertIn(("diagram-1", "usageDiagrams"), related)
         relationship_rows = {(item["target"], item["type"]) for item in details.relationships}
+        self.assertIn(("usage-1", "_typedElementOfType"), relationship_rows)
         self.assertIn(("part-1", "ownedElement"), relationship_rows)
         self.assertIn(("req-1", "satisfy"), relationship_rows)
         self.assertIn(("test-1", "verifiedBy"), relationship_rows)
+
+        wrapped_ids = adapter.reference_resolution_ids({"payload": payload})
+        self.assertIn("usage-1", wrapped_ids)
+        self.assertIn("req-1", wrapped_ids)
 
     async def test_every_group_is_checked_for_global_and_project_scopes(self) -> None:
         adapter = object.__new__(TeamworkAdapter)

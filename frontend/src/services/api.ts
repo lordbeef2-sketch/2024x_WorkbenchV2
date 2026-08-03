@@ -371,7 +371,7 @@ export const api = {
       params.set("refresh", "true");
     }
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    return request<BranchSummary[]>(`/workspace/projects/${projectId}/branches${suffix}`);
+    return request<BranchSummary[]>(`/workspace/projects/${encodeURIComponent(projectId)}/branches${suffix}`);
   },
   getProjectUsages(projectId: string, branchId: string, workspaceId?: string, refresh = false) {
     const params = new URLSearchParams();
@@ -382,7 +382,7 @@ export const api = {
       params.set("refresh", "true");
     }
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    return request<ProjectUsageResponse>(`/workspace/projects/${projectId}/branches/${branchId}/usages${suffix}`);
+    return request<ProjectUsageResponse>(`/workspace/projects/${encodeURIComponent(projectId)}/branches/${encodeURIComponent(branchId)}/usages${suffix}`);
   },
   getTree(projectId?: string, branchId?: string, workspaceId?: string, refresh = false, depth?: number) {
     const params = new URLSearchParams();
@@ -491,7 +491,7 @@ export const api = {
       params.set("refresh", "true");
     }
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    return request<ItemDetails>(`/workspace/items/${itemId}${suffix}`);
+    return request<ItemDetails>(`/workspace/items/${encodeURIComponent(itemId)}${suffix}`);
   },
   searchCachedElements(
     payload: {
@@ -572,7 +572,7 @@ export const api = {
       params.set("branchId", branchId);
     }
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    return request<ItemDetails>(`/workspace/items/${itemId}${suffix}`, {
+    return request<ItemDetails>(`/workspace/items/${encodeURIComponent(itemId)}${suffix}`, {
       method: "PUT",
       headers: jsonHeaders(csrfToken),
       body: JSON.stringify(payload),
@@ -667,7 +667,7 @@ export const api = {
     });
   },
   getJob(jobId: string) {
-    return request<JobRecord>(`/workspace/jobs/${jobId}`);
+    return request<JobRecord>(`/workspace/jobs/${encodeURIComponent(jobId)}`);
   },
   runWorkbenchAgentChat(payload: WorkbenchAgentChatRequest, csrfToken: string) {
     return request<WorkbenchAgentChatResponse>("/workspace/agent/chat", {

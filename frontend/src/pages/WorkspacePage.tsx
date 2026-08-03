@@ -106,6 +106,7 @@ type SpecificationSectionId =
   | "navigation"
   | "usage-diagrams"
   | "usage-in"
+  | "constraints"
   | "ports-interfaces"
   | "element-properties"
   | "attributes"
@@ -113,12 +114,11 @@ type SpecificationSectionId =
   | "operations"
   | "receptions"
   | "behaviors"
-  | "inner-elements"
   | "relations"
   | "tags"
-  | "constraints"
   | "traceability"
   | "allocations"
+  | "inner-elements"
   | "template-parameters"
   | "instances";
 
@@ -166,6 +166,130 @@ const SPECIFICATION_CHILD_SECTIONS: SpecificationSectionId[] = [
   "template-parameters",
   "instances",
 ];
+
+const PACKAGE_SPECIFICATION_CHILD_SECTIONS: SpecificationSectionId[] = [
+  "traceability",
+  "documentation",
+  "navigation",
+  "usage-diagrams",
+  "template-parameters",
+  "inner-elements",
+  "relations",
+  "tags",
+  "constraints",
+  "allocations",
+];
+
+const CAMEO_SPECIFICATION_PROPERTY_LABEL_ORDER = [
+  "Name",
+  "Used As Type",
+  "Sync Element",
+  "General",
+  "Element ID",
+  "Specific Classifier",
+  "Verifies",
+  "Participates In Interaction",
+  "Allocated To",
+  "Specifying Component",
+  "All Specifying Elements",
+  "Realizing Element",
+  "Refines",
+  "Participates In Activity",
+  "Traced From",
+  "All Realizing Elements",
+  "Allocated From",
+  "Specifying Use Case",
+  "All Specific Classifiers",
+  "Owner",
+  "Qualified Name",
+  "Is Encapsulated",
+  "Realizing Component",
+  "Satisfies",
+  "Specifying Element",
+  "All General Classifiers",
+  "Applied Stereotype",
+  "Is Active",
+  "Is Abstract",
+  "Use Case",
+  "Template Parameter",
+  "Owned Comment",
+  "Owned Element",
+  "Super Class",
+  "Tagged Value",
+  "Owning Package",
+  "Name Expression",
+  "Namespace",
+  "Owned Template Signature",
+  "Template Binding",
+  "Client Dependency",
+  "Supplier Dependency",
+  "Owned Connector",
+  "Role",
+  "Part",
+  "Owned Attribute",
+  "Owned Diagram",
+  "Imported Member",
+  "Member",
+  "Owned Member",
+  "Owned Rule",
+];
+
+const CAMEO_SPECIFICATION_PROPERTY_LABEL_INDEX = new Map(
+  CAMEO_SPECIFICATION_PROPERTY_LABEL_ORDER.map((label, index) => [normalizedFieldKey(label), index]),
+);
+
+const CAMEO_PACKAGE_SPECIFICATION_PROPERTY_LABEL_ORDER = [
+  "Name",
+  "Qualified Name",
+  "Owner",
+  "Applied Stereotype",
+  "Visibility",
+  "Active Hyperlink",
+  "Name Expression",
+  "Client Dependency",
+  "Supplier Dependency",
+  "Template Parameter",
+  "Tagged Value",
+  "Owned Comment",
+  "Owned Element",
+  "Namespace",
+  "Owned Template Signature",
+  "Template Binding",
+  "Owned Diagram",
+  "Imported Member",
+  "Member",
+  "Owned Member",
+  "Owned Rule",
+  "Package Import",
+  "Element Import",
+  "Owning Package",
+  "Nesting Package",
+  "Nested Package",
+  "Owned Type",
+  "Package Merge",
+  "Applied Profile",
+  "Image",
+  "URI",
+  "To Do",
+  "Element ID",
+  "Owned Stereotype",
+  "Owning Template Parameter",
+  "Packaged Element",
+  "Profile Application",
+  "All Realizing Elements",
+  "All Specifying Elements",
+  "Realizing Element",
+  "Specifying Element",
+  "Allocated From",
+  "Allocated To",
+  "Author",
+  "Documentation",
+  "Mounted Package",
+];
+
+const CAMEO_PACKAGE_SPECIFICATION_PROPERTY_LABEL_INDEX = new Map(
+  CAMEO_PACKAGE_SPECIFICATION_PROPERTY_LABEL_ORDER.map((label, index) => [normalizedFieldKey(label), index]),
+);
 
 function parseWorkspaceTab(value: string | null): WorkspaceTab {
   const fallback: WorkspaceTab = "dashboard";
@@ -242,6 +366,20 @@ function flattenTree(nodes: TreeNode[]): TreeNode[] {
     }
   }
   return flattened;
+}
+
+function expandableTreeNodeIds(nodes: TreeNode[]): string[] {
+  const expanded: string[] = [];
+  const walk = (candidates: TreeNode[]) => {
+    for (const node of candidates) {
+      if (node.children.length) {
+        expanded.push(node.id);
+        walk(node.children);
+      }
+    }
+  };
+  walk(nodes);
+  return expanded;
 }
 
 function clampNumber(value: number, minimum: number, maximum: number): number {
@@ -696,12 +834,14 @@ interface InspectorRow {
   key: string;
   label: string;
   value: string;
+  rawValue?: unknown;
 }
 
 interface DataTableRow {
   key: string;
   cells: Array<string | ReactNode>;
   targetIds?: Record<number, string>;
+  indentCells?: Record<number, number>;
 }
 
 const SPECIFICATION_FIELD_HINTS = ["specification", "expression", "formula", "guard", "condition", "language", "body", "constraint"];
@@ -736,6 +876,14 @@ function keyMatchesHints(key: string, hints: string[]): boolean {
   return hints.some((hint) => normalized.includes(normalizedFieldKey(hint)));
 }
 
+function isPackageLikeItemType(itemType?: string | null): boolean {
+  return normalizedFieldKey(String(itemType ?? "")).includes("package");
+}
+
+function specificationChildSectionsForItem(item: Pick<ItemDetails, "item_type">): SpecificationSectionId[] {
+  return isPackageLikeItemType(item.item_type) ? PACKAGE_SPECIFICATION_CHILD_SECTIONS : SPECIFICATION_CHILD_SECTIONS;
+}
+
 function dedupeInspectorRows(rows: InspectorRow[]): InspectorRow[] {
   const seen = new Set<string>();
   return rows.filter((row) => {
@@ -746,6 +894,21 @@ function dedupeInspectorRows(rows: InspectorRow[]): InspectorRow[] {
     seen.add(key);
     return true;
   });
+}
+
+function cameoOrderedInspectorRows(rows: InspectorRow[], itemType?: string | null): InspectorRow[] {
+  const orderIndex = isPackageLikeItemType(itemType) ? CAMEO_PACKAGE_SPECIFICATION_PROPERTY_LABEL_INDEX : CAMEO_SPECIFICATION_PROPERTY_LABEL_INDEX;
+  return rows
+    .map((row, originalIndex) => ({ row, originalIndex }))
+    .sort((left, right) => {
+      const leftOrder = orderIndex.get(normalizedFieldKey(left.row.label));
+      const rightOrder = orderIndex.get(normalizedFieldKey(right.row.label));
+      if (leftOrder !== undefined || rightOrder !== undefined) {
+        return (leftOrder ?? Number.MAX_SAFE_INTEGER) - (rightOrder ?? Number.MAX_SAFE_INTEGER) || left.originalIndex - right.originalIndex;
+      }
+      return left.originalIndex - right.originalIndex;
+    })
+    .map(({ row }) => row);
 }
 
 function mapToInspectorRows(source: Record<string, unknown>, lookup: Record<string, string>): InspectorRow[] {
@@ -875,6 +1038,25 @@ function nativeEntryDisplayValue(entry: Record<string, unknown>, lookup: Record<
   return humanReadableValue(hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue, lookup);
 }
 
+function payloadNativeMetamodelEntryIndex(item: ItemDetails): Map<string, Record<string, unknown>> {
+  const index = new Map<string, Record<string, unknown>>();
+  for (const entry of payloadNativeMetamodelEntries(item)) {
+    for (const candidate of [entry.id, entry.name]) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        index.set(normalizedFieldKey(candidate), entry);
+      }
+    }
+  }
+  return index;
+}
+
+function nativeEntryValue(entry: Record<string, unknown> | undefined): unknown {
+  if (!entry) {
+    return undefined;
+  }
+  return hasMeaningfulValue(entry.value) ? entry.value : entry.defaultValue;
+}
+
 function firstReferencedElementId(value: unknown): string {
   if (Array.isArray(value)) {
     for (const entry of value) {
@@ -919,7 +1101,7 @@ function nativeReferenceRowsForHints(
         targetIds: targetId ? { 1: targetId } : undefined,
         cells: [
           String(entry.name ?? entry.id ?? options?.defaultType ?? "Reference"),
-          nativeEntryDisplayValue(entry, lookup) || "Not provided",
+          nativeEntryDisplayValue(entry, lookup),
           String(entry.valueType ?? entry.kind ?? options?.defaultType ?? ""),
         ],
       };
@@ -944,7 +1126,7 @@ function nativeStereotypeTagRows(item: ItemDetails, lookup: Record<string, strin
         key: `native-stereotype-tag-${String(section.id ?? sectionIndex)}-${String(entry.id ?? entryIndex)}`,
         cells: [
           `${sectionName} / ${String(entry.name ?? entry.id ?? "Property")}`,
-          nativeEntryDisplayValue(entry, lookup) || "Not provided",
+          nativeEntryDisplayValue(entry, lookup),
         ],
       }));
     return [...headerRows, ...propertyRows];
@@ -1526,6 +1708,7 @@ function specificationRows(item: ItemDetails, lookup: Record<string, string>): I
     key: `spec.properties.${index}.${structuredEntryName(entry)}`,
     label: structuredEntryName(entry),
     value: structuredEntryValue(entry, ["value"], lookup),
+    rawValue: entry.value,
   }));
   const sourcePayload = item.source_payload ?? {};
   const attributes = payloadAttributes(item);
@@ -1557,9 +1740,7 @@ function specificationRows(item: ItemDetails, lookup: Record<string, string>): I
     });
   }
 
-  return dedupeInspectorRows(
-    rows.sort((left, right) => compareDisplayValues(left.label, right.label)),
-  );
+  return cameoOrderedInspectorRows(dedupeInspectorRows(rows), item.item_type);
 }
 
 function constraintRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
@@ -1766,7 +1947,7 @@ function extractDocumentationSections(item: ItemDetails): { documentation: strin
 function hintRowsToTableRows(rows: InspectorRow[]): DataTableRow[] {
   return rows.map((row) => ({
     key: row.key,
-    cells: [row.label, row.value || "Not provided"],
+    cells: [row.label, row.value || ""],
   }));
 }
 
@@ -1917,32 +2098,183 @@ function specificationWindowRows(
   const attributes = payloadAttributes(item);
   const metadata = item.metadata ?? {};
   const references = payloadReferences(item);
+  const nativeIndex = payloadNativeMetamodelEntryIndex(item);
   const rows: InspectorRow[] = [];
-  const pushRow = (key: string, label: string, value: unknown) => {
-    if (!hasMeaningfulValue(value)) {
+  const valueFromNative = (...keys: string[]): unknown => {
+    for (const key of keys) {
+      const value = nativeEntryValue(nativeIndex.get(normalizedFieldKey(key)));
+      if (hasMeaningfulValue(value)) {
+        return value;
+      }
+    }
+    return undefined;
+  };
+  const valueFromReferences = (...keys: string[]): unknown => {
+    for (const key of keys) {
+      const value = references[key];
+      if (hasMeaningfulValue(value)) {
+        return value;
+      }
+      const normalized = normalizedFieldKey(key);
+      for (const [referenceKey, referenceValue] of Object.entries(references)) {
+        if (normalizedFieldKey(referenceKey) === normalized && hasMeaningfulValue(referenceValue)) {
+          return referenceValue;
+        }
+      }
+    }
+    return undefined;
+  };
+  const firstMeaningful = (...values: unknown[]): unknown => values.find((value) => hasMeaningfulValue(value));
+  const shouldShowEmptyCameoRows = viewMode === "all";
+  const pushRow = (key: string, label: string, value: unknown, options?: { showWhenEmpty?: boolean }) => {
+    const meaningful = hasMeaningfulValue(value);
+    if (!meaningful && !options?.showWhenEmpty) {
       return;
     }
     rows.push({
       key,
       label,
-      value: humanReadableValue(value, lookup),
+      value: meaningful ? humanReadableValue(value, lookup) : label === "Is Encapsulated" ? "<undefined>" : "",
+      rawValue: meaningful ? value : undefined,
     });
   };
 
-  pushRow("documentation", "Documentation", item.documentation_markdown);
-  pushRow("human_name", "Human Name", sourcePayload.human_name || item.name);
-  pushRow("human_type", "Human Type", sourcePayload.human_type);
-  pushRow("id", "ID", item.id);
-  pushRow("local_id", "Local ID", sourcePayload.local_id);
-  pushRow("metaclass", "Metaclass", sourcePayload.metaclass);
-  pushRow("name", "Name", item.name);
-  pushRow("path", "Path", friendlyPath(item.path, lookup));
-  pushRow("qualified_name", "Qualified Name", sourcePayload.qualified_name);
-  pushRow("type", "Type", item.item_type);
-  pushRow("version", "Version", item.version);
-  pushRow("description", "Description", item.description);
-  pushRow("stereotypes", "Applied Stereotypes", item.stereotypes);
-  pushRow("owner_name", "Owner", item.owner ? itemReferenceDisplayName(item.owner, lookup) : "");
+  if (isPackageLikeItemType(item.item_type)) {
+    pushRow("cameo.package.name", "Name", firstMeaningful(valueFromNative("name", "Name"), sourcePayload.human_name, item.name), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.qualified-name", "Qualified Name", firstMeaningful(valueFromNative("qualifiedName", "Qualified Name"), sourcePayload.qualified_name), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owner", "Owner", firstMeaningful(valueFromNative("owner", "Owner"), item.owner), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.applied-stereotype", "Applied Stereotype", firstMeaningful(valueFromNative("appliedStereotype", "Applied Stereotype"), item.stereotypes), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.visibility", "Visibility", firstMeaningful(valueFromNative("visibility", "Visibility"), "public"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.active-hyperlink", "Active Hyperlink", valueFromNative("activeHyperlink", "active hyperlink"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.name-expression", "Name Expression", valueFromNative("nameExpression", "name expression"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.client-dependency", "Client Dependency", valueFromNative("clientDependency", "client dependency"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.supplier-dependency", "Supplier Dependency", valueFromNative("supplierDependency", "supplier dependency"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.template-parameter", "Template Parameter", valueFromNative("templateParameter", "template parameter"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.tagged-value", "Tagged Value", valueFromNative("taggedValue", "tagged value"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owned-comment", "Owned Comment", valueFromNative("ownedComment", "owned comment"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owned-element", "Owned Element", valueFromNative("ownedElement", "owned element"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.namespace", "Namespace", valueFromNative("namespace", "Namespace"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owned-template-signature", "Owned Template Signature", valueFromNative("ownedTemplateSignature", "owned template signature"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.template-binding", "Template Binding", valueFromNative("templateBinding", "template binding"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owned-diagram", "Owned Diagram", valueFromNative("ownedDiagram", "owned diagram"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.imported-member", "Imported Member", valueFromNative("importedMember", "imported member"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.member", "Member", valueFromNative("member", "Member"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owned-member", "Owned Member", valueFromNative("ownedMember", "owned member"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owned-rule", "Owned Rule", valueFromNative("ownedRule", "owned rule"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.package-import", "Package Import", valueFromNative("packageImport", "package import"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.element-import", "Element Import", valueFromNative("elementImport", "element import"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owning-package", "Owning Package", firstMeaningful(valueFromNative("owningPackage", "owning package"), valueFromReferences("owningPackage")), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.nesting-package", "Nesting Package", valueFromNative("nestingPackage", "nesting package"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.nested-package", "Nested Package", valueFromNative("nestedPackage", "nested package"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owned-type", "Owned Type", valueFromNative("ownedType", "owned type"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.package-merge", "Package Merge", valueFromNative("packageMerge", "package merge"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.applied-profile", "Applied Profile", valueFromNative("appliedProfile", "applied profile"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.image", "Image", valueFromNative("image", "Image"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.uri", "URI", valueFromNative("URI", "uri"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.to-do", "To Do", valueFromNative("toDo", "to do", "todo"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.element-id", "Element ID", firstMeaningful(valueFromNative("ID", "elementId", "Element ID"), sourcePayload.local_id, item.id), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owned-stereotype", "Owned Stereotype", valueFromNative("ownedStereotype", "owned stereotype"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.owning-template-parameter", "Owning Template Parameter", valueFromNative("owningTemplateParameter", "owning template parameter"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.packaged-element", "Packaged Element", firstMeaningful(valueFromNative("packagedElement", "packaged element"), valueFromReferences("packagedElement")), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.profile-application", "Profile Application", valueFromNative("profileApplication", "profile application"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.all-realizing-elements", "All Realizing Elements", valueFromNative("allRealizingElements", "all realizing elements"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.all-specifying-elements", "All Specifying Elements", valueFromNative("allSpecifyingElements", "all specifying elements"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.realizing-element", "Realizing Element", valueFromNative("realizingElement", "realizing element"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.specifying-element", "Specifying Element", valueFromNative("specifyingElement", "specifying element"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.allocated-from", "Allocated From", firstMeaningful(valueFromReferences("allocatedFrom"), valueFromNative("allocatedFrom", "allocated from")), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.allocated-to", "Allocated To", firstMeaningful(valueFromReferences("allocatedTo"), valueFromNative("allocatedTo", "allocated to")), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.author", "Author", valueFromNative("author", "Author"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.documentation", "Documentation", firstMeaningful(valueFromNative("documentation", "Documentation"), sourcePayload.documentation), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.package.mounted-package", "Mounted Package", valueFromNative("mountedPackage", "mounted package"), { showWhenEmpty: shouldShowEmptyCameoRows });
+
+    return cameoOrderedInspectorRows(dedupeInspectorRows(rows), item.item_type);
+  } else {
+    pushRow("cameo.name", "Name", firstMeaningful(valueFromNative("name", "Name"), sourcePayload.human_name, item.name), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.used-as-type", "Used As Type", firstMeaningful(valueFromReferences("_typedElementOfType", "typedElementOfType"), valueFromNative("typedElement", "type")), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.sync-element", "Sync Element", valueFromNative("syncElement", "sync element"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.general", "General", valueFromNative("general", "General"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.element-id", "Element ID", firstMeaningful(valueFromNative("ID", "elementId", "Element ID"), item.id), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.specific-classifier", "Specific Classifier", valueFromNative("specificClassifier", "specific classifier"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.verifies", "Verifies", firstMeaningful(valueFromReferences("verify", "verifies"), valueFromNative("verifies", "verify")), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.participates-interaction", "Participates In Interaction", valueFromNative("participatesInInteraction", "participates in interaction"), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.allocated-to", "Allocated To", firstMeaningful(valueFromReferences("allocatedTo"), valueFromNative("allocatedTo", "allocated to")), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.specifying-component", "Specifying Component", valueFromNative("specifyingComponent", "specifying component"), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.all-specifying-elements", "All Specifying Elements", valueFromNative("allSpecifyingElements", "all specifying elements"), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.realizing-element", "Realizing Element", valueFromNative("realizingElement", "realizing element"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.refines", "Refines", firstMeaningful(valueFromReferences("refine", "refines"), valueFromNative("refines", "refine")), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.participates-activity", "Participates In Activity", valueFromNative("participatesInActivity", "participates in activity"), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.traced-from", "Traced From", firstMeaningful(valueFromReferences("tracedFrom", "trace"), valueFromNative("tracedFrom", "traced from")), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.all-realizing-elements", "All Realizing Elements", valueFromNative("allRealizingElements", "all realizing elements"), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.allocated-from", "Allocated From", firstMeaningful(valueFromReferences("allocatedFrom"), valueFromNative("allocatedFrom", "allocated from")), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.specifying-use-case", "Specifying Use Case", valueFromNative("specifyingUseCase", "specifying use case"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.all-specific-classifiers", "All Specific Classifiers", valueFromNative("allSpecificClassifiers", "all specific classifiers"), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.owner", "Owner", firstMeaningful(valueFromNative("owner", "Owner"), item.owner), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.qualified-name", "Qualified Name", firstMeaningful(valueFromNative("qualifiedName", "Qualified Name"), sourcePayload.qualified_name), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.is-encapsulated", "Is Encapsulated", valueFromNative("isEncapsulated", "is encapsulated"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.realizing-component", "Realizing Component", valueFromNative("realizingComponent", "realizing component"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.satisfies", "Satisfies", firstMeaningful(valueFromReferences("satisfy", "satisfies"), valueFromNative("satisfies", "satisfy")), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.specifying-element", "Specifying Element", valueFromNative("specifyingElement", "specifying element"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.all-general-classifiers", "All General Classifiers", firstMeaningful(valueFromNative("allGeneralClassifiers", "all general classifiers"), valueFromNative("general", "superClass")), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.applied-stereotype", "Applied Stereotype", firstMeaningful(valueFromNative("appliedStereotype", "Applied Stereotype"), item.stereotypes), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.is-active", "Is Active", valueFromNative("isActive", "is active"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.is-abstract", "Is Abstract", valueFromNative("isAbstract", "is abstract"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.use-case", "Use Case", valueFromNative("useCase", "use case"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.template-parameter", "Template Parameter", valueFromNative("templateParameter", "template parameter"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.owned-comment", "Owned Comment", valueFromNative("ownedComment", "owned comment"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.owned-element", "Owned Element", valueFromNative("ownedElement", "owned element"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.super-class", "Super Class", valueFromNative("superClass", "super class"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.tagged-value", "Tagged Value", valueFromNative("taggedValue", "tagged value"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.owning-package", "Owning Package", firstMeaningful(valueFromNative("owningPackage", "owning package"), valueFromReferences("owningPackage")), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.name-expression", "Name Expression", valueFromNative("nameExpression", "name expression"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.namespace", "Namespace", valueFromNative("namespace", "Namespace"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.owned-template-signature", "Owned Template Signature", valueFromNative("ownedTemplateSignature", "owned template signature"), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.template-binding", "Template Binding", valueFromNative("templateBinding", "template binding"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.client-dependency", "Client Dependency", valueFromNative("clientDependency", "client dependency"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.supplier-dependency", "Supplier Dependency", valueFromNative("supplierDependency", "supplier dependency"), {
+      showWhenEmpty: shouldShowEmptyCameoRows,
+    });
+    pushRow("cameo.owned-connector", "Owned Connector", valueFromNative("ownedConnector", "owned connector"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.role", "Role", valueFromNative("role", "Role"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.part", "Part", valueFromNative("part", "Part"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.owned-attribute", "Owned Attribute", valueFromNative("ownedAttribute", "owned attribute"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.owned-diagram", "Owned Diagram", valueFromNative("ownedDiagram", "owned diagram"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.imported-member", "Imported Member", valueFromNative("importedMember", "imported member"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.member", "Member", valueFromNative("member", "Member"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.owned-member", "Owned Member", valueFromNative("ownedMember", "owned member"), { showWhenEmpty: shouldShowEmptyCameoRows });
+    pushRow("cameo.owned-rule", "Owned Rule", valueFromNative("ownedRule", "owned rule"), { showWhenEmpty: shouldShowEmptyCameoRows });
+  }
 
   rows.push(
     ...collectHintRows(item, lookup, PROPERTY_FIELD_HINTS, {
@@ -1984,9 +2316,13 @@ function specificationWindowRows(
 
   if (viewMode === "all") {
     for (const [key, value] of payloadExtraSections(item)) {
+      const label = humanizeFieldLabel(key);
+      if (rows.some((row) => normalizedFieldKey(row.label) === normalizedFieldKey(label))) {
+        continue;
+      }
       rows.push({
         key: `extra.${key}`,
-        label: humanizeFieldLabel(key),
+        label,
         value: humanReadableValue(value, lookup),
       });
     }
@@ -2006,12 +2342,15 @@ function specificationWindowRows(
     .map((entry, index) => ({
       key: `native.metamodel.${String(entry.id ?? index)}`,
       label: String(entry.name ?? entry.id ?? `Property ${index + 1}`),
-      value: nativeEntryDisplayValue(entry, lookup) || (viewMode === "all" ? "Not provided" : ""),
+      value: nativeEntryDisplayValue(entry, lookup) || "",
     }))
     .filter((row) => hasMeaningfulValue(row.value));
-  rows.push(...nativeRows);
+  const representedLabels = new Set(rows.map((row) => normalizedFieldKey(row.label)));
+  representedLabels.add("id");
+  representedLabels.add("elementid");
+  rows.push(...nativeRows.filter((row) => !representedLabels.has(normalizedFieldKey(row.label))));
 
-  return dedupeInspectorRows(rows);
+  return cameoOrderedInspectorRows(dedupeInspectorRows(rows), item.item_type);
 }
 
 function defaultParameterValue(parameter: SwaggerParameterSpec): string {
@@ -2194,6 +2533,7 @@ export default function WorkspacePage() {
   const [treeNodes, setTreeNodes] = useState<TreeNode[]>([]);
   const [loadingTreeNodeIds, setLoadingTreeNodeIds] = useState<string[]>([]);
   const [expandedTreeNodeIds, setExpandedTreeNodeIds] = useState<string[]>([]);
+  const [expandedInnerElementNodeIds, setExpandedInnerElementNodeIds] = useState<string[]>([]);
   const [navPaneWidth, setNavPaneWidth] = useState(() => readStoredNumber(navPaneStorageKey, 280, 240, 420));
   const [modelContainmentPaneWidth, setModelContainmentPaneWidth] = useState(() =>
     readStoredNumber(modelContainmentPaneStorageKey, 320, 260, 460),
@@ -2621,7 +2961,6 @@ export default function WorkspacePage() {
       return;
     }
     if (!selectedProjectBranches.length) {
-      setSelectedBranchId("");
       return;
     }
     if (!selectedProjectBranches.some((branch) => branch.id === selectedBranchId)) {
@@ -2748,7 +3087,7 @@ export default function WorkspacePage() {
 
   const treeQuery = useQuery({
     queryKey: ["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId],
-    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined, false),
+    queryFn: () => api.getTree(selectedProjectId || undefined, selectedBranchId || undefined, selectedProject?.workspace_id || undefined, false, 0),
     enabled:
       projectContextActive &&
       Boolean(selectedProjectId) &&
@@ -2794,6 +3133,49 @@ export default function WorkspacePage() {
       return merged;
     });
   }, [baseTreeNodes, treeContextKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      !projectContextActive ||
+      !selectedProjectId ||
+      !selectedBranchId ||
+      treeQuery.isFetching ||
+      treeNodesRef.current.length ||
+      baseTreeNodes.length
+    ) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    void api
+      .getTree(selectedProjectId, selectedBranchId, selectedProject?.workspace_id || undefined, false, 0)
+      .then((nodes) => {
+        if (cancelled || !nodes.length) {
+          return;
+        }
+        treeNodesRef.current = nodes;
+        setTreeNodes(nodes);
+        queryClient.setQueryData(["workspace-tree", ...sessionCacheKey, selectedProjectId, selectedBranchId], nodes);
+      })
+      .catch(() => {
+        // The normal query path will surface access/API errors. This fallback
+        // exists only to recover a valid cached tree that was not mounted into
+        // React state after URL/session changes.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    baseTreeNodes.length,
+    projectContextActive,
+    queryClient,
+    selectedBranchId,
+    selectedProject?.workspace_id,
+    selectedProjectId,
+    sessionCacheKey,
+    treeQuery.isFetching,
+  ]);
 
   useEffect(() => {
     treeNodesRef.current = treeNodes;
@@ -3195,6 +3577,78 @@ export default function WorkspacePage() {
     ];
     return candidates.find((value): value is string => typeof value === "string" && Boolean(value.trim()))?.trim() ?? "";
   })();
+  const selectedInnerElementTreeQuery = useQuery({
+    queryKey: [
+      "workspace-inner-elements-tree",
+      ...sessionCacheKey,
+      selectedProjectId,
+      selectedBranchId,
+      selectedItemId,
+      selectedPermissionModelId,
+      selectedProject?.workspace_id,
+    ],
+    queryFn: async () => {
+      if (!selectedProjectId || !selectedBranchId || !selectedItemId) {
+        return [] as TreeNode[];
+      }
+      const maxDepth = 4;
+      const maxNodes = 500;
+      let visitedCount = 0;
+      const hydrateChildren = async (parentId: string, depth: number): Promise<TreeNode[]> => {
+        if (depth > maxDepth || visitedCount >= maxNodes) {
+          return [];
+        }
+        const children = await api.getTreeChildren(
+          selectedProjectId,
+          selectedBranchId,
+          parentId,
+          selectedPermissionModelId || undefined,
+          selectedProject?.workspace_id || undefined,
+          false,
+        );
+        const hydrated: TreeNode[] = [];
+        for (const child of children) {
+          if (visitedCount >= maxNodes) {
+            break;
+          }
+          visitedCount += 1;
+          const childCount =
+            typeof child.metadata.child_count === "number"
+              ? child.metadata.child_count
+              : typeof child.metadata.total_children === "number"
+                ? child.metadata.total_children
+                : typeof child.metadata.children === "number"
+                  ? child.metadata.children
+                  : child.children.length;
+          const loadedChildren = child.children.length
+            ? child.children
+            : childCount > 0 && depth < maxDepth
+              ? await hydrateChildren(child.id, depth + 1)
+              : [];
+          hydrated.push({ ...child, children: loadedChildren });
+        }
+        return hydrated;
+      };
+      return hydrateChildren(selectedItemId, 0);
+    },
+    enabled: Boolean(
+      projectContextActive &&
+      selectedSpecificationSection === "inner-elements" &&
+      selectedProjectId &&
+      selectedBranchId &&
+      selectedItemId,
+    ),
+    staleTime: cacheTimeMs,
+    gcTime: cacheTimeMs,
+    refetchOnWindowFocus: false,
+  });
+  useEffect(() => {
+    if (selectedSpecificationSection !== "inner-elements") {
+      return;
+    }
+    const nodes = selectedInnerElementTreeQuery.data ?? [];
+    setExpandedInnerElementNodeIds(expandableTreeNodeIds(nodes));
+  }, [selectedItemId, selectedSpecificationSection, selectedInnerElementTreeQuery.data]);
   const currentPermissionStatusQuery = useQuery({
     queryKey: [
       "workspace-current-permission",
@@ -3268,12 +3722,17 @@ export default function WorkspacePage() {
   );
   const showAppliedStereotypesInTree = Boolean(currentPreferences.show_applied_stereotypes_in_tree);
   const visibleTreeNodes = useMemo(
-    () =>
-      filterContainmentTree(treeNodes, {
+    () => {
+      const filtered = filterContainmentTree(treeNodes, {
         showAuxiliaryResources: showAuxiliaryResourcesInTree,
         showAppliedStereotypes: showAppliedStereotypesInTree,
-      }),
-    [showAppliedStereotypesInTree, showAuxiliaryResourcesInTree, treeNodes],
+      });
+      if (!filtered.length && treeNodes.length && !treeFilter.trim()) {
+        return treeNodes;
+      }
+      return filtered;
+    },
+    [showAppliedStereotypesInTree, showAuxiliaryResourcesInTree, treeFilter, treeNodes],
   );
   const selectedWorkbenchAgentModel = useMemo<OpenWebUIModelEntry | null>(
     () => workbenchAgentModels.find((entry) => entry.id === agentSelectedModelId) ?? null,
@@ -3570,7 +4029,7 @@ export default function WorkspacePage() {
       let tree: TreeNode[] | null = null;
       const currentBranchId = selectedBranchId || branches[0]?.id;
       if (currentBranchId) {
-        tree = await api.getTree(selectedProjectId, currentBranchId, selectedProject?.workspace_id || undefined, true);
+        tree = await api.getTree(selectedProjectId, currentBranchId, selectedProject?.workspace_id || undefined, true, 0);
       }
       return { branches, tree, branchId: currentBranchId ?? "" };
     },
@@ -4358,9 +4817,15 @@ export default function WorkspacePage() {
             <Typography variant="body2" fontWeight={600} color="text.secondary">
               {row.label}
             </Typography>
-            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-              {row.value || "Not provided"}
-            </Typography>
+            <Box sx={{ minWidth: 0, "& .MuiButton-root": { maxWidth: "100%" } }}>
+              {row.rawValue !== undefined ? (
+                renderSpecificationValue(row.rawValue)
+              ) : (
+                <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {row.value}
+                </Typography>
+              )}
+            </Box>
           </Box>
         ))}
       </Paper>
@@ -4453,7 +4918,7 @@ export default function WorkspacePage() {
               {itemReferenceDisplayName(reference, referenceNameById)}
             </Button>
             <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-              {(options?.secondaryColumn?.(reference) ?? itemReferenceTypeLabel(reference)) || "Not provided"}
+              {(options?.secondaryColumn?.(reference) ?? itemReferenceTypeLabel(reference)) || ""}
             </Typography>
           </Box>
         ))}
@@ -4510,26 +4975,28 @@ export default function WorkspacePage() {
           >
             {row.cells.map((cell, index) => {
               const targetId = row.targetIds?.[index];
+              const indentLevel = row.indentCells?.[index] ?? 0;
+              const indentSx = indentLevel ? { ml: `${indentLevel * 1.4}rem` } : {};
               if (targetId && (typeof cell === "string" || typeof cell === "number")) {
                 return (
                   <Button
                     key={`${row.key}-${index}`}
                     size="small"
                     variant="text"
-                    sx={{ justifyContent: "flex-start", minWidth: 0, px: 0.5, py: 0, textTransform: "none", textAlign: "left" }}
+                    sx={{ justifyContent: "flex-start", minWidth: 0, px: 0.5, py: 0, textTransform: "none", textAlign: "left", ...indentSx }}
                     onClick={() => void navigateToSpecificationElement(targetId)}
                   >
-                    {cell || "Not provided"}
+                    {cell || ""}
                   </Button>
                 );
               }
               return typeof cell === "string" || typeof cell === "number" ? (
-                <Typography key={`${row.key}-${index}`} variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                  {cell || "Not provided"}
+                <Typography key={`${row.key}-${index}`} variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", ...indentSx }}>
+                  {cell || ""}
                 </Typography>
               ) : (
-                <Box key={`${row.key}-${index}`} sx={{ minWidth: 0, "& .MuiButton-root": { maxWidth: "100%" } }}>
-                  {cell || "Not provided"}
+                <Box key={`${row.key}-${index}`} sx={{ minWidth: 0, ...indentSx, "& .MuiButton-root": { maxWidth: "100%" } }}>
+                  {cell || ""}
                 </Box>
               );
             })}
@@ -4542,7 +5009,7 @@ export default function WorkspacePage() {
 
   const renderSpecificationValue = (value: unknown): ReactNode => {
     if (!hasMeaningfulValue(value)) {
-      return "<unset>";
+      return "";
     }
     if (Array.isArray(value)) {
       return (
@@ -4657,7 +5124,7 @@ export default function WorkspacePage() {
             ? renderSpecificationValue(entry.value)
             : hasMeaningfulValue(entry.defaultValue)
               ? renderSpecificationValue(entry.defaultValue)
-              : "<unset>",
+              : "",
           String(entry.valueType ?? entry.kind ?? ""),
           nativeSpecificationState(entry),
         ],
@@ -4679,7 +5146,7 @@ export default function WorkspacePage() {
             ? renderSpecificationValue(entry.value)
             : hasMeaningfulValue(entry.defaultValue)
               ? renderSpecificationValue(entry.defaultValue)
-              : "<unset>",
+              : "",
           String(entry.valueType ?? ""),
           nativeSpecificationState(entry),
         ],
@@ -4793,7 +5260,7 @@ export default function WorkspacePage() {
             targetIds: targetId ? { 1: targetId } : undefined,
             cells: [
               String(entry.name ?? entry.id ?? "Property"),
-              hasMeaningfulValue(value) ? renderSpecificationValue(value) : "<unset>",
+              hasMeaningfulValue(value) ? renderSpecificationValue(value) : "",
               String(entry.valueType ?? entry.kind ?? ""),
               nativeSpecificationState(entry),
             ],
@@ -4837,6 +5304,51 @@ export default function WorkspacePage() {
       referenceRowsToTableRows(item.contained_elements, referenceNameById),
       nativeInnerRows,
     );
+    const directInnerElementTreeNodes: TreeNode[] = item.contained_elements.map((reference) => ({
+      id: reference.id,
+      label: itemReferenceDisplayName(reference, referenceNameById),
+      node_type: reference.item_type || reference.relationship_type || "element",
+      path: reference.path,
+      children: [],
+      metadata: {
+        project_id: item.project_id,
+        branch_id: item.branch_id,
+        model_id: selectedPermissionModelId,
+        qualified_name: reference.path,
+        metaclass: reference.item_type || reference.relationship_type || "Element",
+        child_count: 0,
+        children_loaded: true,
+      },
+    }));
+    const fallbackInnerElementTreeNodes = directInnerElementTreeNodes.length
+      ? directInnerElementTreeNodes
+      : innerElementRows
+        .filter((row) => Boolean(row.targetIds?.[0]))
+        .map((row, index) => {
+          const targetId = row.targetIds?.[0] ?? `inner-element-row-${index}`;
+          const label = String(row.cells[0] ?? "").trim() || `Inner Element ${index + 1}`;
+          const typeLabel = String(row.cells[1] ?? "").trim() || "Element";
+          return {
+            id: targetId,
+            label,
+            node_type: typeLabel,
+            path: label,
+            children: [],
+            metadata: {
+              project_id: item.project_id,
+              branch_id: item.branch_id,
+              model_id: selectedPermissionModelId,
+              qualified_name: label,
+              metaclass: typeLabel,
+              child_count: 0,
+              children_loaded: true,
+            },
+          };
+        });
+    const displayedInnerElementTreeNodes =
+      options.mode === "browser" && item.id === selectedItemId && selectedInnerElementTreeQuery.data?.length
+        ? selectedInnerElementTreeQuery.data
+        : fallbackInnerElementTreeNodes;
     const nativeRelationRows = nativeReferenceRowsForHints(item, referenceNameById, ["owner", "owned", "supplier", "client", "relationship", "relation", "dependency", "element"], {
       defaultType: "Reference",
     }).map((row) => ({
@@ -4898,6 +5410,7 @@ export default function WorkspacePage() {
       ...nativeAllocationRows,
     ];
     const combinedAllocationRows = combineDataRows(structuredAllocationRows, allocationTableRows);
+    const specificationChildSections = specificationChildSectionsForItem(item);
     const selectedSectionTitle =
       selectedSpecificationSection === "properties"
         ? displayEntityName(item.name, item.id, item.item_type, referenceNameById, item.path)
@@ -4933,7 +5446,7 @@ export default function WorkspacePage() {
                 </Paper>
               ) : null}
               {renderSpecificationTable(propertiesRows, "No published properties were returned for this item.")}
-              {itemDetailViewMode === "all" && nativePropertyRows.length ? (
+              {itemDetailViewMode === "all" && !isPackageLikeItemType(item.item_type) && nativePropertyRows.length ? (
                 <Stack spacing={1}>
                   <Typography variant="subtitle2">All Cameo Properties</Typography>
                   {renderDataTable(
@@ -4949,7 +5462,7 @@ export default function WorkspacePage() {
                   )}
                 </Stack>
               ) : null}
-              {itemDetailViewMode === "all" && nativeStereotypeRows.length ? (
+              {itemDetailViewMode === "all" && !isPackageLikeItemType(item.item_type) && nativeStereotypeRows.length ? (
                 <Stack spacing={1}>
                   <Typography variant="subtitle2">Stereotype Properties</Typography>
                   {renderDataTable(
@@ -5025,14 +5538,36 @@ export default function WorkspacePage() {
         case "behaviors":
           return nativeSectionTable(behaviorRows, "No behaviors were published for this item.");
         case "inner-elements":
-          return innerElementRows.length
-            ? renderDataTable(["Name", "Type"], innerElementRows, "No contained elements were published for this item.", {
-                columnTemplate: {
-                  xs: "minmax(0, 1fr)",
-                  sm: "minmax(0, 1.2fr) minmax(160px, 0.8fr)",
-                },
-              })
-            : renderReferenceTable(item.contained_elements, "No contained elements were published for this item.");
+          return (
+            <Stack spacing={1.5}>
+              {selectedInnerElementTreeQuery.isFetching && options.mode === "browser" && item.id === selectedItemId ? (
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <CircularProgress size={16} />
+                  <Typography variant="body2" color="text.secondary">
+                    Loading nested Inner Elements...
+                  </Typography>
+                </Stack>
+              ) : null}
+              {displayedInnerElementTreeNodes.length ? (
+                <Paper variant="outlined" sx={{ p: compactUi ? 1 : 1.25, borderRadius: 2 }}>
+                  <ProjectTree
+                    nodes={displayedInnerElementTreeNodes}
+                    selectedId={selectedItemId}
+                    filter=""
+                    expandedIds={expandedInnerElementNodeIds}
+                    onExpandedChange={setExpandedInnerElementNodeIds}
+                    onSelect={(node) => {
+                      const modelId = typeof node.metadata.model_id === "string" ? node.metadata.model_id : undefined;
+                      void navigateToSpecificationElement(node.id, modelId);
+                    }}
+                    showFullTypes
+                  />
+                </Paper>
+              ) : (
+                <Typography color="text.secondary">No contained elements were published for this item.</Typography>
+              )}
+            </Stack>
+          );
         case "relations":
           return renderDataTable(["Name", "Element", "Direction", "Related Element"], combinedRelationRows, "No relationships were published for this item.", {
             columnTemplate: {
@@ -5131,7 +5666,7 @@ export default function WorkspacePage() {
                   secondary={humanizeFieldLabel(item.item_type)}
                 />
               </ListItemButton>
-              {SPECIFICATION_CHILD_SECTIONS.map((sectionId) => (
+              {specificationChildSections.map((sectionId) => (
                 <ListItemButton
                   key={sectionId}
                   selected={selectedSpecificationSection === sectionId}

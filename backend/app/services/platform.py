@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 import re
+from types import SimpleNamespace
 from typing import Any, Callable
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -3955,8 +3956,9 @@ class PlatformService:
 
         server = self._require_server(server_id, include_disabled=True)
         adapter = create_adapter(server, {}, self.settings.resolved_data_dir)
+        payload = self._cached_element_payload(record.payload)
         resolved_payloads: dict[str, Any] = {}
-        for reference_id in adapter.reference_resolution_ids(record.payload):
+        for reference_id in adapter.reference_resolution_ids(payload):
             referenced_record = self.get_cached_branch_element_for_user(
                 server_id,
                 preferred_username,
@@ -3966,9 +3968,9 @@ class PlatformService:
                 include_all_workbench_admin=include_all_workbench_admin,
             )
             if referenced_record is not None and isinstance(referenced_record.payload, dict):
-                resolved_payloads[reference_id] = referenced_record.payload
+                resolved_payloads[reference_id] = self._cached_element_payload(referenced_record.payload)
         item_details = adapter.build_item_details_from_payload(
-            record.payload,
+            payload,
             record.element_id,
             project_id,
             branch_id,
@@ -3976,7 +3978,16 @@ class PlatformService:
             editable=editable,
             version=record.latest_revision or record.synced_at.isoformat(),
         )
-        return self._enrich_cameo_property_item_details(item_details, record.payload, resolved_payloads)
+        return self._enrich_cameo_property_item_details(item_details, payload, resolved_payloads)
+
+    @staticmethod
+    def _cached_element_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        nested = payload.get("payload")
+        if isinstance(nested, dict):
+            return nested
+        return payload
 
     def _resolved_payload_attribute_value(self, resolved_payloads: dict[str, Any], element_id: str, key: str) -> str:
         payload = resolved_payloads.get(element_id)
@@ -4621,12 +4632,13 @@ class PlatformService:
                 cached_record.model_id,
             )
             editable = bool(permission.editable) if permission else False
-        adapter = self._adapter_for_session(session)
+        adapter = self._cache_payload_adapter(session.server.id)
+        payload = self._cached_element_payload(cached_record.payload)
         resolved_payloads: dict[str, Any] = {}
-        for reference_id in adapter.reference_resolution_ids(cached_record.payload):
+        for reference_id in adapter.reference_resolution_ids(payload):
             referenced_record = self.get_cached_branch_element(session, project_id, branch_id, reference_id)
             if referenced_record is not None and isinstance(referenced_record.payload, dict):
-                resolved_payloads[reference_id] = referenced_record.payload
+                resolved_payloads[reference_id] = self._cached_element_payload(referenced_record.payload)
 
         canonical_record = self._canonical_cameo_visible_details_record(
             session.server.id,
@@ -4637,13 +4649,14 @@ class PlatformService:
         if canonical_record.element_id != cached_record.element_id:
             resolved_payloads = {}
             cached_record = canonical_record
-            for reference_id in adapter.reference_resolution_ids(cached_record.payload):
+            payload = self._cached_element_payload(cached_record.payload)
+            for reference_id in adapter.reference_resolution_ids(payload):
                 referenced_record = self.get_cached_branch_element(session, project_id, branch_id, reference_id)
                 if referenced_record is not None and isinstance(referenced_record.payload, dict):
-                    resolved_payloads[reference_id] = referenced_record.payload
+                    resolved_payloads[reference_id] = self._cached_element_payload(referenced_record.payload)
 
         item_details = adapter.build_item_details_from_payload(
-            cached_record.payload,
+            payload,
             cached_record.element_id,
             project_id,
             branch_id,
@@ -4651,7 +4664,7 @@ class PlatformService:
             editable=editable,
             version=cached_record.latest_revision or cached_record.synced_at.isoformat(),
         )
-        return self._enrich_cameo_property_item_details(item_details, cached_record.payload, resolved_payloads)
+        return self._enrich_cameo_property_item_details(item_details, payload, resolved_payloads)
 
     def _materialized_model_item_details(
         self,
@@ -4662,7 +4675,7 @@ class PlatformService:
         *,
         editable: bool,
     ) -> ItemDetails:
-        adapter = self._adapter_for_session(session)
+        adapter = self._cache_payload_adapter(session.server.id)
         synthetic_payload: dict[str, Any] = {
             "@id": model.model_id,
             "@type": ["Model"],
@@ -4690,6 +4703,11 @@ class PlatformService:
             editable=editable,
             version=model.latest_revision or model.synced_at.isoformat(),
         )
+
+    def _cache_payload_adapter(self, server_id: str) -> TeamworkAdapter:
+        adapter = object.__new__(TeamworkAdapter)
+        adapter.context = SimpleNamespace(server=SimpleNamespace(id=server_id))
+        return adapter
 
     def _accessible_cached_models(
         self,
@@ -5010,6 +5028,21 @@ class PlatformService:
             if comment_label:
                 return comment_label
         normalized_metaclass = normalize_lookup_key(str(self._tree_record_field(record, "metaclass") or ""))
+        if normalized_metaclass == "dependency":
+            dependency_record = record
+            if isinstance(record, dict) and "references" not in record:
+                full_record = self.repo.get_cached_element(
+                    server_id,
+                    project_id,
+                    branch_id,
+                    str(record.get("element_id") or ""),
+                    model_id=str(record.get("model_id") or "") or None,
+                )
+                if full_record is not None:
+                    dependency_record = full_record
+            dependency_signature = self._dependency_tree_signature(server_id, project_id, branch_id, dependency_record)
+            if dependency_signature:
+                return dependency_signature
         if normalized_metaclass in {"property", "port"}:
             property_signature = self._property_tree_signature(server_id, project_id, branch_id, record, raw_label)
             if property_signature:
@@ -5163,6 +5196,28 @@ class PlatformService:
         if qualified_name:
             return qualified_name.replace("/", "::")
         return str(self._tree_record_field(record, "name") or "").strip()
+
+    def _dependency_tree_signature(
+        self,
+        server_id: str,
+        project_id: str,
+        branch_id: str,
+        record: CachedElementRecord | dict[str, Any],
+    ) -> str:
+        model_id = self._tree_record_model_id(record)
+
+        def reference_names(reference_key: str) -> list[str]:
+            names: list[str] = []
+            for reference_id in self._tree_record_reference_values(record, reference_key):
+                reference_record = self._tree_reference_record(server_id, project_id, branch_id, model_id, reference_id)
+                names.append(self._tree_record_cameo_qualified_name(reference_record) or reference_id)
+            return [name for name in names if name]
+
+        clients = reference_names("client")
+        suppliers = reference_names("supplier")
+        if not clients and not suppliers:
+            return ""
+        return f"Dependency[{', '.join(clients) or 'client'} -> {', '.join(suppliers) or 'supplier'}]"
 
     def _property_tree_signature(
         self,
