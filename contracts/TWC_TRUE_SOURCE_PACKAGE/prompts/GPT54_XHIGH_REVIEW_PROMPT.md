@@ -111,3 +111,11 @@ Instead:
 - state the exact missing artifact,
 - explain why it matters,
 - give the smallest capture step needed.
+
+<!--
+  Fully-commented edition notes:
+  - File path: contracts/TWC_TRUE_SOURCE_PACKAGE/prompts/GPT54_XHIGH_REVIEW_PROMPT.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

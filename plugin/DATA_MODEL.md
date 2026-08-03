@@ -106,3 +106,11 @@ Recommended future cleanup:
 - retain recent history window
 - prune stale branch snapshots by last viewed time
 - provide manual cache clear per project/branch
+
+<!--
+  Fully-commented edition notes:
+  - File path: plugin/DATA_MODEL.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

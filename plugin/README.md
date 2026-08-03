@@ -157,3 +157,11 @@ CACHE_INGEST_TOKENS=["your-plugin-write-token"]
 - The plugin source supports 2022x and 2024x targets; the script defaults to 2024x and still needs the exact target Cameo SDK/runtime for compilation and live end-to-end validation.
 - The export model aims to be rich enough for Workbench cache ingestion without forcing us into a fixed third-party file format.
 - `build-plugin.ps1` now accepts `-Cameo2022xHome` and `-Cameo2024xHome`, and also honors environment variables such as `CAMEO_2022X_HOME`, `CAMEO_2024X_HOME`, and `CAMEO_HOME`.
+
+<!--
+  Fully-commented edition notes:
+  - File path: plugin/README.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

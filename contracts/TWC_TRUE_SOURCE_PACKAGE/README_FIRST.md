@@ -50,3 +50,11 @@ Public docs are not enough to verify your exact environment for:
 
 ## Important
 This package is meant to keep the coding agent grounded in **true sources only**.
+
+<!--
+  Fully-commented edition notes:
+  - File path: contracts/TWC_TRUE_SOURCE_PACKAGE/README_FIRST.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

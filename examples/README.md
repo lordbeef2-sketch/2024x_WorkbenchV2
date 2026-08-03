@@ -220,3 +220,11 @@ payloads, and attached branch permissions into one JSON file.
   `RealSwagger.json`; the closest example here is
   [17_contract_operation.py](17_contract_operation.py),
   which lets you run one arbitrary REST operation from `config.json`.
+
+<!--
+  Fully-commented edition notes:
+  - File path: examples/README.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

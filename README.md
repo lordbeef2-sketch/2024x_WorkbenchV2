@@ -377,3 +377,11 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 - Add persistent relational storage for profiles and sessions.
 - Add SSO provider-specific hardening and token refresh flow handling.
 - Add packaging for Docker and container orchestration.
+
+<!--
+  Fully-commented edition notes:
+  - File path: README.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

@@ -66,3 +66,11 @@ The default installation is `%LOCALAPPDATA%\TWCWorkbench`. Override it with
 Before production use, edit `backend/.env` in the installed folder and configure
 the approved TWC server, AuthServer callback, TLS, public origin, and other
 environment-specific values.
+
+<!--
+  Fully-commented edition notes:
+  - File path: offline/README.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

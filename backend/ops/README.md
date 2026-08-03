@@ -8,3 +8,11 @@ Run these commands from `backend` so the `app` package is importable.
 - `python ops/live_twc_smoke.py` performs a real Workbench-to-TWC login, project visibility read, background permission refresh, inventory status read, and logout. It requires `WORKBENCH_SMOKE_BASE_URL`, `TWC_SMOKE_SERVER_ID`, and `TWC_SMOKE_TOKEN`; the token is never printed.
 
 Set `WORKBENCH_SMOKE_VERIFY_TLS=false` only for an explicitly approved test environment with a private or self-signed certificate.
+
+<!--
+  Fully-commented edition notes:
+  - File path: backend/ops/README.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

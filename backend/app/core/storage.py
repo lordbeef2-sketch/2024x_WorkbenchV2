@@ -2577,3 +2577,9 @@ class SqliteRepository:
             "user_data_cache": user_data_cache,
             "jobs": [json.loads(item.model_dump_json()) for item in self.list_jobs()],
         }
+
+# Fully-commented edition notes:
+# - File path: backend/app/core/storage.py
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

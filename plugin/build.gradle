@@ -57,3 +57,9 @@ tasks.register('stagePlugin') {
     description = 'Builds and stages an installable Cameo plugin folder.'
     dependsOn tasks.named('jar'), tasks.named('copyPluginDescriptor'), tasks.named('copyPluginConfig')
 }
+
+// Fully-commented edition notes:
+// - File path: plugin/build.gradle
+// - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+// - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+// - The normal main branch keeps the production-readable version with only provenance headers.

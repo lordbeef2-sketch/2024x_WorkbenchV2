@@ -303,3 +303,9 @@ fi
 write_phase "Starting the single-origin FastAPI server"
 cd "$backend_dir"
 exec "$venv_python" -m uvicorn app.main:app --host "$bind_host" --port "$port" --no-access-log
+
+# Fully-commented edition notes:
+# - File path: launch.sh
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

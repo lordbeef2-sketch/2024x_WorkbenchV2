@@ -115,3 +115,11 @@ Capture real payloads for:
 - Remove passwords, raw tokens, session cookies, and internal-only secrets.
 - Keep endpoint paths, status codes, field names, and response shapes intact.
 - Preserve realistic IDs if safe; otherwise replace consistently.
+
+<!--
+  Fully-commented edition notes:
+  - File path: contracts/TWC_TRUE_SOURCE_PACKAGE/docs/LIVE_DATA_COLLECTION_CHECKLIST.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

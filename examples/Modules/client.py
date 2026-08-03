@@ -92,3 +92,9 @@ def auth_summary(client: TwcExampleClient) -> dict[str, Any]:
         "token_url": token_endpoint(client.config),
         "token": token_summary(client.bundle),
     }
+
+# Fully-commented edition notes:
+# - File path: examples/Modules/client.py
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

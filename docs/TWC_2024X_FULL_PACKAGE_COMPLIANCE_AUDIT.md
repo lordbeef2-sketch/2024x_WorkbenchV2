@@ -73,3 +73,11 @@ v2/KerML specifications, and Systems Modeling repositories.
 3. Run live AuthServer code-flow, redirect, TLS, and token-refresh tests.
 4. Run live multi-user visibility/permission-loss, cross-branch/project diff,
    OWUI knowledge push, and delivery to the production alert receiver.
+
+<!--
+  Fully-commented edition notes:
+  - File path: docs/TWC_2024X_FULL_PACKAGE_COMPLIANCE_AUDIT.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

@@ -221,3 +221,11 @@ This layer is intentionally focused on the most common 2024x OpenAPI entry point
 
 The full Javadoc surface is much larger than what belongs in a reusable project helper. For anything more specialized, use `api.jclass("...")` for direct access to the underlying Java class.
 
+
+<!--
+  Fully-commented edition notes:
+  - File path: examples/NOMAGIC_2024X_PYTHON.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

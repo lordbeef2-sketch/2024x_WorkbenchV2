@@ -9,3 +9,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# Fully-commented edition notes:
+# - File path: examples/00_auth_and_current_user.py
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

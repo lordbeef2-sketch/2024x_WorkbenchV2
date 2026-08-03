@@ -36,3 +36,10 @@
 - `POST /osmc/workspaces/{workspaceId}/resources/{resourceId}/tags`
 - `POST /osmc/workspaces/{workspaceId}/roles/{roleId}/usergroups`
 - `POST /osmc/workspaces/{workspaceId}/roles/{roleId}/users`
+<!--
+  Fully-commented edition notes:
+  - File path: contracts/TWC_SWAGGER_DIFF_PACKAGE/output/reports/twc_diff_report.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

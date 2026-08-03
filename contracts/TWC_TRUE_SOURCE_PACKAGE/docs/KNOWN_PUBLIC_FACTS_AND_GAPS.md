@@ -29,3 +29,11 @@
 ## Why the coding agent still needs live artifacts
 A coding agent can use the public sources to build a **contract skeleton**, compare versions, and identify likely endpoint groups.
 It cannot safely finalize a production implementation without the live artifacts above.
+
+<!--
+  Fully-commented edition notes:
+  - File path: contracts/TWC_TRUE_SOURCE_PACKAGE/docs/KNOWN_PUBLIC_FACTS_AND_GAPS.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

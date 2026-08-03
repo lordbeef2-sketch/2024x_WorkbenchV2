@@ -161,3 +161,11 @@ Workbench should:
 - only refresh if the cached revision differs from the live branch revision
 
 Background webhook-driven refresh is intentionally disabled in the current plan.
+
+<!--
+  Fully-commented edition notes:
+  - File path: plugin/WORKBENCH_INGEST_API.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

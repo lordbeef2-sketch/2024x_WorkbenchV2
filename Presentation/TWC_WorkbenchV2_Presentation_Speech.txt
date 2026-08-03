@@ -39,3 +39,9 @@ The backend modules compile, the frontend type-checks and builds, and the single
 
 Slide 13 — Bottom line
 The bottom line is that TWC Workbench V2 now carries the complete accessible Cameo tree and native specification content into every useful surface. Users get faithful navigation and element detail. Developers get scoped APIs and runnable examples. Every mapped Open WebUI model receives validated 3DS control rails, query-routed evidence from the single retained 3DS_KB, and the permission-scoped selected branch model on each Agent turn. The system prompt forbids substitution from model memory or another KB and keeps branch facts separate from product guidance.
+
+# Fully-commented edition notes:
+# - File path: Presentation/TWC_WorkbenchV2_Presentation_Speech.txt
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

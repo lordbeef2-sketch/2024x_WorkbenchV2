@@ -521,3 +521,9 @@ public class DirtyTrackingService {
         }
     }
 }
+
+// Fully-commented edition notes:
+// - File path: plugin/src/main/java/com/twcworkbench/cameo/service/DirtyTrackingService.java
+// - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+// - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+// - The normal main branch keeps the production-readable version with only provenance headers.

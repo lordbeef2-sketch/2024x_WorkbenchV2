@@ -59,3 +59,11 @@ surface is later implemented. OSLC work still requires:
 4. Confirmation that the same OIDC ID token is accepted for those resources.
 
 Do not infer any missing item from OAuth field-name similarities.
+
+<!--
+  Fully-commented edition notes:
+  - File path: docs/TWC_2024X_AUTHENTICATION_EVIDENCE.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

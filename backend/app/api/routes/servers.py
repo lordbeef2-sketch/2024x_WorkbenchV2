@@ -77,3 +77,9 @@ async def health(server_id: str, container: ApplicationContainer = Depends(get_c
         return await container.platform.health_check(server_id)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found") from exc
+
+# Fully-commented edition notes:
+# - File path: backend/app/api/routes/servers.py
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

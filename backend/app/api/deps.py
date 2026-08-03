@@ -128,3 +128,9 @@ def require_cache_api_scope(scope: CacheApiKeyScope):
         return identity
 
     return dependency
+
+# Fully-commented edition notes:
+# - File path: backend/app/api/deps.py
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

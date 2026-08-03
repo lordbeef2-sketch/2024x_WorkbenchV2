@@ -911,3 +911,9 @@ def set_stereotype_property(
         project=project,
         session_name=session_name,
     )
+
+# Fully-commented edition notes:
+# - File path: examples/Modules/commands.py
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

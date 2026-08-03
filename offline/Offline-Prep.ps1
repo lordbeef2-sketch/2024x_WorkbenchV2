@@ -296,3 +296,9 @@ Write-Host "ZIP    : $zipPath"
 Write-Host "SHA256 : $zipHash"
 Write-Host "Target : Windows $($pythonMetadata.architecture), Python $($pythonMetadata.major_minor)"
 Write-Host "Transfer the ZIP and .sha256 file, extract the ZIP, then run Offline-Installer.ps1."
+
+# Fully-commented edition notes:
+# - File path: offline/Offline-Prep.ps1
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

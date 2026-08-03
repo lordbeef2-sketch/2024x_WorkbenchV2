@@ -10379,3 +10379,9 @@ class ApplicationContainer:
         self._permission_refresh_task = None
         self.platform._permission_inventory_dirty_notifier = None
         self._permission_refresh_loop_handle = None
+
+# Fully-commented edition notes:
+# - File path: backend/app/services/platform.py
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

@@ -87,3 +87,8 @@ def render_pdf_document(title: str, body_text: str) -> bytes:
         ).encode("ascii")
     )
     return bytes(output)
+# Fully-commented edition notes:
+# - File path: backend/app/core/pdf.py
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

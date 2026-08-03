@@ -41,3 +41,9 @@ function Save-Response($Url, $OutFile) {
 
 Save-Response -Url $V2022Url -OutFile (Join-Path $OutDir "twc_2022xR2.json")
 Save-Response -Url $V2024Url -OutFile (Join-Path $OutDir "twc_2024xR3.json")
+
+# Fully-commented edition notes:
+# - File path: contracts/TWC_SWAGGER_DIFF_PACKAGE/scripts/fetch_twc_swagger.ps1
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

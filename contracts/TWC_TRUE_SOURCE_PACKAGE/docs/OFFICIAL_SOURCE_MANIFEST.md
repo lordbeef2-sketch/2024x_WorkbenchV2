@@ -88,3 +88,11 @@ Even with public docs, the coding agent still needs live artifacts for:
 - Simulation Swagger/OpenAPI export from your server if different from public docs
 - one successful request/response and one failure payload for each critical feature area
 - internal publish service request/response contract
+
+<!--
+  Fully-commented edition notes:
+  - File path: contracts/TWC_TRUE_SOURCE_PACKAGE/docs/OFFICIAL_SOURCE_MANIFEST.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

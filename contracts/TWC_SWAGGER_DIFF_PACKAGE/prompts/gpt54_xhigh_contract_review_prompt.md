@@ -28,3 +28,11 @@ Required output:
 - version-specific differences
 - risk/unknowns
 - recommended next captures from live environment
+
+<!--
+  Fully-commented edition notes:
+  - File path: contracts/TWC_SWAGGER_DIFF_PACKAGE/prompts/gpt54_xhigh_contract_review_prompt.md
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->

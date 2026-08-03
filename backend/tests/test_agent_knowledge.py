@@ -163,3 +163,9 @@ class WorkbenchAgentKnowledgeUploadTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# Fully-commented edition notes:
+# - File path: backend/tests/test_agent_knowledge.py
+# - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+# - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+# - The normal main branch keeps the production-readable version with only provenance headers.

@@ -10,3 +10,11 @@
   <path d="M18 21H46L39.5 28H34V43H29V28H24.5L18 21Z" fill="white" fill-opacity="0.96"/>
   <path d="M22 39.5L28.5 33L33 37.5L42 28.5" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
+
+<!--
+  Fully-commented edition notes:
+  - File path: frontend/public/brand-mark.svg
+  - This branch intentionally carries extra explanatory comments for handoff, review, and training.
+  - Keep behavioral changes on main first, then rebase or regenerate this branch so comments never hide logic drift.
+  - The normal main branch keeps the production-readable version with only provenance headers.
+-->
