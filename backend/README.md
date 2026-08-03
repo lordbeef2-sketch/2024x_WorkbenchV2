@@ -1,3 +1,4 @@
+<!-- Created by: Raymond Reeves Engineering Tech 4 2026 -->
 # Backend
 
 This FastAPI service is the secure integration layer for TWC Workbench. It manages delegated Teamwork Cloud sessions, direct Teamwork Cloud token sign-in, HTTP-only app sessions, app-managed Teamwork Cloud preset servers, pre-login selected-server state, per-user post-login server selection state, Teamwork Cloud adapters, and capability probing.

@@ -1,3 +1,4 @@
+<!-- Created by: Raymond Reeves Engineering Tech 4 2026 -->
 # TWC Workbench Cameo Plugin
 
 This folder now contains a real Cameo plugin project scaffold, not just planning notes.

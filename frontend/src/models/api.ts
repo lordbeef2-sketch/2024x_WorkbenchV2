@@ -1,3 +1,4 @@
+// Created by: Raymond Reeves Engineering Tech 4 2026
 export type TWCVersion = "auto" | "2022x" | "2024x";
 export type ThemeMode = "light" | "dark" | "system";
 export type ItemDetailViewMode = "standard" | "expert" | "all";

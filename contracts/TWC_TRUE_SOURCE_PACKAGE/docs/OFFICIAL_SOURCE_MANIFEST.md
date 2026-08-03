@@ -1,3 +1,4 @@
+<!-- Created by: Raymond Reeves Engineering Tech 4 2026 -->
 # Official Source Manifest
 
 This file lists **official public source-of-truth locations** relevant to the Teamwork Cloud integration effort.

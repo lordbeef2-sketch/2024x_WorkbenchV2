@@ -1,3 +1,4 @@
+// Created by: Raymond Reeves Engineering Tech 4 2026
 import { alpha, createTheme, PaletteMode } from "@mui/material/styles";
 
 export function buildTheme(mode: PaletteMode, fontScale: number, compactUi = true) {

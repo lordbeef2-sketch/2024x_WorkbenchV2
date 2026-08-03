@@ -1,3 +1,4 @@
+// Created by: Raymond Reeves Engineering Tech 4 2026
 import { createContext, PropsWithChildren, useContext, useEffect, useState } from "react";
 
 import { AuthOptions, SessionSnapshot } from "../models/api";

@@ -1,3 +1,4 @@
+<!-- Created by: Raymond Reeves Engineering Tech 4 2026 -->
 # No Magic 2024x Java To Python
 
 This is a Python bridge for the local MagicDraw or Cameo 2024x OpenAPI documented at `https://jdocs.nomagic.com/2024x/`.
