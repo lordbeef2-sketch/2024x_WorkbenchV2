@@ -558,13 +558,13 @@ class SqliteRepository:
 
     def sync_servers(self, definitions: Iterable[PresetServerDefinition]) -> list[ServerProfile]:
         items = list(definitions)
-        valid_server_ids = {item.id for item in items}
         existing_servers = {server.id: server for server in self.list_servers(include_disabled=True)}
-        synced_servers: list[ServerProfile] = []
+        servers_to_insert: list[ServerProfile] = []
 
         for definition in items:
-            current = existing_servers.get(definition.id)
-            synced_servers.append(
+            if definition.id in existing_servers:
+                continue
+            servers_to_insert.append(
                 ServerProfile(
                     id=definition.id,
                     name=definition.name,
@@ -574,21 +574,17 @@ class SqliteRepository:
                     ca_bundle_path=definition.ca_bundle_path,
                     enabled=definition.enabled,
                     display_order=definition.display_order,
-                    created_at=current.created_at if current else utcnow(),
-                    updated_at=current.updated_at if current else utcnow(),
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
                 )
             )
 
         with self._lock, self._connect() as connection:
-            connection.execute("DELETE FROM servers")
-            if synced_servers:
+            if servers_to_insert:
                 connection.executemany(
                     "INSERT OR REPLACE INTO servers (id, payload) VALUES (?, ?)",
-                    [(server.id, server.model_dump_json()) for server in synced_servers],
+                    [(server.id, server.model_dump_json()) for server in servers_to_insert],
                 )
-            self._prune_invalid_user_server_state(connection, valid_server_ids)
-            self._prune_invalid_user_cache(connection, valid_server_ids)
-            self._prune_invalid_app_secrets(connection, valid_server_ids)
             connection.commit()
 
         return self.list_servers(include_disabled=True)

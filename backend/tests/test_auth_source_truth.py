@@ -11,6 +11,7 @@ from unittest.mock import patch
 import httpx
 
 from app.api.routes import auth, workspace
+from app.adapters.teamwork import TeamworkAdapter
 from app.auth.twc import build_twc_oidc_authorization_url, exchange_twc_auth_code
 from app.core.storage import SqliteRepository
 from app.models.domain import (
@@ -57,6 +58,43 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
         self.assertNotIn("oauth_consumer_key", query)
         self.assertNotIn("oauth_token", query)
         self.assertEqual(urlparse(url).path, "/authentication/oidc/authorize")
+
+    def test_server_profile_authserver_override_wins_for_sso_url(self) -> None:
+        settings = Settings(
+            app_origin="https://workbench.example",
+            twc_auth_client_id="global-client",
+            twc_oidc_authorize_url="https://global-auth.example/authentication/oidc/authorize",
+        )
+        server = ServerProfile(
+            id="twc-2024x",
+            name="TWC 2024x",
+            base_url="https://twc.example:8111",
+            auth_authorize_url="https://profile-auth.example/authentication/oidc/authorize",
+            auth_client_id="profile-client",
+            auth_scope="openid profile",
+        )
+
+        url = build_twc_oidc_authorization_url(SimpleNamespace(settings=settings), server, "state-value")
+        query = parse_qs(urlparse(url).query)
+
+        self.assertEqual(urlparse(url).netloc, "profile-auth.example")
+        self.assertEqual(query["client_id"], ["profile-client"])
+        self.assertEqual(query["scope"], ["openid profile"])
+        self.assertEqual(query["redirect_uri"], ["https://workbench.example/api/auth/callback"])
+
+    def test_oslc_base_url_override_is_used_for_osmc_candidates_only(self) -> None:
+        adapter = object.__new__(TeamworkAdapter)
+        adapter.context = SimpleNamespace(
+            server=ServerProfile(
+                id="twc-2024x",
+                name="TWC 2024x",
+                base_url="https://twc.example:8111",
+                oslc_base_url="https://oslc.example:9443",
+            )
+        )
+
+        self.assertEqual(adapter._candidate_url("/osmc/resources"), "https://oslc.example:9443/osmc/resources")
+        self.assertEqual(adapter._candidate_url("/authentication/session"), "https://twc.example:8111/authentication/session")
 
     def test_2024x_oidc_defaults_use_refresh3_discovery_and_token_paths(self) -> None:
         settings = Settings()
@@ -574,6 +612,54 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
             ApplicationContainer(Settings(database_path=database_path, twc_preset_servers=[]))
 
             self.assertEqual(len(SqliteRepository(database_path).list_servers(include_disabled=True)), 1)
+
+    def test_env_preset_catalog_seeds_but_does_not_overwrite_app_managed_servers(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            database_path = Path(directory) / "workbench.db"
+            repo = SqliteRepository(database_path)
+            repo.upsert_server(
+                ServerProfile(
+                    id="localhost",
+                    name="Admin Configured TWC",
+                    base_url="https://real-twc.example:8111",
+                    auth_authorize_url="https://real-twc.example:8443/authentication/oidc/authorize",
+                )
+            )
+            repo.upsert_server(ServerProfile(id="extra", name="Extra TWC", base_url="https://extra.example:8111"))
+
+            from app.services.platform import ApplicationContainer
+
+            ApplicationContainer(
+                Settings(
+                    database_path=database_path,
+                    twc_preset_servers=[
+                        {
+                            "id": "localhost",
+                            "name": "Localhost Workbench Test",
+                            "base_url": "http://localhost:8000",
+                            "version": "2024x",
+                            "verify_tls": False,
+                            "enabled": True,
+                            "display_order": 0,
+                        },
+                        {
+                            "id": "seeded",
+                            "name": "Seeded TWC",
+                            "base_url": "https://seeded.example:8111",
+                            "version": "2024x",
+                            "verify_tls": True,
+                            "enabled": True,
+                            "display_order": 1,
+                        },
+                    ],
+                )
+            )
+
+            refreshed = SqliteRepository(database_path)
+            self.assertEqual(refreshed.get_server("localhost").base_url, "https://real-twc.example:8111")
+            self.assertEqual(refreshed.get_server("localhost").auth_authorize_url, "https://real-twc.example:8443/authentication/oidc/authorize")
+            self.assertEqual(refreshed.get_server("extra").base_url, "https://extra.example:8111")
+            self.assertEqual(refreshed.get_server("seeded").base_url, "https://seeded.example:8111")
 
     def test_admin_created_server_profile_can_use_explicit_plugin_key(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:

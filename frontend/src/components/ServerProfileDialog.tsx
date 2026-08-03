@@ -10,8 +10,12 @@ import {
   Switch,
   TextField,
   Typography,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
 } from "@mui/material";
 import Grid from "@mui/material/GridLegacy";
+import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 
 import { ServerProfile, ServerProfileInput, TWCVersion } from "../models/api";
 
@@ -33,6 +37,20 @@ function createDefaultProfile(defaultDisplayOrder = 0): ServerProfileInput {
     ca_bundle_path: null,
     enabled: true,
     display_order: defaultDisplayOrder,
+    auth_discovery_url: null,
+    auth_authorize_url: null,
+    auth_token_url: null,
+    auth_login_path: null,
+    auth_login_port: null,
+    auth_token_path: null,
+    auth_client_id: null,
+    auth_client_secret: null,
+    auth_scope: "openid",
+    auth_return_url_parameter: "redirect_uri",
+    oslc_base_url: null,
+    oslc_consumer_key: null,
+    oslc_consumer_secret: null,
+    oslc_callback_url: null,
   };
 }
 
@@ -57,6 +75,20 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
       ca_bundle_path: initialValue.ca_bundle_path,
       enabled: initialValue.enabled,
       display_order: initialValue.display_order,
+      auth_discovery_url: initialValue.auth_discovery_url,
+      auth_authorize_url: initialValue.auth_authorize_url,
+      auth_token_url: initialValue.auth_token_url,
+      auth_login_path: initialValue.auth_login_path,
+      auth_login_port: initialValue.auth_login_port,
+      auth_token_path: initialValue.auth_token_path,
+      auth_client_id: initialValue.auth_client_id,
+      auth_client_secret: null,
+      auth_scope: initialValue.auth_scope ?? "openid",
+      auth_return_url_parameter: initialValue.auth_return_url_parameter ?? "redirect_uri",
+      oslc_base_url: initialValue.oslc_base_url,
+      oslc_consumer_key: initialValue.oslc_consumer_key,
+      oslc_consumer_secret: null,
+      oslc_callback_url: initialValue.oslc_callback_url,
     });
   }, [defaultDisplayOrder, initialValue, open]);
 
@@ -68,6 +100,19 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
         id: form.id?.trim() || undefined,
         base_url: form.base_url.trim(),
         ca_bundle_path: form.ca_bundle_path?.trim() || null,
+        auth_discovery_url: form.auth_discovery_url?.trim() || null,
+        auth_authorize_url: form.auth_authorize_url?.trim() || null,
+        auth_token_url: form.auth_token_url?.trim() || null,
+        auth_login_path: form.auth_login_path?.trim() || null,
+        auth_token_path: form.auth_token_path?.trim() || null,
+        auth_client_id: form.auth_client_id?.trim() || null,
+        auth_client_secret: form.auth_client_secret?.trim() || null,
+        auth_scope: form.auth_scope?.trim() || null,
+        auth_return_url_parameter: form.auth_return_url_parameter?.trim() || null,
+        oslc_base_url: form.oslc_base_url?.trim() || null,
+        oslc_consumer_key: form.oslc_consumer_key?.trim() || null,
+        oslc_consumer_secret: form.oslc_consumer_secret?.trim() || null,
+        oslc_callback_url: form.oslc_callback_url?.trim() || null,
       });
       onClose();
     } finally {
@@ -129,13 +174,74 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
           </Grid>
           <Grid item xs={12}>
             <TextField
-              label="Base URL"
+              label="Teamwork Cloud Base URL"
               value={form.base_url}
               onChange={(event) => setField("base_url", event.target.value)}
-              placeholder="https://twc.company.example"
+              placeholder="https://twc.company.example:8111"
               fullWidth
               required
             />
+          </Grid>
+          <Grid item xs={12}>
+            <Accordion variant="outlined" disableGutters>
+              <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                <Typography fontWeight={700}>TWC AuthServer / SSO overrides</Typography>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={6}>
+                    <TextField label="OIDC discovery URL" value={form.auth_discovery_url ?? ""} onChange={(event) => setField("auth_discovery_url", event.target.value || null)} fullWidth />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField label="Authorize URL" value={form.auth_authorize_url ?? ""} onChange={(event) => setField("auth_authorize_url", event.target.value || null)} fullWidth />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField label="Token URL" value={form.auth_token_url ?? ""} onChange={(event) => setField("auth_token_url", event.target.value || null)} fullWidth />
+                  </Grid>
+                  <Grid item xs={12} md={3}>
+                    <TextField
+                      label="Login port"
+                      type="number"
+                      value={form.auth_login_port ?? ""}
+                      onChange={(event) => setField("auth_login_port", event.target.value ? Number.parseInt(event.target.value, 10) : null)}
+                      fullWidth
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={3}>
+                    <TextField label="Scope" value={form.auth_scope ?? ""} onChange={(event) => setField("auth_scope", event.target.value || null)} fullWidth />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField label="Client ID" value={form.auth_client_id ?? ""} onChange={(event) => setField("auth_client_id", event.target.value || null)} fullWidth />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField label="Client secret" type="password" value={form.auth_client_secret ?? ""} onChange={(event) => setField("auth_client_secret", event.target.value || null)} helperText="Saved on submit; not shown again after reload." fullWidth />
+                  </Grid>
+                </Grid>
+              </AccordionDetails>
+            </Accordion>
+          </Grid>
+          <Grid item xs={12}>
+            <Accordion variant="outlined" disableGutters>
+              <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={6}>
+                    <TextField label="OSLC/OSMC Base URL" value={form.oslc_base_url ?? ""} onChange={(event) => setField("oslc_base_url", event.target.value || null)} helperText="Leave blank to use the TWC Base URL for /osmc requests." fullWidth />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField label="OSLC callback URL" value={form.oslc_callback_url ?? ""} onChange={(event) => setField("oslc_callback_url", event.target.value || null)} fullWidth />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField label="OSLC consumer key" value={form.oslc_consumer_key ?? ""} onChange={(event) => setField("oslc_consumer_key", event.target.value || null)} fullWidth />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField label="OSLC consumer secret" type="password" value={form.oslc_consumer_secret ?? ""} onChange={(event) => setField("oslc_consumer_secret", event.target.value || null)} helperText="Saved on submit; not shown again after reload." fullWidth />
+                  </Grid>
+                </Grid>
+              </AccordionDetails>
+            </Accordion>
           </Grid>
           <Grid item xs={12}>
             <Stack

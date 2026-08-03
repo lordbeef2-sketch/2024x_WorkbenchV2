@@ -231,11 +231,14 @@ class PlatformService:
             contract_path = Path.cwd() / "contracts" / "RealSwagger.json"
         self.contract = SwaggerContract(contract_path)
 
+    def _server_profile_for_response(self, server: ServerProfile) -> ServerProfile:
+        return server.model_copy(update={"auth_client_secret": None, "oslc_consumer_secret": None})
+
     def list_servers(self) -> list[ServerProfile]:
-        return self.repo.list_servers()
+        return [self._server_profile_for_response(server) for server in self.repo.list_servers()]
 
     def list_servers_for_management(self) -> list[ServerProfile]:
-        return self.repo.list_servers(include_disabled=True)
+        return [self._server_profile_for_response(server) for server in self.repo.list_servers(include_disabled=True)]
 
     def create_server(self, payload: ServerProfileCreate) -> ServerProfile:
         server = ServerProfile(**payload.model_dump(exclude_none=True))
@@ -243,13 +246,13 @@ class PlatformService:
             raise ValueError(f"Server profile already exists: {server.id}")
         if "display_order" not in payload.model_fields_set:
             server.display_order = self.repo.next_server_display_order()
-        return self.repo.upsert_server(server)
+        return self._server_profile_for_response(self.repo.upsert_server(server))
 
     def update_server(self, server_id: str, payload: ServerProfileUpdate) -> ServerProfile:
         current = self._require_server(server_id)
         updated = current.model_copy(update={key: value for key, value in payload.model_dump(exclude_none=True).items()})
         updated.updated_at = utcnow()
-        return self.repo.upsert_server(updated)
+        return self._server_profile_for_response(self.repo.upsert_server(updated))
 
     def reorder_servers(self, payload: ServerProfileReorderRequest) -> list[ServerProfile]:
         current_servers = self.repo.list_servers(include_disabled=True)
@@ -267,7 +270,7 @@ class PlatformService:
                 server = server.model_copy(update={"display_order": index, "updated_at": utcnow()})
             ordered_servers.append(server)
 
-        return self.repo.bulk_upsert_servers(ordered_servers)
+        return [self._server_profile_for_response(server) for server in self.repo.bulk_upsert_servers(ordered_servers)]
 
     def delete_server(self, server_id: str) -> bool:
         return self.repo.delete_server(server_id)

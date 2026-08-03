@@ -16,6 +16,20 @@ export interface ServerProfile {
   ca_bundle_path: string | null;
   enabled: boolean;
   display_order: number;
+  auth_discovery_url: string | null;
+  auth_authorize_url: string | null;
+  auth_token_url: string | null;
+  auth_login_path: string | null;
+  auth_login_port: number | null;
+  auth_token_path: string | null;
+  auth_client_id: string | null;
+  auth_client_secret: string | null;
+  auth_scope: string | null;
+  auth_return_url_parameter: string | null;
+  oslc_base_url: string | null;
+  oslc_consumer_key: string | null;
+  oslc_consumer_secret: string | null;
+  oslc_callback_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -29,6 +43,20 @@ export interface ServerProfileInput {
   ca_bundle_path: string | null;
   enabled: boolean;
   display_order: number;
+  auth_discovery_url?: string | null;
+  auth_authorize_url?: string | null;
+  auth_token_url?: string | null;
+  auth_login_path?: string | null;
+  auth_login_port?: number | null;
+  auth_token_path?: string | null;
+  auth_client_id?: string | null;
+  auth_client_secret?: string | null;
+  auth_scope?: string | null;
+  auth_return_url_parameter?: string | null;
+  oslc_base_url?: string | null;
+  oslc_consumer_key?: string | null;
+  oslc_consumer_secret?: string | null;
+  oslc_callback_url?: string | null;
 }
 
 export interface UserServerState {

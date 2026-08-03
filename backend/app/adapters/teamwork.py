@@ -941,7 +941,11 @@ class TeamworkAdapter:
     def _candidate_url(self, candidate: str) -> str:
         if candidate.startswith(("http://", "https://")):
             return candidate
-        return f"{self.context.server.base_url.rstrip('/')}{candidate}"
+        base_url = self.context.server.base_url
+        oslc_base_url = (self.context.server.oslc_base_url or "").strip()
+        if oslc_base_url and candidate.startswith("/osmc/"):
+            base_url = oslc_base_url
+        return f"{base_url.rstrip('/')}{candidate}"
 
     def _candidate_path(self, candidate: str) -> str:
         if candidate.startswith(("http://", "https://")):

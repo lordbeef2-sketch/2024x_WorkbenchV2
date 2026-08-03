@@ -58,6 +58,20 @@ class ServerProfileBase(BaseModel):
     ca_bundle_path: str | None = None
     enabled: bool = True
     display_order: int = Field(default=0, ge=0)
+    auth_discovery_url: str | None = None
+    auth_authorize_url: str | None = None
+    auth_token_url: str | None = None
+    auth_login_path: str | None = None
+    auth_login_port: int | None = Field(default=None, ge=1, le=65535)
+    auth_token_path: str | None = None
+    auth_client_id: str | None = None
+    auth_client_secret: str | None = None
+    auth_scope: str | None = None
+    auth_return_url_parameter: str | None = None
+    oslc_base_url: str | None = None
+    oslc_consumer_key: str | None = None
+    oslc_consumer_secret: str | None = None
+    oslc_callback_url: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -66,12 +80,36 @@ class ServerProfileBase(BaseModel):
             return raw
         payload = dict(raw)
         payload.pop("auth_mode", None)
+        if payload.get("auth_authorize_url") is None and payload.get("auth_url"):
+            payload["auth_authorize_url"] = payload.get("auth_url")
+        if payload.get("auth_client_id") is None and payload.get("client_id"):
+            payload["auth_client_id"] = payload.get("client_id")
+        if payload.get("oslc_callback_url") is None and payload.get("callback_url"):
+            payload["oslc_callback_url"] = payload.get("callback_url")
         payload.pop("auth_url", None)
         payload.pop("client_id", None)
         payload.pop("callback_url", None)
         return payload
 
-    @field_validator("name", "base_url", "ca_bundle_path", mode="before")
+    @field_validator(
+        "name",
+        "base_url",
+        "ca_bundle_path",
+        "auth_discovery_url",
+        "auth_authorize_url",
+        "auth_token_url",
+        "auth_login_path",
+        "auth_token_path",
+        "auth_client_id",
+        "auth_client_secret",
+        "auth_scope",
+        "auth_return_url_parameter",
+        "oslc_base_url",
+        "oslc_consumer_key",
+        "oslc_consumer_secret",
+        "oslc_callback_url",
+        mode="before",
+    )
     @classmethod
     def empty_string_to_none(cls, value: object) -> object:
         if isinstance(value, str):
@@ -97,6 +135,20 @@ class ServerProfileUpdate(BaseModel):
     ca_bundle_path: str | None = None
     enabled: bool | None = None
     display_order: int | None = Field(default=None, ge=0)
+    auth_discovery_url: str | None = None
+    auth_authorize_url: str | None = None
+    auth_token_url: str | None = None
+    auth_login_path: str | None = None
+    auth_login_port: int | None = Field(default=None, ge=1, le=65535)
+    auth_token_path: str | None = None
+    auth_client_id: str | None = None
+    auth_client_secret: str | None = None
+    auth_scope: str | None = None
+    auth_return_url_parameter: str | None = None
+    oslc_base_url: str | None = None
+    oslc_consumer_key: str | None = None
+    oslc_consumer_secret: str | None = None
+    oslc_callback_url: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -105,12 +157,36 @@ class ServerProfileUpdate(BaseModel):
             return raw
         payload = dict(raw)
         payload.pop("auth_mode", None)
+        if payload.get("auth_authorize_url") is None and payload.get("auth_url"):
+            payload["auth_authorize_url"] = payload.get("auth_url")
+        if payload.get("auth_client_id") is None and payload.get("client_id"):
+            payload["auth_client_id"] = payload.get("client_id")
+        if payload.get("oslc_callback_url") is None and payload.get("callback_url"):
+            payload["oslc_callback_url"] = payload.get("callback_url")
         payload.pop("auth_url", None)
         payload.pop("client_id", None)
         payload.pop("callback_url", None)
         return payload
 
-    @field_validator("name", "base_url", "ca_bundle_path", mode="before")
+    @field_validator(
+        "name",
+        "base_url",
+        "ca_bundle_path",
+        "auth_discovery_url",
+        "auth_authorize_url",
+        "auth_token_url",
+        "auth_login_path",
+        "auth_token_path",
+        "auth_client_id",
+        "auth_client_secret",
+        "auth_scope",
+        "auth_return_url_parameter",
+        "oslc_base_url",
+        "oslc_consumer_key",
+        "oslc_consumer_secret",
+        "oslc_callback_url",
+        mode="before",
+    )
     @classmethod
     def empty_string_to_none_update(cls, value: object) -> object:
         if isinstance(value, str):

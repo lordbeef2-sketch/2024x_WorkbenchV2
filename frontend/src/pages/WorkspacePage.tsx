@@ -93,6 +93,34 @@ type ElementSearchMode = "query" | "stereotype";
 type CompareMode = "branch" | "item";
 type SettingsSubtab = "users" | "groups" | "servers" | "auth" | "api-keys" | "debug";
 
+function createServerProfileDraft(overrides: Partial<ServerProfileInput> = {}): ServerProfileInput {
+  return {
+    id: "",
+    name: "",
+    base_url: "",
+    version: "2024x",
+    verify_tls: true,
+    ca_bundle_path: null,
+    enabled: true,
+    display_order: 0,
+    auth_discovery_url: null,
+    auth_authorize_url: null,
+    auth_token_url: null,
+    auth_login_path: null,
+    auth_login_port: null,
+    auth_token_path: null,
+    auth_client_id: null,
+    auth_client_secret: null,
+    auth_scope: "openid",
+    auth_return_url_parameter: "redirect_uri",
+    oslc_base_url: null,
+    oslc_consumer_key: null,
+    oslc_consumer_secret: null,
+    oslc_callback_url: null,
+    ...overrides,
+  };
+}
+
 const WORKSPACE_TABS: WorkspaceTab[] = ["dashboard", "projects", "models", "search", "diagram-viewer", "compare", "agent", "developer", "api", "settings"];
 const ITEM_DETAIL_VIEW_MODES: ItemDetailViewMode[] = ["standard", "expert", "all"];
 const ITEM_DETAIL_VIEW_LABELS: Record<ItemDetailViewMode, string> = {
@@ -2603,16 +2631,7 @@ export default function WorkspacePage() {
   const [debugProjectId, setDebugProjectId] = useState("");
   const [debugBranchId, setDebugBranchId] = useState("trunk");
   const [debugDumpDigest, setDebugDumpDigest] = useState<Record<string, unknown> | null>(null);
-  const [newServerPreset, setNewServerPreset] = useState<ServerProfileInput>({
-    id: "",
-    name: "",
-    base_url: "",
-    version: "2024x",
-    verify_tls: true,
-    ca_bundle_path: null,
-    enabled: true,
-    display_order: 0,
-  });
+  const [newServerPreset, setNewServerPreset] = useState<ServerProfileInput>(createServerProfileDraft());
   const [serverPresetDrafts, setServerPresetDrafts] = useState<Record<string, ServerProfileInput>>({});
   const [agentBaseUrlDraft, setAgentBaseUrlDraft] = useState("");
   const [agentApiKeyDraft, setAgentApiKeyDraft] = useState("");
@@ -2752,7 +2771,7 @@ export default function WorkspacePage() {
     setServerPresetDrafts((current) => {
       const next: Record<string, ServerProfileInput> = {};
       for (const server of managedServersQuery.data) {
-        next[server.id] = current[server.id] ?? {
+        next[server.id] = current[server.id] ?? createServerProfileDraft({
           name: server.name,
           base_url: server.base_url,
           version: server.version,
@@ -2760,7 +2779,21 @@ export default function WorkspacePage() {
           ca_bundle_path: server.ca_bundle_path,
           enabled: server.enabled,
           display_order: server.display_order,
-        };
+          auth_discovery_url: server.auth_discovery_url,
+          auth_authorize_url: server.auth_authorize_url,
+          auth_token_url: server.auth_token_url,
+          auth_login_path: server.auth_login_path,
+          auth_login_port: server.auth_login_port,
+          auth_token_path: server.auth_token_path,
+          auth_client_id: server.auth_client_id,
+          auth_client_secret: null,
+          auth_scope: server.auth_scope ?? "openid",
+          auth_return_url_parameter: server.auth_return_url_parameter ?? "redirect_uri",
+          oslc_base_url: server.oslc_base_url,
+          oslc_consumer_key: server.oslc_consumer_key,
+          oslc_consumer_secret: null,
+          oslc_callback_url: server.oslc_callback_url,
+        });
       }
       return next;
     });
@@ -4307,16 +4340,7 @@ export default function WorkspacePage() {
   const createServerMutation = useMutation({
     mutationFn: (payload: ServerProfileInput) => api.createServer(payload, csrfToken),
     onSuccess: async () => {
-      setNewServerPreset({
-        id: "",
-        name: "",
-        base_url: "",
-        version: "2024x",
-        verify_tls: true,
-        ca_bundle_path: null,
-        enabled: true,
-        display_order: 0,
-      });
+      setNewServerPreset(createServerProfileDraft());
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["managed-servers", ...sessionCacheKey] }),
         queryClient.invalidateQueries({ queryKey: ["workspace-projects", ...sessionCacheKey] }),
@@ -6894,15 +6918,17 @@ export default function WorkspacePage() {
   const renderServerPresetManagement = () => {
     const servers = managedServersQuery.data ?? [];
     const serverBusy = createServerMutation.isPending || updateServerMutation.isPending || deleteServerMutation.isPending;
+    const workbenchOrigin = window.location.origin.replace(/\/$/, "");
+    const newServerLooksLikeWorkbench = newServerPreset.base_url.trim().replace(/\/$/, "") === workbenchOrigin;
 
     return (
       <Paper sx={{ p: 3, borderRadius: 2 }}>
         <Stack spacing={2}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }}>
             <Box>
-              <Typography variant="h5">Workbench Servers</Typography>
+              <Typography variant="h5">Teamwork Cloud Servers</Typography>
               <Typography variant="body2" color="text.secondary">
-                Add every Teamwork Cloud / Workbench target admins want users to sign into or receive plugin snapshots from. The server key is the exact value the Cameo plugin uses as <code>metadata.serverId</code>.
+                Add every Teamwork Cloud target admins want users to sign into or receive plugin snapshots from. The server key is the exact value the Cameo plugin uses as <code>metadata.serverId</code>. Do not set the TWC Base URL to the Workbench app URL.
               </Typography>
             </Box>
             <Button
@@ -6915,9 +6941,12 @@ export default function WorkspacePage() {
             </Button>
           </Stack>
           {managedServersQuery.error ? <Alert severity="error">{errorMessage(managedServersQuery.error)}</Alert> : null}
+          <Alert severity="info">
+            Workbench callback URI for SSO is separate from the TWC Base URL. Register <code>{workbenchOrigin}/api/auth/callback</code> with the TWC/AuthServer client, but set Base URL to the real Teamwork Cloud server.
+          </Alert>
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.5}>
-              <Typography variant="subtitle1">Add server</Typography>
+              <Typography variant="subtitle1">Add Teamwork Cloud server</Typography>
               <Grid container spacing={1.5}>
                 <Grid item xs={12} md={2}>
                   <TextField
@@ -6945,6 +6974,13 @@ export default function WorkspacePage() {
                     fullWidth
                   />
                 </Grid>
+                {newServerLooksLikeWorkbench ? (
+                  <Grid item xs={12}>
+                    <Alert severity="warning">
+                      This Base URL matches the Workbench app. Use the real Teamwork Cloud URL here; Workbench&apos;s localhost URL belongs only in the callback URI.
+                    </Alert>
+                  </Grid>
+                ) : null}
                 <Grid item xs={12} md={2}>
                   <TextField
                     select
@@ -6975,7 +7011,7 @@ export default function WorkspacePage() {
                           onChange={(event) => setNewServerPreset((current) => ({ ...current, verify_tls: event.target.checked }))}
                         />
                       }
-                      label="TLS"
+                      label="Verify TLS certificates"
                     />
                     <FormControlLabel
                       control={
@@ -6984,11 +7020,134 @@ export default function WorkspacePage() {
                           onChange={(event) => setNewServerPreset((current) => ({ ...current, enabled: event.target.checked }))}
                         />
                       }
-                      label="On"
+                      label="Enabled for sign-in"
                     />
                   </Stack>
                 </Grid>
               </Grid>
+              <Accordion variant="outlined" disableGutters>
+                <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                  <Typography fontWeight={700}>TWC AuthServer / SSO overrides</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Grid container spacing={1.5}>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="OIDC discovery URL"
+                        value={newServerPreset.auth_discovery_url ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_discovery_url: event.target.value || null }))}
+                        placeholder="https://twc.example:8443/authentication/.well-known/oidc-configuration"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="Authorize URL"
+                        value={newServerPreset.auth_authorize_url ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_authorize_url: event.target.value || null }))}
+                        placeholder="https://twc.example:8443/authentication/oidc/authorize"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="Token URL"
+                        value={newServerPreset.auth_token_url ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_token_url: event.target.value || null }))}
+                        placeholder="https://twc.example:8443/authentication/api/oidc/token"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={3}>
+                      <TextField
+                        label="Login port"
+                        type="number"
+                        value={newServerPreset.auth_login_port ?? ""}
+                        onChange={(event) =>
+                          setNewServerPreset((current) => ({
+                            ...current,
+                            auth_login_port: event.target.value ? Number.parseInt(event.target.value, 10) : null,
+                          }))
+                        }
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={3}>
+                      <TextField
+                        label="Scope"
+                        value={newServerPreset.auth_scope ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_scope: event.target.value || null }))}
+                        placeholder="openid"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="Client ID"
+                        value={newServerPreset.auth_client_id ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_client_id: event.target.value || null }))}
+                        placeholder="twcworkbench-twc-2024x"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="Client secret"
+                        type="password"
+                        value={newServerPreset.auth_client_secret ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_client_secret: event.target.value || null }))}
+                        helperText="Saved on submit; not shown again after reload."
+                        fullWidth
+                      />
+                    </Grid>
+                  </Grid>
+                </AccordionDetails>
+              </Accordion>
+              <Accordion variant="outlined" disableGutters>
+                <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                  <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Grid container spacing={1.5}>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="OSLC/OSMC Base URL"
+                        value={newServerPreset.oslc_base_url ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_base_url: event.target.value || null }))}
+                        helperText="Leave blank to use the TWC Base URL for /osmc requests."
+                        placeholder="https://twc.example:8111"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="OSLC callback URL"
+                        value={newServerPreset.oslc_callback_url ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_callback_url: event.target.value || null }))}
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="OSLC consumer key"
+                        value={newServerPreset.oslc_consumer_key ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_consumer_key: event.target.value || null }))}
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="OSLC consumer secret"
+                        type="password"
+                        value={newServerPreset.oslc_consumer_secret ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_consumer_secret: event.target.value || null }))}
+                        helperText="Saved on submit; not shown again after reload."
+                        fullWidth
+                      />
+                    </Grid>
+                  </Grid>
+                </AccordionDetails>
+              </Accordion>
               <Button
                 variant="contained"
                 disabled={!csrfToken || !(newServerPreset.id ?? "").trim() || !newServerPreset.name.trim() || !newServerPreset.base_url.trim() || createServerMutation.isPending}
@@ -7003,7 +7162,7 @@ export default function WorkspacePage() {
           <Stack spacing={1.5}>
             {servers.length ? (
               servers.map((server: ServerProfile) => {
-                const draft = serverPresetDrafts[server.id] ?? {
+                const draft = serverPresetDrafts[server.id] ?? createServerProfileDraft({
                   name: server.name,
                   base_url: server.base_url,
                   version: server.version,
@@ -7011,7 +7170,22 @@ export default function WorkspacePage() {
                   ca_bundle_path: server.ca_bundle_path,
                   enabled: server.enabled,
                   display_order: server.display_order,
-                };
+                  auth_discovery_url: server.auth_discovery_url,
+                  auth_authorize_url: server.auth_authorize_url,
+                  auth_token_url: server.auth_token_url,
+                  auth_login_path: server.auth_login_path,
+                  auth_login_port: server.auth_login_port,
+                  auth_token_path: server.auth_token_path,
+                  auth_client_id: server.auth_client_id,
+                  auth_client_secret: null,
+                  auth_scope: server.auth_scope ?? "openid",
+                  auth_return_url_parameter: server.auth_return_url_parameter ?? "redirect_uri",
+                  oslc_base_url: server.oslc_base_url,
+                  oslc_consumer_key: server.oslc_consumer_key,
+                  oslc_consumer_secret: null,
+                  oslc_callback_url: server.oslc_callback_url,
+                });
+                const serverLooksLikeWorkbench = draft.base_url.trim().replace(/\/$/, "") === workbenchOrigin;
                 return (
                   <Paper key={server.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
                     <Stack spacing={1.5}>
@@ -7104,6 +7278,181 @@ export default function WorkspacePage() {
                           />
                         </Grid>
                       </Grid>
+                      {serverLooksLikeWorkbench ? (
+                        <Alert severity="warning">
+                          This Base URL matches the Workbench app. SSO will loop back to Workbench instead of Teamwork Cloud until this is changed to the real TWC URL.
+                        </Alert>
+                      ) : null}
+                      <Accordion variant="outlined" disableGutters>
+                        <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                          <Typography fontWeight={700}>TWC AuthServer / SSO overrides</Typography>
+                        </AccordionSummary>
+                        <AccordionDetails>
+                          <Grid container spacing={1.5}>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="OIDC discovery URL"
+                                value={draft.auth_discovery_url ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_discovery_url: event.target.value || null },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="Authorize URL"
+                                value={draft.auth_authorize_url ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_authorize_url: event.target.value || null },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="Token URL"
+                                value={draft.auth_token_url ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_token_url: event.target.value || null },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={3}>
+                              <TextField
+                                label="Login port"
+                                type="number"
+                                value={draft.auth_login_port ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: {
+                                      ...draft,
+                                      auth_login_port: event.target.value ? Number.parseInt(event.target.value, 10) : null,
+                                    },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={3}>
+                              <TextField
+                                label="Scope"
+                                value={draft.auth_scope ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_scope: event.target.value || null },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="Client ID"
+                                value={draft.auth_client_id ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_client_id: event.target.value || null },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="Client secret"
+                                type="password"
+                                value={draft.auth_client_secret ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_client_secret: event.target.value || null },
+                                  }))
+                                }
+                                helperText="Leave blank to keep the saved secret unchanged; enter a value only to set or rotate it."
+                                fullWidth
+                              />
+                            </Grid>
+                          </Grid>
+                        </AccordionDetails>
+                      </Accordion>
+                      <Accordion variant="outlined" disableGutters>
+                        <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                          <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
+                        </AccordionSummary>
+                        <AccordionDetails>
+                          <Grid container spacing={1.5}>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="OSLC/OSMC Base URL"
+                                value={draft.oslc_base_url ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, oslc_base_url: event.target.value || null },
+                                  }))
+                                }
+                                helperText="Leave blank to use the TWC Base URL for /osmc requests."
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="OSLC callback URL"
+                                value={draft.oslc_callback_url ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, oslc_callback_url: event.target.value || null },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="OSLC consumer key"
+                                value={draft.oslc_consumer_key ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, oslc_consumer_key: event.target.value || null },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="OSLC consumer secret"
+                                type="password"
+                                value={draft.oslc_consumer_secret ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, oslc_consumer_secret: event.target.value || null },
+                                  }))
+                                }
+                                helperText="Leave blank to keep the saved secret unchanged; enter a value only to set or rotate it."
+                                fullWidth
+                              />
+                            </Grid>
+                          </Grid>
+                        </AccordionDetails>
+                      </Accordion>
                       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} useFlexGap flexWrap="wrap" alignItems={{ xs: "stretch", sm: "center" }}>
                         <FormControlLabel
                           control={

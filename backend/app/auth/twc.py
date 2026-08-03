@@ -23,25 +23,42 @@ def _auth_override(settings: Settings, server):
     return settings.twc_auth_override_for_server(server.id)
 
 
+def _server_auth_value(server, field_name: str) -> Any | None:
+    value = getattr(server, field_name, None)
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
 def _auth_client_id(settings: Settings, server) -> str | None:
     override = _auth_override(settings, server)
-    return (override.client_id if override and override.client_id else None) or settings.resolved_twc_auth_client_id
+    return (
+        _server_auth_value(server, "auth_client_id")
+        or (override.client_id if override and override.client_id else None)
+        or settings.resolved_twc_auth_client_id
+    )
 
 
 def _auth_client_secret(settings: Settings, server) -> str | None:
     override = _auth_override(settings, server)
-    return (override.client_secret if override and override.client_secret else None) or settings.resolved_twc_auth_client_secret
+    return (
+        _server_auth_value(server, "auth_client_secret")
+        or (override.client_secret if override and override.client_secret else None)
+        or settings.resolved_twc_auth_client_secret
+    )
 
 
 def _auth_scope(settings: Settings, server) -> str | None:
     override = _auth_override(settings, server)
-    return (override.scope if override and override.scope else None) or settings.twc_auth_scope
+    return _server_auth_value(server, "auth_scope") or (override.scope if override and override.scope else None) or settings.twc_auth_scope
 
 
 def _auth_return_url_parameter(settings: Settings, server) -> str:
     override = _auth_override(settings, server)
     return (
-        (override.return_url_parameter if override and override.return_url_parameter else None)
+        _server_auth_value(server, "auth_return_url_parameter")
+        or (override.return_url_parameter if override and override.return_url_parameter else None)
         or settings.twc_oidc_return_url_parameter
     )
 
@@ -82,6 +99,8 @@ def build_twc_auth_server_url(settings: Settings, server, path_or_url: str, *, p
 
 def _build_twc_authorize_base_url(settings: Settings, server) -> str:
     override = _auth_override(settings, server)
+    if authorize_url := _server_auth_value(server, "auth_authorize_url"):
+        return authorize_url
     if override and override.authorize_url:
         return override.authorize_url
     configured_url = (settings.twc_oidc_authorize_url or "").strip()
@@ -89,10 +108,13 @@ def _build_twc_authorize_base_url(settings: Settings, server) -> str:
         return configured_url
 
     login_path = (
-        (override.login_path if override and override.login_path else None)
+        _server_auth_value(server, "auth_login_path")
+        or (override.login_path if override and override.login_path else None)
         or settings.twc_oidc_authorize_path
     )
-    login_port = (override.login_port if override and override.login_port is not None else None)
+    login_port = _server_auth_value(server, "auth_login_port")
+    if login_port is None:
+        login_port = (override.login_port if override and override.login_port is not None else None)
     if login_port is None:
         login_port = settings.twc_oidc_port
     return build_twc_auth_server_url(settings, server, login_path or "/authentication/oidc/authorize", port=login_port)
@@ -100,23 +122,29 @@ def _build_twc_authorize_base_url(settings: Settings, server) -> str:
 
 def _build_twc_token_url(settings: Settings, server) -> str:
     override = _auth_override(settings, server)
+    if token_url := _server_auth_value(server, "auth_token_url"):
+        return token_url
     if override and override.token_url:
         return override.token_url
     if settings.twc_oidc_token_url:
         return settings.twc_oidc_token_url
 
     token_path = (
-        (override.token_path if override and override.token_path else None)
+        _server_auth_value(server, "auth_token_path")
+        or (override.token_path if override and override.token_path else None)
         or settings.twc_oidc_token_path
     )
     authorize_url = (
-        (override.authorize_url if override and override.authorize_url else None)
+        _server_auth_value(server, "auth_authorize_url")
+        or (override.authorize_url if override and override.authorize_url else None)
         or settings.twc_oidc_authorize_url
     )
     if authorize_url:
         return _url_with_path(authorize_url, token_path or "/authentication/api/oidc/token")
 
-    login_port = (override.login_port if override and override.login_port is not None else None)
+    login_port = _server_auth_value(server, "auth_login_port")
+    if login_port is None:
+        login_port = (override.login_port if override and override.login_port is not None else None)
     if login_port is None:
         login_port = settings.twc_oidc_port
     return build_twc_auth_server_url(settings, server, token_path or "/authentication/api/oidc/token", port=login_port)
@@ -124,6 +152,8 @@ def _build_twc_token_url(settings: Settings, server) -> str:
 
 def _build_twc_discovery_url(settings: Settings, server) -> str:
     override = _auth_override(settings, server)
+    if discovery_url := _server_auth_value(server, "auth_discovery_url"):
+        return discovery_url
     if override and override.discovery_url:
         return override.discovery_url
     if settings.twc_oidc_discovery_url:
@@ -143,8 +173,16 @@ async def resolve_twc_oidc_configuration(settings: Settings, server) -> dict[str
     the documented 2024x Refresh3 endpoint paths are used as a bounded fallback.
     """
     override = _auth_override(settings, server)
-    explicit_authorize = (override.authorize_url if override and override.authorize_url else None) or settings.twc_oidc_authorize_url
-    explicit_token = (override.token_url if override and override.token_url else None) or settings.twc_oidc_token_url
+    explicit_authorize = (
+        _server_auth_value(server, "auth_authorize_url")
+        or (override.authorize_url if override and override.authorize_url else None)
+        or settings.twc_oidc_authorize_url
+    )
+    explicit_token = (
+        _server_auth_value(server, "auth_token_url")
+        or (override.token_url if override and override.token_url else None)
+        or settings.twc_oidc_token_url
+    )
     configuration: dict[str, Any] = {
         "authorization_endpoint": explicit_authorize or _build_twc_authorize_base_url(settings, server),
         "token_endpoint": explicit_token or _build_twc_token_url(settings, server),
