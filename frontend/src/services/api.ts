@@ -467,6 +467,16 @@ export const api = {
     });
     return `${API_BASE}/workspace/model-cache/project-dump?${params.toString()}`;
   },
+  projectBranchTableauDbDownloadUrl(payload: {
+    projectId: string;
+    branchId?: string;
+  }) {
+    const params = new URLSearchParams({
+      projectId: payload.projectId,
+      branchId: payload.branchId || "trunk",
+    });
+    return `${API_BASE}/workspace/model-cache/tableau-db?${params.toString()}`;
+  },
   refreshBranchAccessManifest(projectId: string, branchId: string, csrfToken: string) {
     const params = new URLSearchParams({ projectId, branchId });
     return request<BranchAccessManifestStatus>(`/workspace/model-cache/access-map/refresh?${params.toString()}`, {

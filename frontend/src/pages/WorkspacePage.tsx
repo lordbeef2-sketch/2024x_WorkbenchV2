@@ -4054,6 +4054,41 @@ export default function WorkspacePage() {
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
 
+  const exportTableauProjectDbMutation = useMutation({
+    mutationFn: async (): Promise<Record<string, unknown>> => {
+      if (!debugProjectId) {
+        throw new Error("Select a project before exporting a Tableau database.");
+      }
+      const branchId = debugBranchId || "trunk";
+      const branch = debugBranches.find((candidate) => candidate.id === branchId);
+      const url = api.projectBranchTableauDbDownloadUrl({
+        projectId: debugProjectId,
+        branchId,
+      });
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return {
+        export_type: "tableau-sqlite",
+        project_id: debugProjectId,
+        project_name: debugProject?.name ?? debugProjectId,
+        branch_id: branchId,
+        branch_name: branch?.name || branchId,
+        workspace_id: debugProject?.workspace_id ?? null,
+        export_started_at: new Date().toISOString(),
+      };
+    },
+    onSuccess: (digest) => {
+      setDebugDumpDigest(digest);
+      setNotice({ severity: "success", message: "Started Tableau SQLite project database download." });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
   const refreshSelectedProjectMutation = useMutation({
     mutationFn: async () => {
       if (!selectedProjectId) {
@@ -9098,13 +9133,13 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Debug Export</Typography>
             <Typography variant="body2" color="text.secondary">
-              Export the full Workbench digest for one stored project branch. This is admin-only and reads the plugin-backed Workbench cache, including raw payloads and attached permissions.
+              Export one stored project branch as a full JSON digest or a Tableau-safe SQLite database. This is admin-only and reads the plugin-backed Workbench cache.
             </Typography>
           </Box>
           <Chip label="Admin debug" color="warning" variant="outlined" />
         </Stack>
         <Alert severity="info">
-          Use this when the model browser, specifications, relationships, or permission mapping needs inspection from one factual JSON package. The default branch target is trunk.
+          Use JSON when you need the raw factual package for debugging. Use the Tableau database when admins need reporting tables for models, containment, relationships, specifications, and access records without exporting Workbench secrets.
         </Alert>
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
           <TextField
@@ -9159,18 +9194,28 @@ export default function WorkspacePage() {
           <Button
             variant="contained"
             startIcon={<SaveRoundedIcon />}
-            disabled={!debugProjectId || exportDebugProjectDumpMutation.isPending}
+            disabled={!debugProjectId || exportDebugProjectDumpMutation.isPending || exportTableauProjectDbMutation.isPending}
             onClick={() => exportDebugProjectDumpMutation.mutate()}
           >
             Export Full Digest
           </Button>
-          {exportDebugProjectDumpMutation.isPending ? <CircularProgress size={22} /> : null}
+          <Button
+            variant="contained"
+            color="success"
+            startIcon={<SaveRoundedIcon />}
+            disabled={!debugProjectId || exportDebugProjectDumpMutation.isPending || exportTableauProjectDbMutation.isPending}
+            onClick={() => exportTableauProjectDbMutation.mutate()}
+          >
+            Download Tableau DB
+          </Button>
+          {exportDebugProjectDumpMutation.isPending || exportTableauProjectDbMutation.isPending ? <CircularProgress size={22} /> : null}
         </Stack>
         {debugDumpDigest ? (
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.25}>
-              <Typography variant="subtitle1">Last digest download request</Typography>
+              <Typography variant="subtitle1">Last export request</Typography>
               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                {debugDumpDigest.export_type ? <Chip label={`Type: ${String(debugDumpDigest.export_type)}`} color="success" variant="outlined" /> : null}
                 <Chip label={`Project: ${String(debugDumpDigest.project_name ?? debugDumpDigest.project_id ?? "unknown")}`} />
                 <Chip label={`Branch: ${String(debugDumpDigest.branch_name ?? debugDumpDigest.branch_id ?? "trunk")}`} variant="outlined" />
                 {debugDumpDigest.export_started_at ? <Chip label={`Started: ${new Date(String(debugDumpDigest.export_started_at)).toLocaleString()}`} variant="outlined" /> : null}

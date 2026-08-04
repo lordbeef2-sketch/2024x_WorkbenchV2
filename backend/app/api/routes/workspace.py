@@ -5,6 +5,7 @@ import json
 import re
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.responses import FileResponse
 
 from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
 from app.models.domain import (
@@ -532,6 +533,32 @@ def model_cache_project_dump(
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
         return payload
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/model-cache/tableau-db")
+def model_cache_tableau_db(
+    projectId: str = Query(...),
+    branchId: str = Query(default="trunk"),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        db_path = container.platform.export_cached_project_branch_tableau_db_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            projectId,
+            branchId,
+            include_all_workbench_admin=container.platform.can_manage_server_presets(session),
+        )
+        return FileResponse(
+            path=db_path,
+            filename=db_path.name,
+            media_type="application/vnd.sqlite3",
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:

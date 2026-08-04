@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from datetime import datetime
 import asyncio
 import base64
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -601,6 +602,108 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
             self.assertEqual([view.model.model_id for view in snapshot.models], ["model-water"])
             self.assertIsNotNone(model)
             self.assertIsNone(model.permissions)
+
+    def test_workbench_admin_can_export_tableau_sqlite_without_operational_secret_tables(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.settings = Settings(data_dir=Path(directory) / "data")
+            service.repo.upsert_server(ServerProfile(id="twc", name="TWC", base_url="https://twc.example"))
+            service.repo.upsert_branch_cache_summary(
+                BranchCacheSummary(
+                    server_id="twc",
+                    project_id="water",
+                    branch_id="master",
+                    workspace_id="workspace-water",
+                    project_name="WaterSupply",
+                    branch_name="trunk",
+                    source_kind="cameo-plugin",
+                    source_user="cameo",
+                    model_count=1,
+                    element_count=2,
+                    snapshot_hash="snapshot-hash",
+                )
+            )
+            service.repo.upsert_cached_models(
+                [
+                    CachedModelRecord(
+                        server_id="twc",
+                        project_id="water",
+                        branch_id="master",
+                        model_id="model-water",
+                        workspace_id="workspace-water",
+                        name="Water Supply",
+                        root_ids=["root-water"],
+                        element_count=2,
+                        source_user="cameo",
+                        payload={"primary": True, "qualified_name": "Water Supply"},
+                    )
+                ]
+            )
+            service.repo.upsert_cached_elements(
+                [
+                    CachedElementRecord(
+                        server_id="twc",
+                        project_id="water",
+                        branch_id="master",
+                        model_id="model-water",
+                        element_id="root-water",
+                        workspace_id="workspace-water",
+                        name="Water Supply",
+                        item_type="Package",
+                        path="Model/Water Supply",
+                        child_count=1,
+                        source_user="cameo",
+                        payload={"owner_id": "model-water", "owned_element_ids": ["bath"], "metaclass": "Package"},
+                    ),
+                    CachedElementRecord(
+                        server_id="twc",
+                        project_id="water",
+                        branch_id="master",
+                        model_id="model-water",
+                        element_id="bath",
+                        workspace_id="workspace-water",
+                        name="Bath",
+                        item_type="Block",
+                        path="Model/Water Supply/Bath",
+                        child_count=0,
+                        source_user="cameo",
+                        payload={
+                            "owner_id": "root-water",
+                            "qualified_name": "Water Supply::Bath",
+                            "metaclass": "Class",
+                            "stereotypes": ["Block"],
+                        },
+                    ),
+                ]
+            )
+
+            db_path = service.export_cached_project_branch_tableau_db_for_user(
+                "twc",
+                "admin",
+                "water",
+                "master",
+                include_all_workbench_admin=True,
+            )
+
+            self.assertTrue(db_path.exists())
+            with sqlite3.connect(db_path) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+                }
+                self.assertIn("project_branch", tables)
+                self.assertIn("elements", tables)
+                self.assertIn("tree_nodes", tables)
+                self.assertIn("element_references", tables)
+                self.assertIn("branch_access", tables)
+                self.assertNotIn("app_secrets", tables)
+                self.assertNotIn("cache_api_keys", tables)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM elements").fetchone()[0], 2)
+                self.assertEqual(
+                    conn.execute("SELECT value FROM export_metadata WHERE key = 'created_by'").fetchone()[0],
+                    "Created by: Raymond Reeves Engineering Tech 4 2026",
+                )
 
     def test_empty_env_preset_catalog_does_not_delete_app_managed_servers(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:

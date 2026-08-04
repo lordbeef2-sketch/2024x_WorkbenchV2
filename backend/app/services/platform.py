@@ -10,6 +10,7 @@ import html
 import hmac
 import json
 import secrets
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -2707,6 +2708,669 @@ class PlatformService:
         # one export does not starve the server.
         by_size = max(2, min(8, element_count // 250 + 1))
         return max(1, min(cpu_count, by_size))
+
+    def export_cached_project_branch_tableau_db_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str = "trunk",
+        *,
+        include_all_workbench_admin: bool = False,
+    ) -> Path:
+        """Build a Tableau-readable SQLite reporting copy for one cached branch.
+
+        The generated file is intentionally separate from the operational
+        Workbench database. It contains model/tree/specification/reporting facts
+        from the plugin-backed cache and excludes application secrets, sessions,
+        API keys, ingest tokens, and raw authentication state.
+        """
+        payload = self.get_cached_project_branch_dump_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            include_tree=True,
+            include_elements=True,
+            include_details=True,
+            include_raw_payload=False,
+            include_permissions=True,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
+        if not include_all_workbench_admin:
+            current_access = (payload.get("permissions") or {}).get("current_user_branch_access") or {}
+            current_payload = current_access.get("payload") if isinstance(current_access, dict) else {}
+            current_payload = current_payload if isinstance(current_payload, dict) else {}
+            has_project_admin_access = bool(
+                current_access.get("admin_access")
+                or current_payload.get("branch_admin_access")
+                or current_payload.get("access_admin_access")
+            )
+            if not has_project_admin_access:
+                raise PermissionError("Only Workbench administrators or project administrators can export a Tableau project database.")
+
+        resolved = payload.get("resolved") or {}
+        branch_summary = payload.get("branch_summary") or {}
+        project_name = str(branch_summary.get("project_name") or resolved.get("project_id") or project_id)
+        branch_name = str(resolved.get("branch_name") or resolved.get("branch_id") or branch_id or "trunk")
+        safe_project = self._tableau_export_slug(project_name, fallback="project")
+        safe_branch = self._tableau_export_slug(branch_name, fallback="trunk")
+        exported_at = utcnow().strftime("%Y%m%dT%H%M%SZ")
+        export_dir = self.settings.resolved_export_dir / "tableau"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        db_path = export_dir / f"workbench-tableau_{safe_project}_{safe_branch}_{exported_at}.sqlite3"
+        tmp_path = db_path.with_name(f"{db_path.stem}.tmp{db_path.suffix}")
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+        try:
+            conn = sqlite3.connect(tmp_path)
+            try:
+                conn.execute("PRAGMA journal_mode=OFF")
+                conn.execute("PRAGMA synchronous=OFF")
+                self._write_tableau_export_schema(conn)
+                self._write_tableau_export_rows(conn, payload)
+                conn.execute("PRAGMA optimize")
+                conn.commit()
+            finally:
+                conn.close()
+            tmp_path.replace(db_path)
+        finally:
+            if tmp_path.exists():
+                with suppress(OSError):
+                    tmp_path.unlink()
+        return db_path
+
+    def _tableau_export_slug(self, value: str, *, fallback: str) -> str:
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip("-")
+        return slug[:120] or fallback
+
+    def _tableau_json(self, value: Any) -> str:
+        if value is None:
+            return ""
+        return json.dumps(value, default=str, ensure_ascii=False, sort_keys=True)
+
+    def _tableau_text_list(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return ", ".join(str(item) for item in value if item is not None)
+        return str(value)
+
+    def _write_tableau_export_schema(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            CREATE TABLE export_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE tableau_readme (
+                section TEXT PRIMARY KEY,
+                body TEXT NOT NULL
+            );
+            CREATE TABLE project_branch (
+                server_id TEXT,
+                project_id TEXT,
+                project_name TEXT,
+                branch_id TEXT,
+                branch_name TEXT,
+                workspace_id TEXT,
+                latest_revision TEXT,
+                snapshot_hash TEXT,
+                source_kind TEXT,
+                source_user TEXT,
+                model_count INTEGER,
+                element_count INTEGER,
+                visible_model_count INTEGER,
+                visible_element_count INTEGER,
+                total_cached_branch_elements INTEGER,
+                exported_at TEXT
+            );
+            CREATE TABLE models (
+                model_id TEXT PRIMARY KEY,
+                server_id TEXT,
+                project_id TEXT,
+                branch_id TEXT,
+                workspace_id TEXT,
+                latest_revision TEXT,
+                name TEXT,
+                qualified_name TEXT,
+                usage_type TEXT,
+                root_ids_json TEXT,
+                element_count INTEGER,
+                source_user TEXT,
+                synced_at TEXT,
+                metadata_json TEXT
+            );
+            CREATE TABLE project_usages (
+                usage_id TEXT PRIMARY KEY,
+                model_id TEXT,
+                name TEXT,
+                qualified_name TEXT,
+                usage_type TEXT,
+                version TEXT,
+                uri TEXT,
+                automatic INTEGER
+            );
+            CREATE TABLE tree_nodes (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT,
+                parent_id TEXT,
+                depth INTEGER,
+                ordinal INTEGER,
+                label TEXT,
+                node_type TEXT,
+                path TEXT,
+                metadata_json TEXT
+            );
+            CREATE TABLE elements (
+                element_id TEXT PRIMARY KEY,
+                model_id TEXT,
+                server_id TEXT,
+                project_id TEXT,
+                branch_id TEXT,
+                workspace_id TEXT,
+                latest_revision TEXT,
+                name TEXT,
+                item_type TEXT,
+                path TEXT,
+                owner_id TEXT,
+                owner_name TEXT,
+                description TEXT,
+                documentation_markdown TEXT,
+                raw_types_csv TEXT,
+                stereotypes_csv TEXT,
+                editable INTEGER,
+                child_count INTEGER,
+                source_user TEXT,
+                synced_at TEXT,
+                metadata_json TEXT
+            );
+            CREATE TABLE element_stereotypes (
+                element_id TEXT,
+                stereotype TEXT
+            );
+            CREATE TABLE element_references (
+                element_id TEXT,
+                reference_group TEXT,
+                target_id TEXT,
+                target_name TEXT,
+                target_type TEXT,
+                relationship_type TEXT,
+                path TEXT,
+                metadata_json TEXT
+            );
+            CREATE TABLE element_relationships (
+                element_id TEXT,
+                target_id TEXT,
+                target_name TEXT,
+                target_type TEXT,
+                relationship_type TEXT,
+                direction TEXT,
+                label TEXT,
+                metadata_json TEXT
+            );
+            CREATE TABLE specification_sections (
+                element_id TEXT,
+                section_name TEXT,
+                section_order INTEGER,
+                section_json TEXT
+            );
+            CREATE TABLE specification_fields (
+                element_id TEXT,
+                section_name TEXT,
+                field_name TEXT,
+                field_order INTEGER,
+                value_text TEXT,
+                target_id TEXT,
+                target_name TEXT,
+                value_json TEXT
+            );
+            CREATE TABLE permissions (
+                scope_id TEXT,
+                scope_type TEXT,
+                principal_id TEXT,
+                principal_name TEXT,
+                principal_type TEXT,
+                role_name TEXT,
+                action TEXT,
+                application TEXT,
+                inherited INTEGER,
+                accessible INTEGER,
+                editable INTEGER,
+                branch_admin_access INTEGER,
+                access_admin_access INTEGER,
+                via_groups_json TEXT,
+                readonly_branch_ids_json TEXT
+            );
+            CREATE TABLE branch_access (
+                user_id TEXT,
+                accessible INTEGER,
+                editable INTEGER,
+                admin_access INTEGER,
+                roles_json TEXT,
+                via_groups_json TEXT,
+                source TEXT,
+                updated_at TEXT,
+                payload_json TEXT
+            );
+            CREATE INDEX idx_tree_nodes_parent ON tree_nodes(parent_id);
+            CREATE INDEX idx_tree_nodes_id ON tree_nodes(node_id);
+            CREATE INDEX idx_elements_model ON elements(model_id);
+            CREATE INDEX idx_elements_type ON elements(item_type);
+            CREATE INDEX idx_references_target ON element_references(target_id);
+            CREATE INDEX idx_relationships_target ON element_relationships(target_id);
+            CREATE INDEX idx_permissions_principal ON permissions(principal_id);
+            """
+        )
+
+    def _write_tableau_export_rows(self, conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        exported_at = str(payload.get("exported_at") or utcnow().isoformat())
+        requested = payload.get("requested") or {}
+        resolved = payload.get("resolved") or {}
+        selection = payload.get("selection") or {}
+        branch_summary = payload.get("branch_summary") or {}
+        conn.executemany(
+            "INSERT INTO export_metadata(key, value) VALUES (?, ?)",
+            [
+                ("schema_version", "workbench-tableau-project-branch.v1"),
+                ("created_by", "Created by: Raymond Reeves Engineering Tech 4 2026"),
+                ("exported_at", exported_at),
+                ("purpose", "Tableau-safe reporting copy for one Workbench cached project branch."),
+                ("source", "Workbench plugin-backed cache. This export excludes operational secrets, tokens, sessions, and raw authentication state."),
+                ("requested_json", self._tableau_json(requested)),
+                ("resolved_json", self._tableau_json(resolved)),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO tableau_readme(section, body) VALUES (?, ?)",
+            [
+                ("start_here", "Connect Tableau to this SQLite file. Use project_branch as the one-row context table, elements as the main fact table, tree_nodes for containment, and element_references/element_relationships for traceability."),
+                ("security", "This is a derived reporting copy only. Workbench application secrets, ingest tokens, API keys, sessions, passwords, and raw auth state are intentionally not exported."),
+                ("joins", "Join elements.element_id to tree_nodes.node_id, element_references.element_id, element_relationships.element_id, specification_fields.element_id, and element_stereotypes.element_id."),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO project_branch(
+                server_id, project_id, project_name, branch_id, branch_name,
+                workspace_id, latest_revision, snapshot_hash, source_kind,
+                source_user, model_count, element_count, visible_model_count,
+                visible_element_count, total_cached_branch_elements, exported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                resolved.get("server_id"),
+                resolved.get("project_id"),
+                branch_summary.get("project_name") or resolved.get("project_id"),
+                resolved.get("branch_id"),
+                resolved.get("branch_name") or resolved.get("branch_id"),
+                resolved.get("workspace_id"),
+                resolved.get("latest_revision"),
+                branch_summary.get("snapshot_hash"),
+                branch_summary.get("source_kind"),
+                branch_summary.get("source_user"),
+                int(branch_summary.get("model_count") or 0),
+                int(branch_summary.get("element_count") or 0),
+                int(selection.get("visible_model_count") or 0),
+                int(selection.get("visible_element_count") or 0),
+                int(selection.get("total_cached_branch_elements") or 0),
+                exported_at,
+            ),
+        )
+
+        models = payload.get("models") if isinstance(payload.get("models"), list) else []
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO models(
+                model_id, server_id, project_id, branch_id, workspace_id,
+                latest_revision, name, qualified_name, usage_type, root_ids_json,
+                element_count, source_user, synced_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    model.get("model_id"),
+                    model.get("server_id"),
+                    model.get("project_id"),
+                    model.get("branch_id"),
+                    model.get("workspace_id"),
+                    model.get("latest_revision"),
+                    model.get("name"),
+                    (model.get("payload") or {}).get("qualified_name") if isinstance(model.get("payload"), dict) else "",
+                    (model.get("payload") or {}).get("usage_type") if isinstance(model.get("payload"), dict) else "",
+                    self._tableau_json(model.get("root_ids") or []),
+                    int(model.get("element_count") or 0),
+                    model.get("source_user"),
+                    model.get("synced_at"),
+                    self._tableau_json({key: value for key, value in (model.get("payload") or {}).items() if key not in {"raw", "source_payload"}}),
+                )
+                for model in models
+                if isinstance(model, dict)
+            ],
+        )
+
+        usages = ((payload.get("project_usages") or {}).get("items") if isinstance(payload.get("project_usages"), dict) else []) or []
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO project_usages(
+                usage_id, model_id, name, qualified_name, usage_type, version, uri, automatic
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    usage.get("id") or usage.get("model_id"),
+                    usage.get("model_id"),
+                    usage.get("name"),
+                    usage.get("qualified_name"),
+                    usage.get("usage_type"),
+                    usage.get("version"),
+                    usage.get("uri"),
+                    1 if usage.get("automatic") else 0 if usage.get("automatic") is not None else None,
+                )
+                for usage in usages
+                if isinstance(usage, dict)
+            ],
+        )
+
+        tree = payload.get("tree") if isinstance(payload.get("tree"), dict) else {}
+        tree_rows: list[tuple[Any, ...]] = []
+        self._collect_tableau_tree_rows(tree.get("nodes") or [], tree_rows, parent_id=None, depth=0)
+        conn.executemany(
+            """
+            INSERT INTO tree_nodes(node_id, parent_id, depth, ordinal, label, node_type, path, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tree_rows,
+        )
+
+        elements = payload.get("elements") if isinstance(payload.get("elements"), list) else []
+        element_rows: list[tuple[Any, ...]] = []
+        stereotype_rows: list[tuple[Any, ...]] = []
+        reference_rows: list[tuple[Any, ...]] = []
+        relationship_rows: list[tuple[Any, ...]] = []
+        section_rows: list[tuple[Any, ...]] = []
+        field_rows: list[tuple[Any, ...]] = []
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            details = element.get("derived_item_details") if isinstance(element.get("derived_item_details"), dict) else {}
+            metadata = details.get("metadata") if isinstance(details.get("metadata"), dict) else {}
+            owner = details.get("owner") if isinstance(details.get("owner"), dict) else {}
+            element_id = str(element.get("element_id") or details.get("id") or "")
+            safe_metadata = dict(metadata)
+            safe_metadata.pop("source_payload", None)
+            element_rows.append(
+                (
+                    element_id,
+                    element.get("model_id"),
+                    element.get("server_id"),
+                    element.get("project_id"),
+                    element.get("branch_id"),
+                    element.get("workspace_id"),
+                    element.get("latest_revision"),
+                    details.get("name") or element.get("name"),
+                    details.get("item_type") or element.get("item_type"),
+                    details.get("path") or element.get("path"),
+                    owner.get("id") or metadata.get("owner_id"),
+                    owner.get("name") or metadata.get("owner_name"),
+                    details.get("description") or "",
+                    details.get("documentation_markdown") or "",
+                    self._tableau_text_list(details.get("raw_types")),
+                    self._tableau_text_list(details.get("stereotypes")),
+                    1 if details.get("editable") else 0,
+                    int(element.get("child_count") or 0),
+                    element.get("source_user"),
+                    element.get("synced_at"),
+                    self._tableau_json(safe_metadata),
+                )
+            )
+            for stereotype in details.get("stereotypes") or []:
+                stereotype_rows.append((element_id, str(stereotype)))
+            for group_name, references in (
+                ("type_references", details.get("type_references") or []),
+                ("contained_elements", details.get("contained_elements") or []),
+                ("related_items", details.get("related_items") or []),
+            ):
+                for reference in references:
+                    if isinstance(reference, dict):
+                        reference_rows.append(
+                            (
+                                element_id,
+                                group_name,
+                                reference.get("id"),
+                                reference.get("name"),
+                                reference.get("item_type"),
+                                reference.get("relationship_type"),
+                                reference.get("path"),
+                                self._tableau_json({key: value for key, value in reference.items() if key not in {"id", "name", "item_type", "relationship_type", "path"}}),
+                            )
+                        )
+            relationships = details.get("relationships") if isinstance(details.get("relationships"), list) else []
+            for relationship in relationships:
+                if not isinstance(relationship, dict):
+                    continue
+                target_id = relationship.get("target_id") or relationship.get("targetId") or relationship.get("to_id") or relationship.get("to") or relationship.get("id")
+                target_name = relationship.get("target_name") or relationship.get("targetName") or relationship.get("to_name") or relationship.get("name")
+                target_type = relationship.get("target_type") or relationship.get("targetType") or relationship.get("item_type")
+                relationship_type = relationship.get("relationship_type") or relationship.get("relationshipType") or relationship.get("type") or relationship.get("kind")
+                relationship_rows.append(
+                    (
+                        element_id,
+                        target_id,
+                        target_name,
+                        target_type,
+                        relationship_type,
+                        relationship.get("direction") or relationship.get("role") or "",
+                        relationship.get("label") or relationship.get("name") or relationship_type or "",
+                        self._tableau_json(relationship),
+                    )
+                )
+            self._collect_tableau_spec_rows(element_id, details, section_rows, field_rows)
+
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO elements(
+                element_id, model_id, server_id, project_id, branch_id, workspace_id,
+                latest_revision, name, item_type, path, owner_id, owner_name,
+                description, documentation_markdown, raw_types_csv, stereotypes_csv,
+                editable, child_count, source_user, synced_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            element_rows,
+        )
+        conn.executemany("INSERT INTO element_stereotypes(element_id, stereotype) VALUES (?, ?)", stereotype_rows)
+        conn.executemany(
+            """
+            INSERT INTO element_references(
+                element_id, reference_group, target_id, target_name, target_type,
+                relationship_type, path, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            reference_rows,
+        )
+        conn.executemany(
+            """
+            INSERT INTO element_relationships(
+                element_id, target_id, target_name, target_type, relationship_type,
+                direction, label, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            relationship_rows,
+        )
+        conn.executemany(
+            "INSERT INTO specification_sections(element_id, section_name, section_order, section_json) VALUES (?, ?, ?, ?)",
+            section_rows,
+        )
+        conn.executemany(
+            """
+            INSERT INTO specification_fields(
+                element_id, section_name, field_name, field_order,
+                value_text, target_id, target_name, value_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            field_rows,
+        )
+
+        permissions = payload.get("permissions") if isinstance(payload.get("permissions"), dict) else {}
+        permission_attachment = permissions.get("permission_attachment") if isinstance(permissions.get("permission_attachment"), dict) else {}
+        manifest = permission_attachment.get("manifest") if isinstance(permission_attachment.get("manifest"), dict) else {}
+        manifest_entries = manifest.get("entries") if isinstance(manifest.get("entries"), list) else []
+        conn.executemany(
+            """
+            INSERT INTO permissions(
+                scope_id, scope_type, principal_id, principal_name, principal_type,
+                role_name, action, application, inherited, accessible, editable,
+                branch_admin_access, access_admin_access, via_groups_json,
+                readonly_branch_ids_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    entry.get("scope_id") or entry.get("scopeId"),
+                    entry.get("scope_type") or entry.get("scopeType"),
+                    entry.get("principal_id") or entry.get("principalId"),
+                    entry.get("principal_name") or entry.get("principalName"),
+                    entry.get("principal_type") or entry.get("principalType"),
+                    entry.get("role_name") or entry.get("roleName"),
+                    entry.get("action"),
+                    entry.get("application"),
+                    1 if entry.get("inherited") else 0,
+                    1 if entry.get("accessible") else 0,
+                    1 if entry.get("editable") else 0,
+                    1 if (entry.get("branch_admin_access") or entry.get("branchAdminAccess")) else 0,
+                    1 if (entry.get("access_admin_access") or entry.get("accessAdminAccess")) else 0,
+                    self._tableau_json(entry.get("via_groups") or entry.get("viaGroups") or []),
+                    self._tableau_json(entry.get("readonly_branch_ids") or entry.get("readonlyBranchIds") or []),
+                )
+                for entry in manifest_entries
+                if isinstance(entry, dict)
+            ],
+        )
+        branch_access_records = permissions.get("branch_access_records") if isinstance(permissions.get("branch_access_records"), list) else []
+        conn.executemany(
+            """
+            INSERT INTO branch_access(
+                user_id, accessible, editable, admin_access, roles_json,
+                via_groups_json, source, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    record.get("user_id"),
+                    1 if record.get("accessible") else 0,
+                    1 if record.get("editable") else 0,
+                    1 if record.get("admin_access") else 0,
+                    self._tableau_json(record.get("roles") or []),
+                    self._tableau_json(record.get("via_groups") or []),
+                    record.get("source"),
+                    record.get("updated_at"),
+                    self._tableau_json(record.get("payload") or {}),
+                )
+                for record in branch_access_records
+                if isinstance(record, dict)
+            ],
+        )
+
+    def _collect_tableau_tree_rows(
+        self,
+        nodes: Any,
+        rows: list[tuple[Any, ...]],
+        *,
+        parent_id: str | None,
+        depth: int,
+    ) -> None:
+        if not isinstance(nodes, list):
+            return
+        for ordinal, node in enumerate(nodes):
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id") or "")
+            rows.append(
+                (
+                    node_id,
+                    parent_id,
+                    depth,
+                    ordinal,
+                    node.get("label"),
+                    node.get("node_type"),
+                    node.get("path"),
+                    self._tableau_json(node.get("metadata") or {}),
+                )
+            )
+            self._collect_tableau_tree_rows(node.get("children") or [], rows, parent_id=node_id, depth=depth + 1)
+
+    def _collect_tableau_spec_rows(
+        self,
+        element_id: str,
+        details: dict[str, Any],
+        section_rows: list[tuple[Any, ...]],
+        field_rows: list[tuple[Any, ...]],
+    ) -> None:
+        metadata = details.get("metadata") if isinstance(details.get("metadata"), dict) else {}
+        candidates = (
+            metadata.get("specification_sections")
+            or metadata.get("specificationSections")
+            or metadata.get("sections")
+            or details.get("specification_sections")
+            or details.get("sections")
+            or []
+        )
+        if isinstance(candidates, dict):
+            candidates = [
+                {"name": name, "fields": fields}
+                for name, fields in candidates.items()
+            ]
+        if not isinstance(candidates, list):
+            return
+        for section_order, section in enumerate(candidates):
+            if not isinstance(section, dict):
+                section_rows.append((element_id, f"Section {section_order + 1}", section_order, self._tableau_json(section)))
+                continue
+            section_name = str(section.get("name") or section.get("label") or section.get("section") or f"Section {section_order + 1}")
+            section_rows.append((element_id, section_name, section_order, self._tableau_json(section)))
+            fields = section.get("fields") or section.get("properties") or section.get("rows") or []
+            if isinstance(fields, dict):
+                fields = [{"name": name, "value": value} for name, value in fields.items()]
+            if not isinstance(fields, list):
+                fields = [{"name": "Value", "value": fields}]
+            for field_order, field in enumerate(fields):
+                if isinstance(field, dict):
+                    value = field.get("value")
+                    target_id = field.get("target_id") or field.get("targetId") or field.get("id")
+                    target_name = field.get("target_name") or field.get("targetName") or field.get("name")
+                    field_name = field.get("name") or field.get("label") or field.get("property") or f"Field {field_order + 1}"
+                else:
+                    value = field
+                    target_id = None
+                    target_name = None
+                    field_name = f"Field {field_order + 1}"
+                field_rows.append(
+                    (
+                        element_id,
+                        section_name,
+                        str(field_name),
+                        field_order,
+                        self._tableau_field_value_text(value),
+                        target_id,
+                        target_name,
+                        self._tableau_json(field),
+                    )
+                )
+
+    def _tableau_field_value_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (str, int, float, bool)):
+            return str(value)
+        if isinstance(value, list):
+            return ", ".join(self._tableau_field_value_text(item) for item in value)
+        if isinstance(value, dict):
+            for key in ("name", "label", "qualified_name", "qualifiedName", "id"):
+                if value.get(key):
+                    return str(value[key])
+            return self._tableau_json(value)
+        return str(value)
 
     def _project_dump_element_payload(
         self,
