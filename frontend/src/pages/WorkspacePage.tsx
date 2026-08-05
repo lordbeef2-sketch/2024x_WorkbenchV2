@@ -775,7 +775,7 @@ function displayEntityName(name: string, id: string, itemType: string, lookup: R
 }
 
 function itemReferenceDisplayName(reference: ItemReference, lookup: Record<string, string>): string {
-  return displayEntityName(reference.name, reference.id, reference.item_type, lookup, reference.path);
+  return resolvedNameForId(reference.id, lookup) ?? displayEntityName(reference.name, reference.id, reference.item_type, lookup, reference.path);
 }
 
 function itemReferenceSecondaryText(reference: ItemReference, lookup: Record<string, string>): string {
@@ -5123,6 +5123,7 @@ export default function WorkspacePage() {
         .map((candidate) => (typeof candidate === "string" ? candidate.trim() : ""))
         .find(Boolean);
       if (id) {
+        const displayText = resolvedNameForId(id, referenceNameById) ?? humanReadableReference(display || id, referenceNameById);
         return (
           <Button
             size="small"
@@ -5130,7 +5131,7 @@ export default function WorkspacePage() {
             sx={{ justifyContent: "flex-start", minWidth: 0, px: 0.5, py: 0, textTransform: "none", textAlign: "left" }}
             onClick={() => void navigateToSpecificationElement(id, modelId)}
           >
-            {humanReadableReference(display || id, referenceNameById)}
+            {displayText}
           </Button>
         );
       }

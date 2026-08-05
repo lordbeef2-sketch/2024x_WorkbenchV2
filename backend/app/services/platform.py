@@ -5416,6 +5416,12 @@ class PlatformService:
             referenced_record = self.get_cached_branch_element(session, project_id, branch_id, reference_id)
             if referenced_record is not None and isinstance(referenced_record.payload, dict):
                 resolved_payloads[reference_id] = self._cached_element_payload(referenced_record.payload)
+        for reference_id in self._second_hop_cameo_reference_ids(adapter, resolved_payloads):
+            if reference_id in resolved_payloads:
+                continue
+            referenced_record = self.get_cached_branch_element(session, project_id, branch_id, reference_id)
+            if referenced_record is not None and isinstance(referenced_record.payload, dict):
+                resolved_payloads[reference_id] = self._cached_element_payload(referenced_record.payload)
 
         canonical_record = self._canonical_cameo_visible_details_record(
             session.server.id,
@@ -5431,6 +5437,12 @@ class PlatformService:
                 referenced_record = self.get_cached_branch_element(session, project_id, branch_id, reference_id)
                 if referenced_record is not None and isinstance(referenced_record.payload, dict):
                     resolved_payloads[reference_id] = self._cached_element_payload(referenced_record.payload)
+            for reference_id in self._second_hop_cameo_reference_ids(adapter, resolved_payloads):
+                if reference_id in resolved_payloads:
+                    continue
+                referenced_record = self.get_cached_branch_element(session, project_id, branch_id, reference_id)
+                if referenced_record is not None and isinstance(referenced_record.payload, dict):
+                    resolved_payloads[reference_id] = self._cached_element_payload(referenced_record.payload)
 
         item_details = adapter.build_item_details_from_payload(
             payload,
@@ -5441,6 +5453,7 @@ class PlatformService:
             editable=editable,
             version=cached_record.latest_revision or cached_record.synced_at.isoformat(),
         )
+        item_details = self._enrich_cameo_reference_labels(item_details, payload, resolved_payloads)
         return self._enrich_cameo_property_item_details(item_details, payload, resolved_payloads)
 
     def _materialized_model_item_details(
