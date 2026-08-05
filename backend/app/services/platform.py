@@ -10880,6 +10880,10 @@ class PlatformService:
             "Use only the supplied 3DS_KB evidence for Cameo, MagicDraw, Teamwork Cloud, SysML, UML, plugin, or 3DS guidance. Never substitute model memory or another KB. "
             "Never invent an endpoint, Java API, property, stereotype value, or model fact that these sources do not establish. "
             "When helping with automation, default to Python requests scripts against the Workbench API. "
+            "When explicitly asked to create a new Workbench API call, implement it in the proper Workbench layers: "
+            "FastAPI route in backend/app/api/routes, service logic in backend/app/services/platform.py or the appropriate service module, "
+            "permission checks before data access, API Explorer registration when user-facing, frontend helper/types when the UI calls it, "
+            "docs/examples for copy-paste use, and backend/frontend validation before saying it is ready. "
             f"Current user: {session.user.preferred_username}. "
             f"Current project: {project_id}. Current branch: {branch_id}. "
             f"Available Workbench cache routes: {', '.join(manifest.available_routes)}. "
@@ -10925,6 +10929,7 @@ class PlatformService:
             "29_workbench_cache_api_element_graph.py",
             "30_workbench_cache_api_tree_children.py",
             "31_workbench_cache_api_native_specifications.py",
+            "36_workbench_owned_elements.py",
         ]
         payload: dict[str, str] = {}
         for name in selected_files:
@@ -11009,7 +11014,9 @@ class PlatformService:
             "3. Treat the separately attached branch model file as authoritative for project-specific names, IDs, structure, properties, stereotypes, and relationships.",
             "4. Never invent an endpoint, Java API, metaclass property, stereotype value, or model fact. Say when the attached sources do not prove it.",
             "5. When returning automation, prefer a complete runnable Python script against the scoped Workbench API unless the user explicitly asks for Cameo Java plugin code.",
-            "6. State product/release, execution surface, language/runtime, dependencies, authentication/privileges, runtime-validation status, transactions, destructive effects, cleanup/rollback, and exact 3DS KB paths used.",
+            "6. When the user commands creation of a new Workbench API call, create the endpoint in the Workbench codebase rather than only explaining it. Place the route in `backend/app/api/routes`, place reusable business logic in `backend/app/services/platform.py` or the matching service module, use existing session/CSRF/admin/cache permission helpers, add API Explorer metadata for user-facing calls, add `frontend/src/services/api.ts` helpers and `frontend/src/models/api.ts` types when the UI needs it, add copy-paste examples under `examples/`, update docs, run backend tests and frontend build, then report exact files and route.",
+            "7. Never put real tokens, passwords, session cookies, or private TWC data into generated examples. Use environment variables and placeholders.",
+            "8. State product/release, execution surface, language/runtime, dependencies, authentication/privileges, runtime-validation status, transactions, destructive effects, cleanup/rollback, and exact 3DS KB paths used.",
             "",
             "## Workbench knowledge surfaces",
             "",
@@ -11017,6 +11024,20 @@ class PlatformService:
             "- Specification workspace: native metamodel properties plus ordered applied-stereotype properties, defaults, derived values, multiplicity, type, and state metadata.",
             "- Developer API: scoped cache reads, search, graph, tree, child, and edit workflows.",
             "- Agent: validated 3DS control rails, query-routed 3DS evidence, and the current user's selected branch model file.",
+            "",
+            "## Workbench API endpoint creation map",
+            "",
+            "Use this placement map when the user asks to add a new Workbench API call:",
+            "",
+            "1. Define request/response Pydantic models in `backend/app/models/domain.py` when structured payloads are needed.",
+            "2. Add the FastAPI route in the matching file under `backend/app/api/routes/`; workspace/user-session calls usually belong in `backend/app/api/routes/workspace.py`, cache-token automation calls usually belong in `backend/app/api/routes/cache.py`, and auth/session calls belong in `backend/app/api/routes/auth.py`.",
+            "3. Keep real logic out of the route body. Add or reuse a method in `backend/app/services/platform.py` or a focused service module.",
+            "4. Enforce access before reading or mutating data. Use `get_session` for normal reads, `require_csrf` for user writes, `require_admin`/`require_admin_csrf` for admin-only routes, and the existing effective branch-access helpers for project/model data.",
+            "5. If the endpoint should appear in Workbench API Explorer, add a `WORKBENCH_*_OPERATION_KEY`, a `SwaggerOperationSpec`, and an executor branch in `execute_swagger_operation`.",
+            "6. If frontend code needs the route, add a typed helper in `frontend/src/services/api.ts` and interfaces in `frontend/src/models/api.ts`.",
+            "7. Add runnable examples under `examples/` and update `examples/README.md`; examples must be copy-paste runnable and use environment variables for secrets.",
+            "8. Update `README.md`, `CACHE_API.md`, or a focused doc under `docs/` so humans can find the route.",
+            "9. Validate with targeted backend tests, `pytest`, and `npm run build`; include PowerShell script parse checks when installer/offline scripts change.",
             "",
             "## Complete Workbench Python examples",
             "",

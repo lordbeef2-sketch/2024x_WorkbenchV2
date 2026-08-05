@@ -4,6 +4,8 @@
 
 Use this as the quick variable map when writing Workbench API calls, scripts, API Explorer examples, or agent tools.
 
+For creating new Workbench routes, use [WORKBENCH_API_ENDPOINT_AUTHORING.md](WORKBENCH_API_ENDPOINT_AUTHORING.md).
+
 The same catalog is available from Workbench after login:
 
 ```text

@@ -95,6 +95,30 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         self.assertEqual(stats["three_ds_kb_chunk_count"], 163670)
         self.assertEqual(len(fingerprint), 64)
 
+    def test_reference_documents_teach_workbench_api_endpoint_creation(self) -> None:
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace()
+        corpus = SimpleNamespace(
+            root=Path("C:/authoritative/3DS_KB"),
+            validated=lambda: SimpleNamespace(certificate_sha256="c" * 64),
+            control_documents=lambda: (),
+        )
+        service._validate_three_ds_corpus = lambda: corpus
+        service._three_ds_kb_status = lambda: {
+            "three_ds_kb_available": True,
+            "three_ds_kb_page_count": 10,
+            "three_ds_kb_chunk_count": 9,
+        }
+        service._workbench_agent_example_payload = lambda: {"36_workbench_owned_elements.py": "print('owned elements')"}
+
+        documents, _, _ = service._build_workbench_reference_documents()
+        operating_reference = documents[0][1].decode("utf-8")
+
+        self.assertIn("Workbench API endpoint creation map", operating_reference)
+        self.assertIn("backend/app/api/routes/workspace.py", operating_reference)
+        self.assertIn("frontend/src/services/api.ts", operating_reference)
+        self.assertIn("36_workbench_owned_elements.py", operating_reference)
+
     def test_query_context_contains_only_retrieved_authoritative_documents(self) -> None:
         service = object.__new__(PlatformService)
         service.settings = SimpleNamespace(

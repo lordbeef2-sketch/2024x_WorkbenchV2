@@ -176,6 +176,7 @@ Workbench-to-TWC smoke runner are provided under `backend/ops`.
 See:
 
 - [docs/WORKBENCH_API_VARIABLES.md](docs/WORKBENCH_API_VARIABLES.md)
+- [docs/WORKBENCH_API_ENDPOINT_AUTHORING.md](docs/WORKBENCH_API_ENDPOINT_AUTHORING.md)
 - [CACHE_API.md](CACHE_API.md)
 - [examples/README.md](examples/README.md)
 
