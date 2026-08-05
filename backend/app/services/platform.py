@@ -4637,6 +4637,19 @@ class PlatformService:
             )
             if referenced_record is not None and isinstance(referenced_record.payload, dict):
                 resolved_payloads[reference_id] = self._cached_element_payload(referenced_record.payload)
+        for reference_id in self._second_hop_cameo_reference_ids(adapter, resolved_payloads):
+            if reference_id in resolved_payloads:
+                continue
+            referenced_record = self.get_cached_branch_element_for_user(
+                server_id,
+                preferred_username,
+                project_id,
+                branch_id,
+                reference_id,
+                include_all_workbench_admin=include_all_workbench_admin,
+            )
+            if referenced_record is not None and isinstance(referenced_record.payload, dict):
+                resolved_payloads[reference_id] = self._cached_element_payload(referenced_record.payload)
         item_details = adapter.build_item_details_from_payload(
             payload,
             record.element_id,
@@ -4646,6 +4659,7 @@ class PlatformService:
             editable=editable,
             version=record.latest_revision or record.synced_at.isoformat(),
         )
+        item_details = self._enrich_cameo_reference_labels(item_details, payload, resolved_payloads)
         return self._enrich_cameo_property_item_details(item_details, payload, resolved_payloads)
 
     @staticmethod
@@ -4656,6 +4670,101 @@ class PlatformService:
         if isinstance(nested, dict):
             return nested
         return payload
+
+    def _second_hop_cameo_reference_ids(self, adapter: TeamworkAdapter, resolved_payloads: dict[str, Any]) -> list[str]:
+        reference_ids: list[str] = []
+        for payload in list(resolved_payloads.values())[:250]:
+            if not isinstance(payload, dict):
+                continue
+            for reference_id in adapter.reference_resolution_ids(payload):
+                if reference_id and reference_id not in resolved_payloads and reference_id not in reference_ids:
+                    reference_ids.append(reference_id)
+                if len(reference_ids) >= 250:
+                    return reference_ids
+        return reference_ids
+
+    def _cameo_payload_display_name(self, payload: dict[str, Any] | None) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        attributes = payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {}
+        candidates = [
+            attributes.get("name"),
+            payload.get("human_name"),
+            payload.get("humanName"),
+            payload.get("name"),
+            payload.get("qualified_name"),
+            payload.get("qualifiedName"),
+            payload.get("element_id"),
+        ]
+        return next((str(value).strip() for value in candidates if str(value or "").strip()), "")
+
+    def _cameo_payload_path(self, payload: dict[str, Any] | None) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("qualified_name") or payload.get("qualifiedName") or payload.get("path") or "").replace("/", "::").strip()
+
+    def _cameo_reference_values_from_payload(self, payload: dict[str, Any], resolved_payloads: dict[str, Any]) -> list[str]:
+        values: list[str] = []
+        attributes = payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {}
+        raw_attribute_value = attributes.get("value")
+        raw_values = raw_attribute_value if isinstance(raw_attribute_value, list) else [raw_attribute_value] if raw_attribute_value is not None else []
+        for value in raw_values:
+            text = str(value).strip()
+            if text:
+                values.append(text)
+        references = payload.get("references") if isinstance(payload.get("references"), dict) else {}
+        reference_values = references.get("value")
+        if not isinstance(reference_values, list):
+            reference_values = [reference_values] if reference_values is not None else []
+        for reference_id in reference_values:
+            reference_key = str(reference_id or "").strip()
+            if not reference_key:
+                continue
+            reference_payload = resolved_payloads.get(reference_key)
+            value = self._cameo_payload_display_name(reference_payload) or self._cameo_payload_path(reference_payload) or reference_key
+            if value:
+                values.append(value)
+        return list(dict.fromkeys(values))
+
+    def _enrich_cameo_reference_labels(
+        self,
+        item: ItemDetails,
+        payload: dict[str, Any],
+        resolved_payloads: dict[str, Any],
+    ) -> ItemDetails:
+        labels: dict[str, str] = {}
+        item_path = self._cameo_payload_path(payload) or item.path
+        for reference_id, reference_payload in resolved_payloads.items():
+            if not isinstance(reference_payload, dict):
+                continue
+            metaclass = normalize_lookup_key(str(reference_payload.get("metaclass") or reference_payload.get("human_type") or ""))
+            if "taggedvalue" not in metaclass:
+                continue
+            references = reference_payload.get("references") if isinstance(reference_payload.get("references"), dict) else {}
+            tag_definition_ids = references.get("tagDefinition") or references.get("tag_definition") or []
+            if not isinstance(tag_definition_ids, list):
+                tag_definition_ids = [tag_definition_ids]
+            tag_definition_payload = next(
+                (
+                    resolved_payloads.get(str(tag_definition_id).strip())
+                    for tag_definition_id in tag_definition_ids
+                    if str(tag_definition_id or "").strip() in resolved_payloads
+                ),
+                None,
+            )
+            tag_name = self._cameo_payload_display_name(tag_definition_payload) or self._cameo_payload_display_name(reference_payload)
+            tag_values = self._cameo_reference_values_from_payload(reference_payload, resolved_payloads)
+            if not tag_name or not tag_values:
+                continue
+            value_text = ", ".join(tag_values)
+            context = item_path or self._cameo_payload_path(reference_payload)
+            label = f"{tag_name} = {value_text}"
+            if context:
+                label = f"{label} [{context}]"
+            labels[reference_id] = label
+        if not labels:
+            return item
+        return item.model_copy(update={"metadata": {**item.metadata, "cameo_reference_labels": labels}})
 
     def _resolved_payload_attribute_value(self, resolved_payloads: dict[str, Any], element_id: str, key: str) -> str:
         payload = resolved_payloads.get(element_id)

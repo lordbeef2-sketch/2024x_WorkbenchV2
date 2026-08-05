@@ -925,6 +925,18 @@ function dedupeInspectorRows(rows: InspectorRow[]): InspectorRow[] {
   });
 }
 
+function dedupeInspectorRowsByLabel(rows: InspectorRow[]): InspectorRow[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = normalizedFieldKey(row.label);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 function cameoOrderedInspectorRows(rows: InspectorRow[], itemType?: string | null): InspectorRow[] {
   const orderIndex = isPackageLikeItemType(itemType) ? CAMEO_PACKAGE_SPECIFICATION_PROPERTY_LABEL_INDEX : CAMEO_SPECIFICATION_PROPERTY_LABEL_INDEX;
   return rows
@@ -1769,7 +1781,7 @@ function specificationRows(item: ItemDetails, lookup: Record<string, string>): I
     });
   }
 
-  return cameoOrderedInspectorRows(dedupeInspectorRows(rows), item.item_type);
+  return cameoOrderedInspectorRows(dedupeInspectorRowsByLabel(dedupeInspectorRows(rows)), item.item_type);
 }
 
 function constraintRows(item: ItemDetails, lookup: Record<string, string>): InspectorRow[] {
@@ -2216,7 +2228,7 @@ function specificationWindowRows(
     pushRow("cameo.package.documentation", "Documentation", firstMeaningful(valueFromNative("documentation", "Documentation"), sourcePayload.documentation), { showWhenEmpty: shouldShowEmptyCameoRows });
     pushRow("cameo.package.mounted-package", "Mounted Package", valueFromNative("mountedPackage", "mounted package"), { showWhenEmpty: shouldShowEmptyCameoRows });
 
-    return cameoOrderedInspectorRows(dedupeInspectorRows(rows), item.item_type);
+    return cameoOrderedInspectorRows(dedupeInspectorRowsByLabel(dedupeInspectorRows(rows)), item.item_type);
   } else {
     pushRow("cameo.name", "Name", firstMeaningful(valueFromNative("name", "Name"), sourcePayload.human_name, item.name), { showWhenEmpty: shouldShowEmptyCameoRows });
     pushRow("cameo.used-as-type", "Used As Type", firstMeaningful(valueFromReferences("_typedElementOfType", "typedElementOfType"), valueFromNative("typedElement", "type")), {
@@ -2379,7 +2391,7 @@ function specificationWindowRows(
   representedLabels.add("elementid");
   rows.push(...nativeRows.filter((row) => !representedLabels.has(normalizedFieldKey(row.label))));
 
-  return cameoOrderedInspectorRows(dedupeInspectorRows(rows), item.item_type);
+  return cameoOrderedInspectorRows(dedupeInspectorRowsByLabel(dedupeInspectorRows(rows)), item.item_type);
 }
 
 function defaultParameterValue(parameter: SwaggerParameterSpec): string {
@@ -3596,6 +3608,14 @@ export default function WorkspacePage() {
         lookup[normalizeLookupKey(reference.id)] = reference.name;
       }
     });
+    const cameoReferenceLabels = selectedWorkspaceItem?.metadata?.cameo_reference_labels;
+    if (cameoReferenceLabels && typeof cameoReferenceLabels === "object" && !Array.isArray(cameoReferenceLabels)) {
+      Object.entries(cameoReferenceLabels as Record<string, unknown>).forEach(([id, label]) => {
+        if (typeof label === "string" && label.trim()) {
+          lookup[normalizeLookupKey(id)] = label.trim();
+        }
+      });
+    }
     return lookup;
   }, [loadedFlatNodes, projects, selectedProjectBranches, selectedWorkspaceItem]);
 

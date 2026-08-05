@@ -705,6 +705,112 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
                     "Created by: Raymond Reeves Engineering Tech 4 2026",
                 )
 
+    def test_cameo_tagged_value_children_get_cameo_reference_labels(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.settings = Settings(data_dir=Path(directory) / "data")
+            service.repo.upsert_server(ServerProfile(id="twc", name="TWC", base_url="https://twc.example"))
+            service.repo.upsert_branch_cache_summary(
+                BranchCacheSummary(
+                    server_id="twc",
+                    project_id="project",
+                    branch_id="master",
+                    project_name="Project",
+                    branch_name="master",
+                    source_kind="cameo-plugin",
+                )
+            )
+            service.repo.upsert_cached_models(
+                [
+                    CachedModelRecord(
+                        server_id="twc",
+                        project_id="project",
+                        branch_id="master",
+                        model_id="model",
+                        name="Model",
+                        root_ids=["owner"],
+                    )
+                ]
+            )
+            service.repo.upsert_cached_elements(
+                [
+                    CachedElementRecord(
+                        server_id="twc",
+                        project_id="project",
+                        branch_id="master",
+                        model_id="model",
+                        element_id="owner",
+                        name="Customization Owner",
+                        item_type="Customization",
+                        path="Profile::Customization",
+                        payload={
+                            "element_id": "owner",
+                            "model_id": "model",
+                            "owner_id": "model",
+                            "human_name": "Customization",
+                            "human_type": "Customization",
+                            "metaclass": "Class",
+                            "qualified_name": "Profile::Customization",
+                            "owned_element_ids": ["tag-value"],
+                        },
+                    ),
+                    CachedElementRecord(
+                        server_id="twc",
+                        project_id="project",
+                        branch_id="master",
+                        model_id="model",
+                        element_id="tag-value",
+                        name="Boolean Tagged Value",
+                        item_type="Boolean Tagged Value",
+                        path="Boolean Tagged Value",
+                        payload={
+                            "element_id": "tag-value",
+                            "model_id": "model",
+                            "owner_id": "owner",
+                            "human_name": "Boolean Tagged Value",
+                            "human_type": "Boolean Tagged Value",
+                            "metaclass": "BooleanTaggedValue",
+                            "attributes": {"value": ["true"]},
+                            "references": {"tagDefinition": ["tag-definition"]},
+                        },
+                    ),
+                    CachedElementRecord(
+                        server_id="twc",
+                        project_id="project",
+                        branch_id="master",
+                        model_id="model",
+                        element_id="tag-definition",
+                        name="hideMetatype",
+                        item_type="Grouped Property",
+                        path="Customization::hideMetatype",
+                        payload={
+                            "element_id": "tag-definition",
+                            "model_id": "model",
+                            "human_name": "Grouped Property hideMetatype",
+                            "human_type": "Grouped Property",
+                            "metaclass": "Property",
+                            "attributes": {"name": "hideMetatype"},
+                        },
+                    ),
+                ]
+            )
+
+            item = service._cached_item_details_for_user(
+                "twc",
+                "admin",
+                "project",
+                "master",
+                "owner",
+                include_all_workbench_admin=True,
+            )
+
+            self.assertIsNotNone(item)
+            self.assertEqual(
+                item.metadata["cameo_reference_labels"]["tag-value"],
+                "hideMetatype = true [Profile::Customization]",
+            )
+
     def test_empty_env_preset_catalog_does_not_delete_app_managed_servers(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             database_path = Path(directory) / "workbench.db"
