@@ -253,6 +253,9 @@ export const api = {
   getDashboard() {
     return request<DashboardPayload>("/workspace/dashboard");
   },
+  getWorkbenchApiVariableCatalog() {
+    return request<Record<string, unknown>>("/workspace/api-variable-catalog");
+  },
   getCacheIngestTokenStatus() {
     return request<CacheIngestTokenStatus>("/workspace/cache-ingest-token");
   },
@@ -445,6 +448,26 @@ export const api = {
       includePermissions: String(payload.includePermissions ?? true),
     });
     return request<Record<string, unknown>>(`/workspace/model-cache/project-dump?${params.toString()}`);
+  },
+  getOwnedElements(payload: {
+    projectId: string;
+    branchId: string;
+    elementId: string;
+    modelId?: string;
+    includeDetails?: boolean;
+    includeRawPayload?: boolean;
+  }) {
+    const params = new URLSearchParams({
+      projectId: payload.projectId,
+      branchId: payload.branchId,
+      elementId: payload.elementId,
+      includeDetails: String(payload.includeDetails ?? true),
+      includeRawPayload: String(payload.includeRawPayload ?? false),
+    });
+    if (payload.modelId) {
+      params.set("modelId", payload.modelId);
+    }
+    return request<Record<string, unknown>>(`/workspace/model-cache/owned-elements?${params.toString()}`);
   },
   projectBranchDumpDownloadUrl(payload: {
     projectId: string;

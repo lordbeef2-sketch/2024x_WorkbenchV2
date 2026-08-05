@@ -162,6 +162,8 @@ from app.services.three_ds_corpus import ThreeDsCorpus
 from app.settings.config import Settings
 
 logger = structlog.get_logger(__name__)
+WORKBENCH_API_VARIABLE_CATALOG_OPERATION_KEY = "workbench_get_api_variable_catalog"
+WORKBENCH_OWNED_ELEMENTS_OPERATION_KEY = "workbench_get_model_cache_owned_elements"
 WORKBENCH_PROJECT_DUMP_OPERATION_KEY = "workbench_get_model_cache_project_dump"
 WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY = "workbench_get_model_cache_spec_diagnostic"
 
@@ -4215,6 +4217,177 @@ class PlatformService:
             ],
         }
 
+    def get_cached_branch_owned_elements_for_user(
+        self,
+        server_id: str,
+        preferred_username: str,
+        project_id: str,
+        branch_id: str,
+        element_id: str,
+        *,
+        model_id: str | None = None,
+        include_details: bool = True,
+        include_raw_payload: bool = False,
+        include_all_workbench_admin: bool = False,
+    ) -> dict[str, Any]:
+        """Return the elements listed under a selected element's Cameo Owned Element property."""
+        self._require_server(server_id, include_disabled=True)
+        summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
+        if summary is None:
+            raise ValueError("No cached branch snapshot exists for this project and branch.")
+
+        parent_record = self.get_cached_branch_element_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+            model_id=model_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
+        if parent_record is None:
+            raise ValueError("Cached element not found or not visible to this Workbench user.")
+
+        parent_payload = self._cached_element_payload(parent_record.payload)
+        parent_details = self._cached_item_details_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            parent_record.element_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
+
+        owned_ids = self._owned_element_ids_from_payload(parent_payload)
+        if parent_details is not None:
+            owned_ids.extend(reference.id for reference in parent_details.contained_elements if reference.id)
+        owned_ids = list(dict.fromkeys(value for value in owned_ids if value and value != parent_record.element_id))
+
+        items: list[dict[str, Any]] = []
+        unresolved_ids: list[str] = []
+        for owned_id in owned_ids:
+            owned_record = self.get_cached_branch_element_for_user(
+                server_id,
+                preferred_username,
+                project_id,
+                branch_id,
+                owned_id,
+                model_id=parent_record.model_id,
+                include_all_workbench_admin=include_all_workbench_admin,
+            )
+            if owned_record is None and parent_record.model_id != model_id:
+                owned_record = self.get_cached_branch_element_for_user(
+                    server_id,
+                    preferred_username,
+                    project_id,
+                    branch_id,
+                    owned_id,
+                    model_id=model_id,
+                    include_all_workbench_admin=include_all_workbench_admin,
+                )
+            if owned_record is None:
+                unresolved_ids.append(owned_id)
+                continue
+            entry: dict[str, Any] = {
+                "record": owned_record.model_dump(mode="json", exclude={"payload"}),
+            }
+            if include_details:
+                details = self._cached_item_details_for_user(
+                    server_id,
+                    preferred_username,
+                    project_id,
+                    branch_id,
+                    owned_record.element_id,
+                    include_all_workbench_admin=include_all_workbench_admin,
+                )
+                if details is not None:
+                    entry["derived_item_details"] = details.model_dump(mode="json")
+            if include_raw_payload:
+                entry["raw_payload"] = self._cached_element_payload(owned_record.payload)
+            items.append(entry)
+
+        return {
+            "schema_version": "workbench-owned-elements.v1",
+            "server_id": server_id,
+            "project_id": project_id,
+            "branch_id": branch_id,
+            "model_id": parent_record.model_id,
+            "element_id": parent_record.element_id,
+            "property": "Owned Element",
+            "source_fields": [
+                "payload.owned_element_ids",
+                "payload.ownedElementIds",
+                "payload.references.ownedElement",
+                "payload.spec_sections.metamodel.entries[name=Owned Element]",
+                "derived ItemDetails.contained_elements",
+            ],
+            "parent": parent_record.model_dump(mode="json", exclude={"payload"}),
+            "owned_element_ids": owned_ids,
+            "unresolved_element_ids": unresolved_ids,
+            "total_owned_elements": len(items),
+            "include_details": include_details,
+            "include_raw_payload": include_raw_payload,
+            "items": items,
+        }
+
+    def _owned_element_ids_from_payload(self, payload: dict[str, Any]) -> list[str]:
+        ids: list[str] = []
+
+        def add_values(value: Any) -> None:
+            for candidate in self._element_ids_from_value(value):
+                if candidate and candidate not in ids:
+                    ids.append(candidate)
+
+        add_values(payload.get("owned_element_ids"))
+        add_values(payload.get("ownedElementIds"))
+
+        references = payload.get("references") if isinstance(payload.get("references"), dict) else {}
+        for key, value in references.items():
+            if self._is_owned_element_property_name(str(key)):
+                add_values(value)
+
+        spec_sections = payload.get("spec_sections") or payload.get("specSections")
+        if isinstance(spec_sections, dict):
+            metamodel = spec_sections.get("metamodel")
+            if isinstance(metamodel, dict) and isinstance(metamodel.get("entries"), list):
+                for entry in metamodel["entries"]:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_name = str(entry.get("name") or entry.get("id") or "")
+                    if self._is_owned_element_property_name(entry_name):
+                        add_values(entry.get("value"))
+                        add_values(entry.get("defaultValue"))
+
+        return ids
+
+    @staticmethod
+    def _is_owned_element_property_name(value: str) -> bool:
+        normalized = normalize_lookup_key(value)
+        return normalized in {"owned element", "ownedelement", "owned elements", "ownedelements"}
+
+    def _element_ids_from_value(self, value: Any) -> list[str]:
+        ids: list[str] = []
+        if value is None:
+            return ids
+        if isinstance(value, str):
+            cleaned = value.strip()
+            return [cleaned] if cleaned else []
+        if isinstance(value, (int, float, bool)):
+            return []
+        if isinstance(value, list) or isinstance(value, tuple):
+            for entry in value:
+                ids.extend(self._element_ids_from_value(entry))
+            return ids
+        if isinstance(value, dict):
+            for key in ("id", "elementId", "element_id", "@id", "target", "value"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    ids.append(candidate.strip())
+                elif isinstance(candidate, (list, tuple, dict)):
+                    ids.extend(self._element_ids_from_value(candidate))
+            return list(dict.fromkeys(ids))
+        return ids
+
     def _spec_diagnostic_element(
         self,
         adapter: TeamworkAdapter,
@@ -7097,6 +7270,124 @@ class PlatformService:
             "path": record.path,
         }
 
+    def workbench_api_variable_catalog(self) -> dict[str, Any]:
+        """Return the shared Workbench API variable cheat sheet used by docs, API Explorer, and agents."""
+        return {
+            "schema_version": "workbench-api-variable-catalog.v1",
+            "base_url": {
+                "name": "WORKBENCH_BASE_URL",
+                "example": "http://localhost:8000",
+                "description": "Root URL for the Workbench web/API process. API paths below are relative to this base URL.",
+            },
+            "authentication": [
+                {
+                    "name": "SESSION_COOKIE",
+                    "where": "Cookie",
+                    "required_for": "Browser/session-authenticated Workbench routes.",
+                    "how_to_get": "Returned by /api/auth/local, /api/auth/token, or the TWC SSO callback and stored by the browser/client.",
+                    "notes": "Read-only GET routes require a valid session. Mutating routes also require CSRF.",
+                },
+                {
+                    "name": "X-CSRF-Token",
+                    "where": "Header",
+                    "required_for": "Session-authenticated POST, PUT, PATCH, and DELETE routes.",
+                    "how_to_get": "Use csrf_token from /api/auth/session or the login response.",
+                    "example": "X-CSRF-Token: <csrf_token>",
+                },
+                {
+                    "name": "CACHE_API_BEARER_TOKEN",
+                    "where": "Authorization header",
+                    "required_for": "Scoped /api/cache/... automation routes.",
+                    "how_to_get": "Workbench admin creates/reveals API keys in Settings.",
+                    "example": "Authorization: Bearer <cache_api_key>",
+                    "notes": "Cache API keys are not TWC passwords and should be scoped read/write/edit as narrowly as possible.",
+                },
+            ],
+            "selectors": [
+                {
+                    "name": "serverId",
+                    "aliases": ["server_id"],
+                    "example": "localhost",
+                    "source": "Settings > Servers, /api/servers, or /api/cache/servers.",
+                    "description": "Workbench server profile id. Required by /api/cache/... paths; session routes infer it from the logged-in session.",
+                },
+                {
+                    "name": "projectId",
+                    "aliases": ["project_id", "resourceId"],
+                    "example": "Property Based Requirements.mdzip",
+                    "source": "/api/workspace/projects or /api/cache/servers/{serverId}/projects.",
+                    "description": "Stored Workbench project id. For plugin snapshots this matches the project/resource key supplied by Cameo.",
+                },
+                {
+                    "name": "branchId",
+                    "aliases": ["branch_id"],
+                    "example": "master",
+                    "default": "trunk on dump/cache examples when omitted",
+                    "source": "/api/workspace/projects/{projectId}/branches or cache branch lists.",
+                    "description": "Stored branch id/name for the selected project. UI may display trunk even when the stored branch id is master; use the API value returned by branches.",
+                },
+                {
+                    "name": "workspaceId",
+                    "aliases": ["workspace_id"],
+                    "example": "optional TWC workspace id",
+                    "source": "Project/branch responses when the live TWC workspace context is available.",
+                    "description": "Optional Teamwork Cloud workspace id. Cached/plugin-only reads usually do not need it.",
+                },
+                {
+                    "name": "modelId",
+                    "aliases": ["model_id"],
+                    "example": "eee_1045467100313_135436_1",
+                    "source": "Project dump, model cache model list, item source_payload.model_id.",
+                    "description": "Cached model identifier. Use it to disambiguate duplicate element ids across models.",
+                },
+                {
+                    "name": "itemId",
+                    "aliases": ["elementId", "element_id"],
+                    "example": "_19_0beta_8c4028a_1491999715291_646132_44227",
+                    "source": "Containment tree node id, item details id, cache elements, or Cameo plugin snapshot.",
+                    "description": "Model element id used by /api/workspace/items/{itemId} and element diagnostics.",
+                },
+            ],
+            "common_query_flags": [
+                {"name": "refresh", "type": "boolean", "default": False, "description": "Ask Workbench to refresh allowed live/cached state when supported. Avoid using repeatedly in tight loops."},
+                {"name": "depth", "type": "integer", "default": None, "description": "Optional containment-tree depth limit. Omit for full accessible tree where supported."},
+                {"name": "limit", "type": "integer", "default": 25, "description": "Maximum rows/elements to return for search or diagnostic endpoints."},
+                {"name": "offset", "type": "integer", "default": 0, "description": "Pagination offset for list/search endpoints that support it."},
+                {"name": "includeTree", "type": "boolean", "default": True, "description": "Project dump flag: include containment tree."},
+                {"name": "includeElements", "type": "boolean", "default": True, "description": "Project dump flag: include cached element records."},
+                {"name": "includeDetails", "type": "boolean", "default": True, "description": "Project dump/spec diagnostic flag: include derived Workbench ItemDetails."},
+                {"name": "includeRawPayload", "type": "boolean", "default": True, "description": "Project dump/spec diagnostic flag: include raw Cameo/plugin payloads."},
+                {"name": "includePermissions", "type": "boolean", "default": True, "description": "Project dump flag: include attached permission/access records visible to the caller."},
+                {"name": "download", "type": "boolean", "default": False, "description": "Project dump flag: return JSON as an attachment with a generated filename."},
+            ],
+            "permission_terms": [
+                {"name": "viewer", "description": "Can see a stored project/branch in Workbench."},
+                {"name": "editor", "description": "Can update editable Workbench item fields where edit routes permit it."},
+                {"name": "project_admin", "description": "Can manage Workbench-local access assignments for assigned project branches."},
+                {"name": "workbench_admin", "description": "Can manage Workbench system settings. Has catalog visibility for stored models but does not automatically grant TWC project authority."},
+                {"name": "group_manager", "description": "Can manage assigned Workbench groups only."},
+            ],
+            "common_endpoints": [
+                {"method": "GET", "path": "/api/auth/session", "needs": ["SESSION_COOKIE"], "returns": ["csrf_token", "user", "server"]},
+                {"method": "GET", "path": "/api/workspace/projects", "needs": ["SESSION_COOKIE"], "returns": ["projectId", "workspaceId"]},
+                {"method": "GET", "path": "/api/workspace/projects/{projectId}/branches", "needs": ["SESSION_COOKIE", "projectId"], "returns": ["branchId"]},
+                {"method": "GET", "path": "/api/workspace/tree?projectId={projectId}&branchId={branchId}", "needs": ["SESSION_COOKIE", "projectId", "branchId"], "returns": ["itemId", "modelId"]},
+                {"method": "GET", "path": "/api/workspace/tree/children?projectId={projectId}&branchId={branchId}&parentId={itemId}", "needs": ["SESSION_COOKIE", "projectId", "branchId", "itemId"], "returns": ["child itemId values"]},
+                {"method": "GET", "path": "/api/workspace/items/{itemId}?projectId={projectId}&branchId={branchId}", "needs": ["SESSION_COOKIE", "projectId", "branchId", "itemId"], "returns": ["ItemDetails"]},
+                {"method": "GET", "path": "/api/workspace/model-cache/project-dump?projectId={projectId}&branchId={branchId}", "needs": ["SESSION_COOKIE", "projectId", "branchId"], "returns": ["full cached branch digest"]},
+                {"method": "GET", "path": "/api/workspace/model-cache/owned-elements?projectId={projectId}&branchId={branchId}&elementId={itemId}", "needs": ["SESSION_COOKIE", "projectId", "branchId", "itemId"], "returns": ["Owned Element property expansion"]},
+                {"method": "GET", "path": "/api/workspace/model-cache/spec-diagnostic?projectId={projectId}&branchId={branchId}&elementId={itemId}", "needs": ["SESSION_COOKIE", "projectId", "branchId"], "returns": ["raw payload and derived spec mapping facts"]},
+                {"method": "GET", "path": "/api/workspace/api-variable-catalog", "needs": ["SESSION_COOKIE"], "returns": ["this catalog"]},
+            ],
+            "naming_rules": [
+                "Workbench route query parameters use camelCase, for example projectId and branchId.",
+                "Python/backend internal names usually use snake_case, for example project_id and branch_id.",
+                "Teamwork Cloud RealSwagger often uses resourceId where Workbench UI/API examples say projectId.",
+                "Cameo/plugin payloads may use element_id, local_id, @id, or id; Workbench item routes use the resolved itemId/elementId value.",
+                "Never send passwords to Workbench API automation routes. Use sessions, CSRF, or scoped cache API bearer keys.",
+            ],
+        }
+
     def swagger_contract_manifest(self) -> SwaggerContractManifest:
         manifest = self.contract.manifest()
         workbench_operations = self._workbench_api_explorer_operations()
@@ -7122,6 +7413,24 @@ class PlatformService:
 
     def _workbench_api_explorer_operations(self) -> list[SwaggerOperationSpec]:
         return [
+            SwaggerOperationSpec(
+                key=WORKBENCH_API_VARIABLE_CATALOG_OPERATION_KEY,
+                method="GET",
+                path="/api/workspace/api-variable-catalog",
+                tag="Workbench API",
+                tags=["Workbench API", "Developer Help"],
+                operation_id=WORKBENCH_API_VARIABLE_CATALOG_OPERATION_KEY,
+                summary="List Workbench API variables and calling conventions",
+                description=(
+                    "Workbench-only developer helper endpoint. Returns the common variables, selectors, headers, "
+                    "query flags, permission terms, and endpoint patterns needed to script against Workbench."
+                ),
+                responses=[
+                    SwaggerResponseSpec(status_code="200", description="Workbench API variable catalog.", content_types=["application/json"]),
+                    SwaggerResponseSpec(status_code="401", description="Authentication is required.", content_types=["application/json"]),
+                ],
+                destructive=False,
+            ),
             SwaggerOperationSpec(
                 key=WORKBENCH_PROJECT_DUMP_OPERATION_KEY,
                 method="GET",
@@ -7149,6 +7458,34 @@ class PlatformService:
                     SwaggerResponseSpec(status_code="200", description="Full Workbench cached project branch dump.", content_types=["application/json"]),
                     SwaggerResponseSpec(status_code="403", description="The active Workbench user cannot read the requested cached branch.", content_types=["application/json"]),
                     SwaggerResponseSpec(status_code="404", description="No cached branch snapshot exists for the requested project and branch.", content_types=["application/json"]),
+                ],
+                destructive=False,
+            ),
+            SwaggerOperationSpec(
+                key=WORKBENCH_OWNED_ELEMENTS_OPERATION_KEY,
+                method="GET",
+                path="/api/workspace/model-cache/owned-elements",
+                tag="Workbench API",
+                tags=["Workbench API", "Model Cache"],
+                operation_id=WORKBENCH_OWNED_ELEMENTS_OPERATION_KEY,
+                summary="Return elements under a selected element's Owned Element property",
+                description=(
+                    "Workbench-only cached model endpoint. Given a project, branch, and element id, returns the elements "
+                    "listed under that element's Cameo Specification-window Owned Element property. This reads stored "
+                    "plugin snapshot data and does not call Teamwork Cloud REST."
+                ),
+                query_parameters=[
+                    SwaggerParameterSpec(name="projectId", location="query", required=True, schema_type="string", description="Workbench cached project id."),
+                    SwaggerParameterSpec(name="branchId", location="query", required=True, schema_type="string", description="Workbench cached branch id."),
+                    SwaggerParameterSpec(name="elementId", location="query", required=True, schema_type="string", description="Parent element id whose Owned Element property should be resolved."),
+                    SwaggerParameterSpec(name="modelId", location="query", required=False, schema_type="string", description="Optional cached model id filter/disambiguator."),
+                    SwaggerParameterSpec(name="includeDetails", location="query", required=False, schema_type="boolean", default=True, description="Include derived Workbench ItemDetails for each owned element."),
+                    SwaggerParameterSpec(name="includeRawPayload", location="query", required=False, schema_type="boolean", default=False, description="Include raw plugin snapshot payloads for each owned element."),
+                ],
+                responses=[
+                    SwaggerResponseSpec(status_code="200", description="Owned Element property expansion.", content_types=["application/json"]),
+                    SwaggerResponseSpec(status_code="403", description="The active Workbench user cannot read the requested cached branch/model.", content_types=["application/json"]),
+                    SwaggerResponseSpec(status_code="404", description="No cached branch snapshot or visible parent element exists for the request.", content_types=["application/json"]),
                 ],
                 destructive=False,
             ),
@@ -7184,8 +7521,12 @@ class PlatformService:
         ]
 
     async def execute_swagger_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
+        if payload.operation_key == WORKBENCH_API_VARIABLE_CATALOG_OPERATION_KEY:
+            return self._execute_workbench_api_variable_catalog_operation(payload)
         if payload.operation_key == WORKBENCH_PROJECT_DUMP_OPERATION_KEY:
             return self._execute_workbench_project_dump_operation(session, payload)
+        if payload.operation_key == WORKBENCH_OWNED_ELEMENTS_OPERATION_KEY:
+            return self._execute_workbench_owned_elements_operation(session, payload)
         if payload.operation_key == WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY:
             return self._execute_workbench_spec_diagnostic_operation(session, payload)
         operation, candidate_path = self.contract.build_candidate_path(
@@ -7206,6 +7547,25 @@ class PlatformService:
             timeout=payload.timeout_seconds,
         )
         return self._swagger_response(payload.operation_key, operation.method, operation.path, requested_path, response)
+
+    def _execute_workbench_api_variable_catalog_operation(self, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
+        catalog = self.workbench_api_variable_catalog()
+        content = json.dumps(catalog, default=str).encode("utf-8")
+        return SwaggerExecuteResponse(
+            operation_key=payload.operation_key,
+            method="GET",
+            path="/api/workspace/api-variable-catalog",
+            requested_path="/api/workspace/api-variable-catalog",
+            status_code=200,
+            ok=True,
+            content_type="application/json",
+            headers={"content-type": "application/json"},
+            body=catalog,
+            text=None,
+            body_base64=None,
+            is_binary=False,
+            size_bytes=len(content),
+        )
 
     def _execute_workbench_project_dump_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
         query_params = payload.query_params or {}
@@ -7254,6 +7614,56 @@ class PlatformService:
                 query_items.append((key, str(value)))
         suffix = f"?{urlencode(query_items, doseq=True)}" if query_items else ""
         return f"/api/workspace/model-cache/project-dump{suffix}"
+
+    def _execute_workbench_owned_elements_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
+        query_params = payload.query_params or {}
+        project_id = str(query_params.get("projectId") or "").strip()
+        branch_id = str(query_params.get("branchId") or "").strip()
+        element_id = str(query_params.get("elementId") or "").strip()
+        if not project_id:
+            raise ValueError("Missing required query parameter: projectId")
+        if not branch_id:
+            raise ValueError("Missing required query parameter: branchId")
+        if not element_id:
+            raise ValueError("Missing required query parameter: elementId")
+        owned_elements = self.get_cached_branch_owned_elements_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+            element_id,
+            model_id=str(query_params.get("modelId") or "").strip() or None,
+            include_details=_truthy_query_value(query_params.get("includeDetails"), default=True),
+            include_raw_payload=_truthy_query_value(query_params.get("includeRawPayload"), default=False),
+            include_all_workbench_admin=self.can_manage_server_presets(session),
+        )
+        requested_path = self._workbench_owned_elements_requested_path(query_params)
+        content = json.dumps(owned_elements, default=str).encode("utf-8")
+        return SwaggerExecuteResponse(
+            operation_key=payload.operation_key,
+            method="GET",
+            path="/api/workspace/model-cache/owned-elements",
+            requested_path=requested_path,
+            status_code=200,
+            ok=True,
+            content_type="application/json",
+            headers={"content-type": "application/json"},
+            body=owned_elements,
+            text=None,
+            body_base64=None,
+            is_binary=False,
+            size_bytes=len(content),
+        )
+
+    def _workbench_owned_elements_requested_path(self, query_params: dict[str, Any]) -> str:
+        query_items: list[tuple[str, str]] = []
+        for key in ("projectId", "branchId", "elementId", "modelId", "includeDetails", "includeRawPayload"):
+            value = query_params.get(key)
+            if value in (None, "", [], {}):
+                continue
+            query_items.append((key, str(value)))
+        suffix = f"?{urlencode(query_items)}" if query_items else ""
+        return f"/api/workspace/model-cache/owned-elements{suffix}"
 
     def _execute_workbench_spec_diagnostic_operation(self, session: SessionData, payload: SwaggerExecuteRequest) -> SwaggerExecuteResponse:
         query_params = payload.query_params or {}

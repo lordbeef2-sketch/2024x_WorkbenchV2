@@ -18,6 +18,10 @@ and uses the same official 2024x Refresh3 OIDC pattern as the app:
    client ID and secret with `client_secret_basic`,
 5. call `/osmc/...` with `Authorization: Token <id_token>`.
 
+For Workbench-local API variable names, selectors, headers, and common calling
+patterns, use [../docs/WORKBENCH_API_VARIABLES.md](../docs/WORKBENCH_API_VARIABLES.md)
+or call `GET /api/workspace/api-variable-catalog` after signing in.
+
 ## Before you run anything
 
 Fill in at least:
@@ -43,7 +47,18 @@ python .\16_element_discovery_from_models.py
 python .\18_authserver_token_flow.py
 python .\20_all_elements_list.py
 python .\21_all_elements_payloads.py
+python .\36_workbench_owned_elements.py
 ```
+
+`36_workbench_owned_elements.py` is the Workbench-local teaching example for:
+
+```text
+GET /api/workspace/model-cache/owned-elements?projectId={projectId}&branchId={branchId}&elementId={itemId}
+```
+
+It takes a published Cameo element ID, expands that element's `Owned Element`
+property from the stored Workbench snapshot, and writes the full JSON result to
+`workbench_owned_elements.json`.
 
 ## Reusable Modules
 

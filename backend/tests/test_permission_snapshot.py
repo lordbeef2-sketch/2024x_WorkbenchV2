@@ -39,7 +39,12 @@ from app.models.domain import (
     UserContext,
 )
 from app.services.platform import PermissionSnapshotIndeterminateError, PlatformService
-from app.services.platform import WORKBENCH_PROJECT_DUMP_OPERATION_KEY, WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY
+from app.services.platform import (
+    WORKBENCH_API_VARIABLE_CATALOG_OPERATION_KEY,
+    WORKBENCH_OWNED_ELEMENTS_OPERATION_KEY,
+    WORKBENCH_PROJECT_DUMP_OPERATION_KEY,
+    WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY,
+)
 
 
 class PermissionSnapshotReplacementTests(unittest.TestCase):
@@ -1075,6 +1080,8 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
 
             explorer_operations = service._workbench_api_explorer_operations()
             explorer_operation_keys = {operation.key for operation in explorer_operations}
+            self.assertIn(WORKBENCH_API_VARIABLE_CATALOG_OPERATION_KEY, explorer_operation_keys)
+            self.assertIn(WORKBENCH_OWNED_ELEMENTS_OPERATION_KEY, explorer_operation_keys)
             self.assertIn(WORKBENCH_PROJECT_DUMP_OPERATION_KEY, explorer_operation_keys)
             self.assertIn(WORKBENCH_SPEC_DIAGNOSTIC_OPERATION_KEY, explorer_operation_keys)
             self.assertTrue(all(operation.tag == "Workbench API" for operation in explorer_operations))
@@ -1099,6 +1106,16 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
             )
             self.assertTrue(response.ok)
             self.assertEqual(response.body["schema_version"], "workbench-spec-diagnostic.v1")
+
+            catalog_response = service._execute_workbench_api_variable_catalog_operation(
+                SwaggerExecuteRequest(operation_key=WORKBENCH_API_VARIABLE_CATALOG_OPERATION_KEY)
+            )
+            self.assertTrue(catalog_response.ok)
+            self.assertEqual(catalog_response.body["schema_version"], "workbench-api-variable-catalog.v1")
+            selector_names = {entry["name"] for entry in catalog_response.body["selectors"]}
+            self.assertIn("projectId", selector_names)
+            self.assertIn("branchId", selector_names)
+            self.assertIn("itemId", selector_names)
 
             trunk_dump = service.get_cached_project_branch_dump_for_user(
                 "server",
@@ -1127,6 +1144,121 @@ class IngestPermissionLifecycleTests(unittest.TestCase):
             )
             self.assertTrue(dump_response.ok)
             self.assertEqual(dump_response.body["schema_version"], "workbench-project-branch-dump.v1")
+
+    def test_owned_elements_endpoint_expands_cameo_owned_element_property(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            data_dir = Path(directory)
+            repo = SqliteRepository(data_dir / "workbench.db")
+            repo.upsert_server(ServerProfile(id="server", name="Server", base_url="https://twc.example"))
+            service = object.__new__(PlatformService)
+            service.repo = repo
+            service.settings = SimpleNamespace(resolved_data_dir=data_dir)
+            service.sessions = SimpleNamespace(mark_server_permission_snapshots_due=lambda server_id: None)
+            service._permission_inventory_dirty_notifier = None
+
+            service.ingest_branch_snapshot(
+                BranchSnapshotIngestRequest(
+                    serverId="server",
+                    projectId="project",
+                    projectName="Project",
+                    branchId="trunk",
+                    branchName="trunk",
+                    revisionId="1",
+                    sourceUser="publisher",
+                    models=[
+                        IngestModelRecord(
+                            modelId="model",
+                            name="Model",
+                            rootElementIds=["parent"],
+                        )
+                    ],
+                    elements=[
+                        IngestElementRecord(
+                            elementId="parent",
+                            modelId="model",
+                            humanName="Parent",
+                            humanType="Block",
+                            qualifiedName="Model::Parent",
+                            ownedElementIds=["child-from-owned-ids"],
+                            references={"ownedElement": ["child-from-reference"]},
+                            specSections={
+                                "metamodel": {
+                                    "entries": [
+                                        {
+                                            "name": "Owned Element",
+                                            "kind": "reference",
+                                            "value": [{"id": "child-from-native"}],
+                                        }
+                                    ]
+                                }
+                            },
+                        ),
+                        IngestElementRecord(
+                            elementId="child-from-owned-ids",
+                            modelId="model",
+                            humanName="Child From Owned Ids",
+                            humanType="Part Property",
+                            qualifiedName="Model::Parent::Child From Owned Ids",
+                        ),
+                        IngestElementRecord(
+                            elementId="child-from-reference",
+                            modelId="model",
+                            humanName="Child From Reference",
+                            humanType="Port",
+                            qualifiedName="Model::Parent::Child From Reference",
+                        ),
+                        IngestElementRecord(
+                            elementId="child-from-native",
+                            modelId="model",
+                            humanName="Child From Native",
+                            humanType="Requirement",
+                            qualifiedName="Model::Parent::Child From Native",
+                        ),
+                    ],
+                )
+            )
+
+            owned = service.get_cached_branch_owned_elements_for_user(
+                "server",
+                "admin",
+                "project",
+                "trunk",
+                "parent",
+                include_all_workbench_admin=True,
+            )
+            self.assertEqual(owned["schema_version"], "workbench-owned-elements.v1")
+            self.assertEqual(owned["property"], "Owned Element")
+            self.assertEqual(owned["unresolved_element_ids"], [])
+            self.assertEqual(
+                owned["owned_element_ids"],
+                ["child-from-owned-ids", "child-from-reference", "child-from-native"],
+            )
+            self.assertEqual(owned["total_owned_elements"], 3)
+            returned_ids = [entry["record"]["element_id"] for entry in owned["items"]]
+            self.assertEqual(returned_ids, ["child-from-owned-ids", "child-from-reference", "child-from-native"])
+            self.assertIn("derived_item_details", owned["items"][0])
+
+            session = SessionData(
+                server=ServerProfile(id="server", name="Server", base_url="https://twc.example"),
+                user=UserContext(preferred_username="admin", server_id="server", server_name="Server"),
+                authorization_context=AuthorizationContext(can_manage_server_presets=True),
+                encrypted_credentials="",
+                capabilities=CapabilitySummary(detected_version="2024x"),
+            )
+            response = service._execute_workbench_owned_elements_operation(
+                session,
+                SwaggerExecuteRequest(
+                    operation_key=WORKBENCH_OWNED_ELEMENTS_OPERATION_KEY,
+                    query_params={
+                        "projectId": "project",
+                        "branchId": "trunk",
+                        "elementId": "parent",
+                    },
+                ),
+            )
+            self.assertTrue(response.ok)
+            self.assertEqual(response.body["schema_version"], "workbench-owned-elements.v1")
+            self.assertEqual(response.body["total_owned_elements"], 3)
 
     def test_acl_delta_marks_users_due_and_tombstone_revokes_branch_atomically(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:

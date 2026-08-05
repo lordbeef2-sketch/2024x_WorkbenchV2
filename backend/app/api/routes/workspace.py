@@ -35,6 +35,11 @@ async def dashboard(session=Depends(get_session), container: ApplicationContaine
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
+@router.get("/api-variable-catalog")
+def api_variable_catalog(session=Depends(get_session), container: ApplicationContainer = Depends(get_container)):
+    return container.platform.workbench_api_variable_catalog()
+
+
 @router.get("/cache-ingest-token")
 def cache_ingest_token_status(
     session=Depends(require_admin),
@@ -485,6 +490,35 @@ def model_cache_spec_diagnostic(
             limit=limit,
             include_raw_payload=includeRawPayload,
             include_details=includeDetails,
+            include_all_workbench_admin=container.platform.can_manage_server_presets(session),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/model-cache/owned-elements")
+def model_cache_owned_elements(
+    projectId: str = Query(...),
+    branchId: str = Query(...),
+    elementId: str = Query(...),
+    modelId: str | None = Query(default=None),
+    includeDetails: bool = Query(default=True),
+    includeRawPayload: bool = Query(default=False),
+    session=Depends(get_session),
+    container: ApplicationContainer = Depends(get_container),
+):
+    try:
+        return container.platform.get_cached_branch_owned_elements_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            projectId,
+            branchId,
+            elementId,
+            model_id=modelId,
+            include_details=includeDetails,
+            include_raw_payload=includeRawPayload,
             include_all_workbench_admin=container.platform.can_manage_server_presets(session),
         )
     except PermissionError as exc:
