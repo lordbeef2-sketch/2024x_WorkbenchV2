@@ -763,6 +763,16 @@ export interface WorkbenchAgentConfigRequest {
   model_name: string;
 }
 
+export interface WorkbenchAgentAdminSettings {
+  openwebui_verify_tls: boolean;
+  openwebui_allow_insecure_http: boolean;
+  openwebui_ca_bundle_path: string;
+  openwebui_allowed_hosts: string[];
+  three_ds_kb_path: string;
+  three_ds_kb_retrieval_max_documents: number;
+  three_ds_kb_retrieval_max_characters: number;
+}
+
 export interface WorkbenchAgentStatus {
   configured: boolean;
   base_url?: string | null;
@@ -782,6 +792,7 @@ export interface WorkbenchAgentStatus {
   three_ds_kb_available: boolean;
   three_ds_kb_page_count: number;
   three_ds_kb_chunk_count: number;
+  admin_settings?: WorkbenchAgentAdminSettings | null;
   message: string;
 }
 

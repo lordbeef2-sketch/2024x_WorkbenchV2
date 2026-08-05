@@ -109,9 +109,6 @@ if ([string]::IsNullOrWhiteSpace($KnowledgeBasePath)) {
     throw "The authoritative 3DS KB path is required."
 }
 $knowledgeRoot = [System.IO.Path]::GetFullPath($KnowledgeBasePath)
-if (-not $knowledgeRoot.Equals($authoritativeKnowledgeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Offline prep only accepts the single authoritative 3DS KB: $authoritativeKnowledgeRoot"
-}
 $knowledgeController = Join-Path $knowledgeRoot "AGENTS.md"
 $knowledgeManifest = Join-Path $knowledgeRoot "00_MACHINE_MANIFEST.md"
 $knowledgeValidation = Join-Path $knowledgeRoot "00_VALIDATION.md"
@@ -228,6 +225,8 @@ Write-Phase "Assembling the offline runtime payload"
 Copy-DirectoryContents -Source (Join-Path $backendDir "app") -Destination (Join-Path $payloadRoot "backend\app")
 Copy-Item -LiteralPath (Join-Path $backendDir ".env.example") -Destination (Join-Path $payloadRoot "backend\.env.example") -Force
 Copy-DirectoryContents -Source (Join-Path $frontendDir "dist") -Destination (Join-Path $payloadRoot "frontend\dist")
+Write-Phase "Bundling the verified 3DS KB into the offline payload"
+Copy-DirectoryContents -Source $knowledgeRoot -Destination (Join-Path $payloadRoot "3DS_KB")
 foreach ($file in @("README.md", "CACHE_API.md")) {
     if (Test-Path -LiteralPath (Join-Path $rootDir $file)) {
         Copy-Item -LiteralPath (Join-Path $rootDir $file) -Destination (Join-Path $payloadRoot $file) -Force
@@ -270,6 +269,8 @@ $manifest = [ordered]@{
     source_dirty = $sourceDirty
     source_status_sha256 = $sourceDiffSha256
     three_ds_kb_path = $knowledgeRoot
+    three_ds_kb_bundled = $true
+    three_ds_kb_bundle_path = "payload/3DS_KB"
     three_ds_kb_controller_sha256 = (Get-FileHash -LiteralPath $knowledgeController -Algorithm SHA256).Hash.ToLowerInvariant()
     three_ds_kb_manifest_sha256 = (Get-FileHash -LiteralPath $knowledgeManifest -Algorithm SHA256).Hash.ToLowerInvariant()
     three_ds_kb_validation_sha256 = (Get-FileHash -LiteralPath $knowledgeValidation -Algorithm SHA256).Hash.ToLowerInvariant()

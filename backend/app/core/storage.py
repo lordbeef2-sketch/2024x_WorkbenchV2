@@ -29,6 +29,7 @@ from app.models.domain import (
     ServerPermissionInventoryAuditRecord,
     ServerProfile,
     UserServerState,
+    WorkbenchAgentAdminSettings,
     WorkbenchAuthSettings,
     WorkbenchGroupRecord,
     WorkbenchUserRecord,
@@ -2382,6 +2383,26 @@ class SqliteRepository:
                 VALUES (?, ?, ?)
                 """,
                 ("auth", settings.model_dump_json(), utcnow().isoformat()),
+            )
+            connection.commit()
+        return settings
+
+    def get_agent_admin_settings(self) -> WorkbenchAgentAdminSettings | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM app_settings WHERE scope = ?",
+                ("agent-admin",),
+            ).fetchone()
+        return WorkbenchAgentAdminSettings.model_validate_json(row["payload"]) if row else None
+
+    def set_agent_admin_settings(self, settings: WorkbenchAgentAdminSettings) -> WorkbenchAgentAdminSettings:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO app_settings (scope, payload, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                ("agent-admin", settings.model_dump_json(), utcnow().isoformat()),
             )
             connection.commit()
         return settings

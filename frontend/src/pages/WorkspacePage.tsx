@@ -75,6 +75,7 @@ import {
   SwaggerParameterSpec,
   TreeNode,
   ThemeMode,
+  WorkbenchAgentAdminSettings,
   WorkbenchAgentChatMessage,
   WorkbenchAgentKnowledgeStatus,
   WorkbenchAuthSettings,
@@ -92,7 +93,17 @@ type WorkspaceTab = "dashboard" | "projects" | "models" | "search" | "diagram-vi
 type WorkspaceMenuGroup = "views" | "diagrams" | "api";
 type ElementSearchMode = "query" | "stereotype";
 type CompareMode = "branch" | "item";
-type SettingsSubtab = "users" | "groups" | "servers" | "auth" | "api-keys" | "debug";
+type SettingsSubtab = "users" | "groups" | "servers" | "auth" | "agentic" | "api-keys" | "debug";
+
+const DEFAULT_AGENT_ADMIN_SETTINGS: WorkbenchAgentAdminSettings = {
+  openwebui_verify_tls: false,
+  openwebui_allow_insecure_http: false,
+  openwebui_ca_bundle_path: "",
+  openwebui_allowed_hosts: [],
+  three_ds_kb_path: "C:/Users/Main1/Documents/NI KB base/3DS_KB",
+  three_ds_kb_retrieval_max_documents: 12,
+  three_ds_kb_retrieval_max_characters: 120_000,
+};
 
 function createServerProfileDraft(overrides: Partial<ServerProfileInput> = {}): ServerProfileInput {
   return {
@@ -2650,6 +2661,7 @@ export default function WorkspacePage() {
   const [agentApiKeyDraft, setAgentApiKeyDraft] = useState("");
   const [agentSelectedModelId, setAgentSelectedModelId] = useState("");
   const [agentSelectedModelName, setAgentSelectedModelName] = useState("");
+  const [agentAdminSettingsDraft, setAgentAdminSettingsDraft] = useState<WorkbenchAgentAdminSettings>(DEFAULT_AGENT_ADMIN_SETTINGS);
   const [agentChatInput, setAgentChatInput] = useState("");
   const [agentMessages, setAgentMessages] = useState<WorkbenchAgentChatMessage[]>([]);
   const [agentKnowledgeSyncProgress, setAgentKnowledgeSyncProgress] = useState("");
@@ -2836,7 +2848,7 @@ export default function WorkspacePage() {
       workbenchAgentStatus?.updated_at ?? "",
     ],
     queryFn: api.listWorkbenchAgentModels,
-    enabled: (tab === "agent" || (tab === "settings" && settingsSubtab === "auth")) && Boolean(workbenchAgentStatus?.configured && workbenchAgentStatus?.has_api_key),
+    enabled: (tab === "agent" || (tab === "settings" && settingsSubtab === "agentic")) && Boolean(workbenchAgentStatus?.configured && workbenchAgentStatus?.has_api_key),
     staleTime: 1000 * 60 * 5,
     gcTime: cacheTimeMs,
     refetchOnWindowFocus: false,
@@ -3449,6 +3461,12 @@ export default function WorkspacePage() {
     workbenchAgentStatus?.model_id,
     workbenchAgentStatus?.model_name,
   ]);
+
+  useEffect(() => {
+    if (workbenchAgentStatus?.admin_settings) {
+      setAgentAdminSettingsDraft(workbenchAgentStatus.admin_settings);
+    }
+  }, [workbenchAgentStatus?.admin_settings]);
 
   useEffect(() => {
     if (!agentSelectedModelId || !workbenchAgentModels.length) {
@@ -4512,6 +4530,19 @@ export default function WorkspacePage() {
           ? "Workbench Agent mapping saved in encrypted Workbench storage."
           : "Open WebUI connection saved. Load models next and map one into Workbench Agent.",
       });
+    },
+    onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
+  });
+
+  const saveWorkbenchAgentAdminSettingsMutation = useMutation({
+    mutationFn: () => api.updateWorkbenchAgentAdminSettings(agentAdminSettingsDraft, csrfToken),
+    onSuccess: async (settings) => {
+      setAgentAdminSettingsDraft(settings);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["workspace-agent", ...sessionCacheKey] }),
+        queryClient.invalidateQueries({ queryKey: ["workspace-agent-models", ...sessionCacheKey] }),
+      ]);
+      setNotice({ severity: "success", message: "Agentic settings saved. Reload models to test the Open WebUI connection." });
     },
     onError: (caught) => setNotice({ severity: "error", message: errorMessage(caught) }),
   });
@@ -8737,13 +8768,114 @@ export default function WorkspacePage() {
         <Alert severity="info">
           Workbench Agent uses your current Workbench permissions. It waits for both files to finish processing, explicitly instructs the selected model to retrieve 3DS guidance before answering Workbench/Cameo questions, and keeps branch facts scoped to data this user can read.
         </Alert>
+        <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+          <Stack spacing={2}>
+            <Box>
+              <Typography variant="h6">Server-side Agentic Settings</Typography>
+              <Typography variant="body2" color="text.secondary">
+                These settings are stored in Workbench, not only in .env. Use them for enterprise/local Open WebUI hosts and for the server-side 3DS KB folder.
+              </Typography>
+            </Box>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={7}>
+                <TextField
+                  label="3DS KB Directory"
+                  value={agentAdminSettingsDraft.three_ds_kb_path}
+                  onChange={(event) => setAgentAdminSettingsDraft((current) => ({ ...current, three_ds_kb_path: event.target.value }))}
+                  helperText="Server-side folder. Example: C:\\3dsKB. Bundled packages can ship a verified 3DS_KB folder and point here."
+                  fullWidth
+                />
+              </Grid>
+              <Grid item xs={12} md={5}>
+                <TextField
+                  label="Open WebUI allowed hosts"
+                  value={agentAdminSettingsDraft.openwebui_allowed_hosts.join(", ")}
+                  onChange={(event) =>
+                    setAgentAdminSettingsDraft((current) => ({
+                      ...current,
+                      openwebui_allowed_hosts: event.target.value.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean),
+                    }))
+                  }
+                  helperText="Optional comma-separated host allowlist. Leave blank to allow any configured host."
+                  fullWidth
+                />
+              </Grid>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  label="Open WebUI CA bundle path"
+                  value={agentAdminSettingsDraft.openwebui_ca_bundle_path}
+                  onChange={(event) => setAgentAdminSettingsDraft((current) => ({ ...current, openwebui_ca_bundle_path: event.target.value }))}
+                  helperText="Optional PEM bundle. Leave blank when TLS verification is off."
+                  fullWidth
+                />
+              </Grid>
+              <Grid item xs={6} md={3}>
+                <TextField
+                  label="Max KB docs"
+                  type="number"
+                  value={agentAdminSettingsDraft.three_ds_kb_retrieval_max_documents}
+                  onChange={(event) =>
+                    setAgentAdminSettingsDraft((current) => ({
+                      ...current,
+                      three_ds_kb_retrieval_max_documents: Math.max(1, Math.min(50, Number(event.target.value) || 12)),
+                    }))
+                  }
+                  fullWidth
+                />
+              </Grid>
+              <Grid item xs={6} md={3}>
+                <TextField
+                  label="Max KB characters"
+                  type="number"
+                  value={agentAdminSettingsDraft.three_ds_kb_retrieval_max_characters}
+                  onChange={(event) =>
+                    setAgentAdminSettingsDraft((current) => ({
+                      ...current,
+                      three_ds_kb_retrieval_max_characters: Math.max(10_000, Math.min(500_000, Number(event.target.value) || 120_000)),
+                    }))
+                  }
+                  fullWidth
+                />
+              </Grid>
+            </Grid>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={agentAdminSettingsDraft.openwebui_allow_insecure_http}
+                    onChange={(event) => setAgentAdminSettingsDraft((current) => ({ ...current, openwebui_allow_insecure_http: event.target.checked }))}
+                  />
+                }
+                label="Allow plain HTTP Open WebUI hosts"
+              />
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={agentAdminSettingsDraft.openwebui_verify_tls}
+                    onChange={(event) => setAgentAdminSettingsDraft((current) => ({ ...current, openwebui_verify_tls: event.target.checked }))}
+                  />
+                }
+                label="Verify Open WebUI TLS certificate"
+              />
+              <Button
+                variant="contained"
+                startIcon={<SaveRoundedIcon />}
+                disabled={!csrfToken || saveWorkbenchAgentAdminSettingsMutation.isPending}
+                onClick={() => saveWorkbenchAgentAdminSettingsMutation.mutate()}
+              >
+                Save Agentic Settings
+              </Button>
+              {saveWorkbenchAgentAdminSettingsMutation.isPending ? <CircularProgress size={22} /> : null}
+            </Stack>
+          </Stack>
+        </Paper>
         <Grid container spacing={2}>
           <Grid item xs={12} md={6}>
             <TextField
               label="Open WebUI Base URL"
               value={agentBaseUrlDraft}
               onChange={(event) => setAgentBaseUrlDraft(event.target.value)}
-              helperText="Use the root Open WebUI host, like https://openwebui.company.com"
+              helperText="Use the root HTTPS Open WebUI host, like https://openwebui.company.com. HTTP is available only if explicitly enabled above."
               fullWidth
             />
           </Grid>
@@ -8845,7 +8977,7 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h5">Workbench Agent</Typography>
             <Typography variant="body2" color="text.secondary">
-              Chat with the mapped Open WebUI model against the selected project branch. Configure the Open WebUI connection in Settings → Authentication.
+              Chat with the mapped Open WebUI model against the selected project branch. Configure the Open WebUI connection in Settings → Agentic Settings.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
@@ -8858,11 +8990,11 @@ export default function WorkspacePage() {
               variant="outlined"
               startIcon={<SettingsRoundedIcon />}
               onClick={() => {
-                setSettingsSubtab("auth");
+                setSettingsSubtab("agentic");
                 setTab("settings");
               }}
             >
-              Open Authentication Settings
+              Open Agentic Settings
             </Button>
           ) : null}
         </Stack>
@@ -9278,6 +9410,7 @@ export default function WorkspacePage() {
               {canManageGroups || canAssignProjectAccess ? <Tab value="groups" label="Groups" /> : null}
               {isAdmin ? <Tab value="servers" label="Servers" /> : null}
               {isAdmin ? <Tab value="auth" label="Authentication" /> : null}
+              {isAdmin ? <Tab value="agentic" label="Agentic Settings" /> : null}
               {isAdmin ? <Tab value="api-keys" label="API Access Keys" /> : null}
               {isAdmin ? <Tab value="debug" label="Debug" /> : null}
             </Tabs>
@@ -9317,7 +9450,6 @@ export default function WorkspacePage() {
               {renderAuthenticationSettings()}
               {renderWorkspacePreferences()}
               {renderCacheIngestToken()}
-              {renderWorkbenchAgentSettings()}
               {renderTombstoneAudit()}
             </>
           ) : (
@@ -9330,6 +9462,14 @@ export default function WorkspacePage() {
         <Stack spacing={2}>
           {isAdmin ? renderServerPresetManagement() : (
             <Alert severity="info">Server management is administrator-only.</Alert>
+          )}
+        </Stack>
+      ) : null}
+
+      {settingsSubtab === "agentic" ? (
+        <Stack spacing={2}>
+          {isAdmin ? renderWorkbenchAgentSettings() : (
+            <Alert severity="info">Agentic settings are administrator-only.</Alert>
           )}
         </Stack>
       ) : null}

@@ -13,9 +13,9 @@ architecture and Python major/minor version. It:
 - downloads/builds every required Python wheel;
 - verifies the wheelhouse using `pip --no-index` in a clean virtual environment;
 - copies the runtime application without secrets or database contents;
-- verifies the single authoritative
-  `C:\Users\Main1\Documents\NI KB base\3DS_KB` corpus and records its controller,
-  manifest, validation, and completion-certificate hashes without copying it;
+- verifies the selected 3DS_KB corpus, records its controller, manifest,
+  validation, and completion-certificate hashes, and bundles that full corpus
+  under `payload\3DS_KB`;
 - records SHA-256 for every bundled file; and
 - produces an extracted bundle, a ZIP, and a ZIP checksum under
   `offline/artifacts` by default.
@@ -24,9 +24,10 @@ architecture and Python major/minor version. It:
 powershell -ExecutionPolicy Bypass -File .\offline\Offline-Prep.ps1
 ```
 
-Prep uses the authoritative path above. The retained `-KnowledgeBasePath`
-parameter is compatibility-only and rejects any different path. Prep stops if
-its integrity gate does not reproduce the controller certificate.
+Prep defaults to `C:\Users\Main1\Documents\NI KB base\3DS_KB`, but
+`-KnowledgeBasePath` can point at another server-side 3DS_KB folder such as
+`C:\3dsKB`. Prep stops if its integrity gate does not reproduce the controller
+certificate.
 
 Use `-SkipFrontendInstall` only when `frontend/node_modules` already matches the
 checked-in lockfile. The production frontend is always rebuilt.
@@ -55,8 +56,9 @@ The installer:
 - preserves an existing `backend/.env` and `backend/data` during upgrades;
 - copies the new app and frontend into an install-local staging directory
   before replacing the prior runtime directories;
-- requires the same authoritative external 3DS_KB, verifies its three control
-  hashes, and replaces any prior `THREE_DS_KB_PATH` setting with that path;
+- installs the bundled `3DS_KB` folder under the Workbench install root,
+  verifies its three control hashes, and replaces any prior `THREE_DS_KB_PATH`
+  setting with that installed bundled path;
 - generates a cryptographically random `SESSION_SECRET` on first install; and
 - creates `Start-Workbench.ps1` in the installation folder.
 

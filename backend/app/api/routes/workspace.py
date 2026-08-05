@@ -18,6 +18,7 @@ from app.models.domain import (
     StereotypeElementSearchResponse,
     SwaggerExecuteRequest,
     WorkbenchAgentChatRequest,
+    WorkbenchAgentAdminSettings,
     WorkbenchAgentConfigRequest,
     WorkbenchAgentKnowledgeSyncRequest,
     utcnow,
@@ -821,6 +822,20 @@ def clear_workbench_agent_config(
     container: ApplicationContainer = Depends(get_container),
 ):
     return container.platform.clear_workbench_agent_config(session)
+
+
+@router.get("/agent/admin-settings")
+def workbench_agent_admin_settings(session=Depends(require_admin), container: ApplicationContainer = Depends(get_container)):
+    return container.platform.get_workbench_agent_admin_settings()
+
+
+@router.put("/agent/admin-settings")
+def update_workbench_agent_admin_settings(
+    payload: WorkbenchAgentAdminSettings,
+    session=Depends(require_admin_csrf),
+    container: ApplicationContainer = Depends(get_container),
+):
+    return container.platform.set_workbench_agent_admin_settings(payload)
 
 
 @router.get("/agent/models")

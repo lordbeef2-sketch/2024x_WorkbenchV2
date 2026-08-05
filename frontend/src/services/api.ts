@@ -684,6 +684,13 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
+  updateWorkbenchAgentAdminSettings(payload: NonNullable<WorkbenchAgentStatus["admin_settings"]>, csrfToken: string) {
+    return request<NonNullable<WorkbenchAgentStatus["admin_settings"]>>("/workspace/agent/admin-settings", {
+      method: "PUT",
+      headers: jsonHeaders(csrfToken),
+      body: JSON.stringify(payload),
+    });
+  },
   clearWorkbenchAgentConfig(csrfToken: string) {
     return request<WorkbenchAgentStatus>("/workspace/agent", {
       method: "DELETE",

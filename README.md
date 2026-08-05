@@ -184,25 +184,28 @@ the plugin-backed branch snapshot. The lazy child endpoint remains available
 for integrations and recovery, but filtering and navigation operate against
 the full tree instead of model headers alone.
 
-Workbench Agent uses only
-`C:/Users/Main1/Documents/NI KB base/3DS_KB`. Before retrieval, its controller,
-manifest, validation anchor, all 163,668 manifest rows, and every Markdown
-document are serially verified to produce the controller-required 163,670-record
-completion certificate. Persistent OWUI files carry Workbench operating
-guidance and the validated corpus control rails. For each user question,
-Workbench routes the most relevant documents from that corpus into the OWUI
-system context and attaches the current user's permission-scoped branch model
-file. There is no generated-KB, repository, or `C:\sand` fallback.
+Workbench Agent uses a verified 3DS_KB corpus. Admins can set the server-side
+KB directory in Settings > Agentic Settings, for example `C:\3dsKB`. If a
+release/offline package ships a bundled `3DS_KB` folder, Workbench can use that
+copy by default; otherwise `.env` remains the bootstrap fallback. Before
+retrieval, the selected corpus controller, manifest, validation anchor, all
+manifest rows, and every Markdown document are serially verified to produce the
+controller-required completion certificate. Persistent OWUI files carry
+Workbench operating guidance and the validated corpus control rails. For each
+user question, Workbench routes the most relevant documents from that corpus
+into the OWUI system context and attaches the current user's permission-scoped
+branch model file. There is no generated-KB, repository, or `C:\sand` fallback.
 `THREE_DS_KB_RETRIEVAL_MAX_DOCUMENTS` and
 `THREE_DS_KB_RETRIEVAL_MAX_CHARACTERS` bound per-question context without
 creating another KB copy.
-Open WebUI TLS verification is enabled by default. Set
-`OPENWEBUI_CA_BUNDLE_PATH` for an internal CA; disabling
-`OPENWEBUI_VERIFY_TLS` is an explicit controlled-environment exception.
-Workbench requires an HTTPS Open WebUI origin by default, rejects embedded
-credentials/query fragments, and can restrict destinations with
-`OPENWEBUI_ALLOWED_HOSTS`. `OPENWEBUI_ALLOW_INSECURE_HTTP=true` is an explicit
-development-only override.
+Open WebUI connection policy is admin-managed in Settings > Agentic Settings.
+Local/enterprise defaults keep HTTPS as the required scheme but disable TLS
+certificate verification so an internal domain or self-signed/private-CA OWUI
+host can be used without certificate blocking. Admins can turn certificate
+verification back on, set an internal CA bundle path, optionally allow plain
+HTTP for lab-only hosts, and restrict destinations with an allowed-host list.
+Workbench still rejects embedded credentials, query strings, and fragments in
+the Open WebUI base URL.
 Agent knowledge pushes execute as background Workbench jobs and the UI polls
 their status, so large Open WebUI ingestion runs are not held inside one HTTP
 request that a gateway can terminate. Each completed reference segment is

@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 from app.services.platform import PlatformService
-from app.models.domain import WorkbenchAgentSecret
+from app.models.domain import WorkbenchAgentAdminSettings, WorkbenchAgentSecret
 from app.services.three_ds_corpus import CorpusDocument
 
 
@@ -26,6 +26,46 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
             service._normalize_openwebui_base_url("https://other.example")
         with self.assertRaisesRegex(ValueError, "without credentials"):
             service._normalize_openwebui_base_url("https://user:secret@owui.example")
+
+    def test_agent_admin_settings_can_disable_https_certificate_verification_and_override_kb_path(self) -> None:
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace(
+            openwebui_verify_tls=True,
+            openwebui_allow_insecure_http=False,
+            openwebui_ca_bundle_path=None,
+            openwebui_allowed_hosts=["old.example"],
+            three_ds_kb_path=Path("C:/old/3DS_KB"),
+            three_ds_kb_retrieval_max_documents=12,
+            three_ds_kb_retrieval_max_characters=120_000,
+        )
+        service.repo = SimpleNamespace(
+            get_agent_admin_settings=lambda: WorkbenchAgentAdminSettings(
+                openwebui_verify_tls=False,
+                openwebui_allow_insecure_http=False,
+                openwebui_allowed_hosts=[],
+                three_ds_kb_path="C:/3dsKB",
+            )
+        )
+
+        self.assertEqual(service._normalize_openwebui_base_url("https://owui.local/api"), "https://owui.local")
+        with self.assertRaisesRegex(ValueError, "must use HTTPS"):
+            service._normalize_openwebui_base_url("http://owui.local/api")
+        self.assertFalse(service._openwebui_verify())
+        self.assertEqual(str(service._effective_three_ds_kb_root()).replace("\\", "/"), "C:/3dsKB")
+
+    def test_agent_admin_settings_can_explicitly_allow_plain_http_for_lab_hosts(self) -> None:
+        service = object.__new__(PlatformService)
+        service.settings = SimpleNamespace()
+        service.repo = SimpleNamespace(
+            get_agent_admin_settings=lambda: WorkbenchAgentAdminSettings(
+                openwebui_verify_tls=False,
+                openwebui_allow_insecure_http=True,
+                openwebui_allowed_hosts=[],
+                three_ds_kb_path="C:/3dsKB",
+            )
+        )
+
+        self.assertEqual(service._normalize_openwebui_base_url("http://owui.local/api"), "http://owui.local")
 
     def test_reference_documents_use_validated_authoritative_control_rails(self) -> None:
         service = object.__new__(PlatformService)

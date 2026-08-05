@@ -132,6 +132,7 @@ from app.models.domain import (
     WorkbenchAuthAdminStatus,
     WorkbenchAuthSettings,
     WorkbenchAuthSettingsUpdate,
+    WorkbenchAgentAdminSettings,
     WorkbenchAgentChatRequest,
     WorkbenchAgentChatResponse,
     WorkbenchAgentConfigRequest,
@@ -184,7 +185,8 @@ def _truthy_query_value(value: Any, *, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
-AUTHORITATIVE_THREE_DS_KB_ROOT = Path("C:/Users/Main1/Documents/NI KB base/3DS_KB").resolve()
+DEFAULT_THREE_DS_KB_ROOT = Path("C:/Users/Main1/Documents/NI KB base/3DS_KB").resolve()
+BUNDLED_THREE_DS_KB_ROOT = Path(__file__).resolve().parents[3] / "3DS_KB"
 
 
 SERVER_ADMIN_ROLE_NAMES = {"server administrator", "configure server"}
@@ -987,9 +989,11 @@ class PlatformService:
     def get_workbench_agent_status(self, session: SessionData) -> WorkbenchAgentStatus:
         secret = self._workbench_agent_secret(session)
         kb_status = self._three_ds_kb_status()
+        admin_settings = self.get_workbench_agent_admin_settings() if self.can_manage_server_presets(session) else None
         if secret is None:
             return WorkbenchAgentStatus(
                 configured=False,
+                admin_settings=admin_settings,
                 **kb_status,
                 message="Map an Open WebUI model here to use your stored project data as agent knowledge inside Workbench.",
             )
@@ -1009,8 +1013,47 @@ class PlatformService:
             reference_synced_at=secret.reference_synced_at,
             updated_at=secret.updated_at,
             knowledge_synced_at=secret.knowledge_synced_at,
+            admin_settings=admin_settings,
             **kb_status,
             message="Open WebUI agent mapping is ready. Sync a branch knowledge bundle or start chatting.",
+        )
+
+    def get_workbench_agent_admin_settings(self) -> WorkbenchAgentAdminSettings:
+        stored = self.repo.get_agent_admin_settings() if hasattr(self, "repo") else None
+        if stored is not None:
+            return self._normalize_workbench_agent_admin_settings(stored)
+        return self._normalize_workbench_agent_admin_settings(
+            WorkbenchAgentAdminSettings(
+                openwebui_verify_tls=bool(getattr(self.settings, "openwebui_verify_tls", False)),
+                openwebui_allow_insecure_http=bool(getattr(self.settings, "openwebui_allow_insecure_http", False)),
+                openwebui_ca_bundle_path=str(getattr(self.settings, "openwebui_ca_bundle_path", "") or ""),
+                openwebui_allowed_hosts=list(getattr(self.settings, "openwebui_allowed_hosts", [])),
+                three_ds_kb_path=str(self._default_three_ds_kb_root()),
+                three_ds_kb_retrieval_max_documents=int(getattr(self.settings, "three_ds_kb_retrieval_max_documents", 12)),
+                three_ds_kb_retrieval_max_characters=int(getattr(self.settings, "three_ds_kb_retrieval_max_characters", 120_000)),
+            )
+        )
+
+    def set_workbench_agent_admin_settings(self, payload: WorkbenchAgentAdminSettings) -> WorkbenchAgentAdminSettings:
+        current_root = self._effective_three_ds_kb_root()
+        updated = self.repo.set_agent_admin_settings(self._normalize_workbench_agent_admin_settings(payload))
+        next_root = self._effective_three_ds_kb_root(updated)
+        if current_root != next_root:
+            with self._three_ds_corpus_lock:
+                self._three_ds_corpus = None
+                self._three_ds_corpus_root = None
+        return updated
+
+    def _normalize_workbench_agent_admin_settings(self, settings: WorkbenchAgentAdminSettings) -> WorkbenchAgentAdminSettings:
+        ca_bundle_path = settings.openwebui_ca_bundle_path.strip()
+        three_ds_kb_path = settings.three_ds_kb_path.strip() or str(self._default_three_ds_kb_root())
+        allowed_hosts = list(dict.fromkeys(host.strip().lower() for host in settings.openwebui_allowed_hosts if host.strip()))
+        return settings.model_copy(
+            update={
+                "openwebui_ca_bundle_path": ca_bundle_path,
+                "three_ds_kb_path": three_ds_kb_path,
+                "openwebui_allowed_hosts": allowed_hosts,
+            }
         )
 
     def set_workbench_agent_config(self, session: SessionData, payload: WorkbenchAgentConfigRequest) -> WorkbenchAgentStatus:
@@ -10591,22 +10634,23 @@ class PlatformService:
         return f"workbench-agent:{server_id}:{user_id}"
 
     def _normalize_openwebui_base_url(self, base_url: str) -> str:
+        agent_settings = self.get_workbench_agent_admin_settings()
         normalized = base_url.strip().rstrip("/")
         if normalized.endswith("/api"):
             normalized = normalized[:-4]
         normalized = normalized.rstrip("/")
         parsed = urlparse(normalized)
-        if parsed.scheme not in ({"https", "http"} if self.settings.openwebui_allow_insecure_http else {"https"}):
-            raise ValueError("Open WebUI must use HTTPS unless OPENWEBUI_ALLOW_INSECURE_HTTP is explicitly enabled.")
+        if parsed.scheme not in ({"https", "http"} if agent_settings.openwebui_allow_insecure_http else {"https"}):
+            raise ValueError("Open WebUI must use HTTPS unless insecure HTTP is enabled in Settings > Agentic Settings.")
         if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("Open WebUI base URL must be a host origin without credentials, query, or fragment.")
         allowed_hosts = {
             str(host).strip().lower()
-            for host in self.settings.openwebui_allowed_hosts
+            for host in agent_settings.openwebui_allowed_hosts
             if str(host).strip()
         }
         if allowed_hosts and parsed.hostname.lower() not in allowed_hosts:
-            raise ValueError("Open WebUI host is not listed in OPENWEBUI_ALLOWED_HOSTS.")
+            raise ValueError("Open WebUI host is not listed in Settings > Agentic Settings allowed hosts.")
         return normalized
 
     def _workbench_agent_secret(self, session: SessionData) -> WorkbenchAgentSecret | None:
@@ -10680,10 +10724,11 @@ class PlatformService:
         return None
 
     def _openwebui_verify(self) -> bool | str:
-        if not self.settings.openwebui_verify_tls:
+        agent_settings = self.get_workbench_agent_admin_settings()
+        if not agent_settings.openwebui_verify_tls:
             return False
-        if self.settings.openwebui_ca_bundle_path is not None:
-            return str(self.settings.openwebui_ca_bundle_path.expanduser().resolve())
+        if agent_settings.openwebui_ca_bundle_path:
+            return str(Path(agent_settings.openwebui_ca_bundle_path).expanduser().resolve())
         return True
 
     async def _upload_openwebui_markdown_file(
@@ -10780,10 +10825,11 @@ class PlatformService:
 
     def _three_ds_query_context(self, query: str) -> str:
         corpus = self._validate_three_ds_corpus()
+        agent_settings = self.get_workbench_agent_admin_settings()
         documents = corpus.retrieve(
             f"TWC Workbench 2024x Refresh3 {query}",
-            maximum_documents=self.settings.three_ds_kb_retrieval_max_documents,
-            maximum_characters=self.settings.three_ds_kb_retrieval_max_characters,
+            maximum_documents=agent_settings.three_ds_kb_retrieval_max_documents,
+            maximum_characters=agent_settings.three_ds_kb_retrieval_max_characters,
         )
         if not documents:
             return (
@@ -10841,6 +10887,32 @@ class PlatformService:
             f"{query_context}"
         )
 
+    def _default_three_ds_kb_root(self) -> Path:
+        bundled = BUNDLED_THREE_DS_KB_ROOT.expanduser().resolve()
+        if self._looks_like_three_ds_kb_root(bundled):
+            return bundled
+        configured_value = getattr(self.settings, "three_ds_kb_path", DEFAULT_THREE_DS_KB_ROOT)
+        configured = Path(configured_value).expanduser().resolve()
+        if self._looks_like_three_ds_kb_root(configured):
+            return configured
+        return DEFAULT_THREE_DS_KB_ROOT
+
+    def _effective_three_ds_kb_root(self, agent_settings: WorkbenchAgentAdminSettings | None = None) -> Path:
+        settings = agent_settings or self.get_workbench_agent_admin_settings()
+        value = settings.three_ds_kb_path.strip()
+        if value:
+            return Path(value).expanduser().resolve()
+        return self._default_three_ds_kb_root()
+
+    @staticmethod
+    def _looks_like_three_ds_kb_root(root: Path) -> bool:
+        return (
+            root.is_dir()
+            and (root / "AGENTS.md").is_file()
+            and (root / "00_MACHINE_MANIFEST.md").is_file()
+            and (root / "00_VALIDATION.md").is_file()
+        )
+
     def _workbench_agent_example_payload(self) -> dict[str, str]:
         examples_dir = Path(__file__).resolve().parents[3] / "examples"
         selected_files = [
@@ -10868,15 +10940,8 @@ class PlatformService:
         return payload
 
     def _resolved_three_ds_kb_root(self) -> Path | None:
-        root = self.settings.three_ds_kb_path.expanduser().resolve()
-        if root != AUTHORITATIVE_THREE_DS_KB_ROOT:
-            return None
-        if (
-            root.is_dir()
-            and (root / "AGENTS.md").is_file()
-            and (root / "00_MACHINE_MANIFEST.md").is_file()
-            and (root / "00_VALIDATION.md").is_file()
-        ):
+        root = self._effective_three_ds_kb_root()
+        if self._looks_like_three_ds_kb_root(root):
             return root
         return None
 
@@ -10896,7 +10961,7 @@ class PlatformService:
             if corpus is None:
                 raise RuntimeError(
                     "The authoritative 3DS KB is unavailable at "
-                    f"{self.settings.three_ds_kb_path}. Workbench does not fall back to another KB."
+                    f"{self._effective_three_ds_kb_root()}. Workbench does not fall back to another KB."
                 )
             try:
                 corpus.validated()

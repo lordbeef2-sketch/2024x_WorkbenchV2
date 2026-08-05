@@ -96,7 +96,15 @@ if (-not (Test-Path -LiteralPath $wheelhouse -PathType Container)) { throw "The 
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($manifest.schema_version -ne 1) { throw "Unsupported offline manifest schema: $($manifest.schema_version)" }
-$knowledgeRoot = [System.IO.Path]::GetFullPath("$($manifest.three_ds_kb_path)")
+$bundledKnowledge = $false
+$bundlePathProperty = $manifest.PSObject.Properties["three_ds_kb_bundle_path"]
+if ($manifest.PSObject.Properties["three_ds_kb_bundled"] -and [bool]$manifest.three_ds_kb_bundled -and $bundlePathProperty) {
+    $bundledKnowledge = $true
+    $knowledgeRoot = [System.IO.Path]::GetFullPath((Join-Path $bundleRoot ("$($bundlePathProperty.Value)".Replace("/", "\"))))
+}
+else {
+    $knowledgeRoot = [System.IO.Path]::GetFullPath("$($manifest.three_ds_kb_path)")
+}
 $knowledgeController = Join-Path $knowledgeRoot "AGENTS.md"
 $knowledgeManifest = Join-Path $knowledgeRoot "00_MACHINE_MANIFEST.md"
 $knowledgeValidation = Join-Path $knowledgeRoot "00_VALIDATION.md"
@@ -134,6 +142,7 @@ $venvDir = Join-Path $installRoot ".venv"
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
 $backendTarget = Join-Path $installRoot "backend"
 $frontendTarget = Join-Path $installRoot "frontend"
+$knowledgeTarget = Join-Path $installRoot "3DS_KB"
 $envTarget = Join-Path $backendTarget ".env"
 
 Write-Phase "Installing the verified Workbench payload"
@@ -143,6 +152,9 @@ New-Item -ItemType Directory -Path (Join-Path $deploymentStage "backend"), (Join
 try {
     Copy-Item -LiteralPath (Join-Path $payloadRoot "backend\app") -Destination (Join-Path $deploymentStage "backend\app") -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $payloadRoot "frontend\dist") -Destination (Join-Path $deploymentStage "frontend\dist") -Recurse -Force
+    if ($bundledKnowledge) {
+        Copy-Item -LiteralPath $knowledgeRoot -Destination (Join-Path $deploymentStage "3DS_KB") -Recurse -Force
+    }
 
     # All payload copies finish before the installed runtime is replaced. The
     # final moves stay on the same volume and therefore minimize the upgrade
@@ -151,6 +163,10 @@ try {
     Move-Item -LiteralPath (Join-Path $deploymentStage "backend\app") -Destination (Join-Path $backendTarget "app")
     Remove-InstallChild -InstallRoot $installRoot -ChildPath (Join-Path $frontendTarget "dist")
     Move-Item -LiteralPath (Join-Path $deploymentStage "frontend\dist") -Destination (Join-Path $frontendTarget "dist")
+    if ($bundledKnowledge) {
+        Remove-InstallChild -InstallRoot $installRoot -ChildPath $knowledgeTarget
+        Move-Item -LiteralPath (Join-Path $deploymentStage "3DS_KB") -Destination $knowledgeTarget
+    }
 }
 finally {
     Remove-InstallChild -InstallRoot $installRoot -ChildPath $deploymentStage
@@ -172,7 +188,8 @@ else {
     $content = Get-Content -LiteralPath $envTarget -Raw
     Write-Host "Preserved the existing backend/.env configuration." -ForegroundColor DarkGray
 }
-$knowledgeSetting = "THREE_DS_KB_PATH=$($knowledgeRoot.Replace('\', '/'))"
+$installedKnowledgeRoot = if ($bundledKnowledge) { $knowledgeTarget } else { $knowledgeRoot }
+$knowledgeSetting = "THREE_DS_KB_PATH=$($installedKnowledgeRoot.Replace('\', '/'))"
 if ([regex]::IsMatch($content, '(?m)^THREE_DS_KB_PATH=.*$')) {
     $content = [regex]::Replace($content, '(?m)^THREE_DS_KB_PATH=.*$', $knowledgeSetting)
 }

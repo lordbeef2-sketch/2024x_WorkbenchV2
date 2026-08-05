@@ -1673,6 +1673,36 @@ class WorkbenchAgentConfigRequest(BaseModel):
         return str(value).strip()
 
 
+class WorkbenchAgentAdminSettings(BaseModel):
+    openwebui_verify_tls: bool = False
+    openwebui_allow_insecure_http: bool = False
+    openwebui_ca_bundle_path: str = ""
+    openwebui_allowed_hosts: list[str] = Field(default_factory=list)
+    three_ds_kb_path: str = "C:/Users/Main1/Documents/NI KB base/3DS_KB"
+    three_ds_kb_retrieval_max_documents: int = Field(default=12, ge=1, le=50)
+    three_ds_kb_retrieval_max_characters: int = Field(default=120_000, ge=10_000, le=500_000)
+
+    @field_validator("openwebui_ca_bundle_path", "three_ds_kb_path", mode="before")
+    @classmethod
+    def normalize_agent_setting_strings(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        return str(value).strip()
+
+    @field_validator("openwebui_allowed_hosts", mode="before")
+    @classmethod
+    def normalize_allowed_hosts(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [item.strip().lower() for item in value.split(",") if item.strip()]
+        if isinstance(value, list):
+            return [str(item).strip().lower() for item in value if str(item).strip()]
+        return []
+
+
 class WorkbenchAgentStatus(BaseModel):
     configured: bool = False
     base_url: str | None = None
@@ -1692,6 +1722,7 @@ class WorkbenchAgentStatus(BaseModel):
     three_ds_kb_available: bool = False
     three_ds_kb_page_count: int = 0
     three_ds_kb_chunk_count: int = 0
+    admin_settings: WorkbenchAgentAdminSettings | None = None
     message: str = ""
 
 
