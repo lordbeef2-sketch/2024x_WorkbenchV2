@@ -182,9 +182,6 @@ class Settings(BaseSettings):
     publisher_webhook_url: str | None = None
     cache_ingest_tokens: list[str] = Field(default_factory=list)
     cache_api_tokens: dict[str, str] = Field(default_factory=dict)
-    three_ds_kb_path: Path = Path(__file__).resolve().parents[3] / "3DS_KB"
-    three_ds_kb_retrieval_max_documents: int = Field(default=12, ge=1, le=50)
-    three_ds_kb_retrieval_max_characters: int = Field(default=120_000, ge=10_000, le=500_000)
     openwebui_verify_tls: bool = True
     openwebui_ca_bundle_path: Path | None = None
     openwebui_allow_insecure_http: bool = False

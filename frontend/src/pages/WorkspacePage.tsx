@@ -100,9 +100,6 @@ const DEFAULT_AGENT_ADMIN_SETTINGS: WorkbenchAgentAdminSettings = {
   openwebui_allow_insecure_http: false,
   openwebui_ca_bundle_path: "",
   openwebui_allowed_hosts: [],
-  three_ds_kb_path: "../3DS_KB",
-  three_ds_kb_retrieval_max_documents: 12,
-  three_ds_kb_retrieval_max_characters: 120_000,
 };
 
 function createServerProfileDraft(overrides: Partial<ServerProfileInput> = {}): ServerProfileInput {
@@ -8777,7 +8774,7 @@ export default function WorkspacePage() {
         <Box>
           <Typography variant="h5">Workbench Agent Connection</Typography>
           <Typography variant="body2" color="text.secondary">
-            Map an Open WebUI model into Workbench Agent. Every chat uses integrity-validated, query-routed evidence from the single authoritative 3DS_KB plus the current user&apos;s permission-scoped branch model snapshot.
+            Map an Open WebUI model into Workbench Agent. Every chat uses the bundled Workbench reference knowledge plus the current user&apos;s permission-scoped branch model snapshot.
           </Typography>
         </Box>
         {workbenchAgentStatusQuery.error ? <Alert severity="error">{errorMessage(workbenchAgentStatusQuery.error)}</Alert> : null}
@@ -8930,16 +8927,7 @@ export default function WorkspacePage() {
           <Chip label={workbenchAgentStatus?.configured ? "Connection saved" : "Connection not saved"} color={workbenchAgentStatus?.configured ? "success" : "default"} />
           <Chip label={workbenchAgentStatus?.model_name || "No mapped model yet"} variant="outlined" />
           <Chip label={workbenchAgentStatus?.knowledge_file_name || "Knowledge not synced"} variant="outlined" />
-          <Chip label={workbenchAgentStatus?.reference_file_count ? `${workbenchAgentStatus.reference_file_count} Workbench + 3DS reference files` : "Workbench + 3DS references not synced"} variant="outlined" />
-          <Chip
-            label={
-              workbenchAgentStatus?.three_ds_kb_available
-                ? `3DS KB: ${workbenchAgentStatus.three_ds_kb_page_count} documents / ${workbenchAgentStatus.three_ds_kb_chunk_count} integrity-gated evidence records`
-                : "3DS KB not configured"
-            }
-            color={workbenchAgentStatus?.three_ds_kb_available ? "success" : "warning"}
-            variant="outlined"
-          />
+          <Chip label={workbenchAgentStatus?.reference_file_count ? `${workbenchAgentStatus.reference_file_count} Workbench reference files` : "Workbench references not synced"} variant="outlined" />
         </Stack>
         {workbenchAgentStatus?.updated_at ? (
           <Typography variant="caption" color="text.secondary">
@@ -8985,7 +8973,7 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h6">Knowledge Push</Typography>
             <Typography variant="body2" color="text.secondary">
-              Process the persistent Workbench + 3DS reference when its fingerprint changes, then push the selected branch separately with its complete tree and native Cameo specification records.
+              Process the persistent bundled Workbench reference when its fingerprint changes, then push the selected branch separately with its complete tree and native Cameo specification records.
             </Typography>
           </Box>
           {!selectedProjectId || !selectedBranchId ? (
@@ -9032,7 +9020,7 @@ export default function WorkspacePage() {
           <Box>
             <Typography variant="h6">Agent Chat</Typography>
             <Typography variant="body2" color="text.secondary">
-              Use any mapped Open WebUI model against the selected stored branch. Every turn attaches the persistent Workbench + 3DS reference first and the permission-scoped branch model second.
+              Use any mapped Open WebUI model against the selected stored branch. Every turn attaches the persistent bundled Workbench reference first and the permission-scoped branch model second.
             </Typography>
           </Box>
           {!workbenchAgentStatus?.configured ? (

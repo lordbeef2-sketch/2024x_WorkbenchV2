@@ -187,6 +187,8 @@ def _truthy_query_value(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 BUNDLED_THREE_DS_KB_ROOT = Path(__file__).resolve().parents[3] / "3DS_KB"
 DEFAULT_THREE_DS_KB_ROOT = BUNDLED_THREE_DS_KB_ROOT.resolve()
+THREE_DS_KB_RETRIEVAL_MAX_DOCUMENTS = 12
+THREE_DS_KB_RETRIEVAL_MAX_CHARACTERS = 120_000
 
 
 SERVER_ADMIN_ROLE_NAMES = {"server administrator", "configure server"}
@@ -1028,30 +1030,19 @@ class PlatformService:
                 openwebui_allow_insecure_http=bool(getattr(self.settings, "openwebui_allow_insecure_http", False)),
                 openwebui_ca_bundle_path=str(getattr(self.settings, "openwebui_ca_bundle_path", "") or ""),
                 openwebui_allowed_hosts=list(getattr(self.settings, "openwebui_allowed_hosts", [])),
-                three_ds_kb_path=str(self._default_three_ds_kb_root()),
-                three_ds_kb_retrieval_max_documents=int(getattr(self.settings, "three_ds_kb_retrieval_max_documents", 12)),
-                three_ds_kb_retrieval_max_characters=int(getattr(self.settings, "three_ds_kb_retrieval_max_characters", 120_000)),
             )
         )
 
     def set_workbench_agent_admin_settings(self, payload: WorkbenchAgentAdminSettings) -> WorkbenchAgentAdminSettings:
-        current_root = self._effective_three_ds_kb_root()
         updated = self.repo.set_agent_admin_settings(self._normalize_workbench_agent_admin_settings(payload))
-        next_root = self._effective_three_ds_kb_root(updated)
-        if current_root != next_root:
-            with self._three_ds_corpus_lock:
-                self._three_ds_corpus = None
-                self._three_ds_corpus_root = None
         return updated
 
     def _normalize_workbench_agent_admin_settings(self, settings: WorkbenchAgentAdminSettings) -> WorkbenchAgentAdminSettings:
         ca_bundle_path = settings.openwebui_ca_bundle_path.strip()
-        three_ds_kb_path = str(self._default_three_ds_kb_root())
         allowed_hosts = list(dict.fromkeys(host.strip().lower() for host in settings.openwebui_allowed_hosts if host.strip()))
         return settings.model_copy(
             update={
                 "openwebui_ca_bundle_path": ca_bundle_path,
-                "three_ds_kb_path": three_ds_kb_path,
                 "openwebui_allowed_hosts": allowed_hosts,
             }
         )
@@ -1154,7 +1145,7 @@ class PlatformService:
         if report is None:
             await asyncio.to_thread(self._validate_three_ds_corpus)
         if report is not None:
-            await report(45, "Building persistent Workbench + 3DS reference documents.")
+            await report(45, "Building persistent bundled Workbench reference documents.")
         reference_files, reference_stats, reference_fingerprint = await self._ensure_workbench_reference_knowledge(
             secret,
             session=session,
@@ -1203,7 +1194,7 @@ class PlatformService:
             synced_at=updated_secret.knowledge_synced_at or utcnow(),
             **bundle_stats,
             **reference_stats,
-            message=f"Open WebUI processed the branch model file and {len(reference_files)} persistent Workbench + authoritative 3DS_KB control files. Every chat receives query-routed evidence from that same validated corpus.",
+            message=f"Open WebUI processed the branch model file and {len(reference_files)} bundled Workbench reference files. Every chat receives query-routed evidence from that same validated corpus.",
         )
 
     def submit_workbench_agent_knowledge_sync(
@@ -1246,7 +1237,7 @@ class PlatformService:
         )
 
         async def handler(context):
-            await context.report(5, "Validating the authoritative 3DS_KB and preparing its control rails plus the branch model file.")
+            await context.report(5, "Validating the bundled Workbench reference and preparing the branch model file.")
             loop = asyncio.get_running_loop()
             last_progress = 5
 
@@ -1254,7 +1245,7 @@ class PlatformService:
                 nonlocal last_progress
                 progress = 5 + min(35, int(35 * done / max(1, total)))
                 last_progress = max(last_progress, progress)
-                message = f"Validated 3DS_KB evidence {done}/{total}: {relative_path}"
+                message = f"Validated bundled reference evidence {done}/{total}: {relative_path}"
                 asyncio.run_coroutine_threadsafe(context.report(last_progress, message), loop)
 
             validation_task = asyncio.create_task(asyncio.to_thread(self._validate_three_ds_corpus, report_three_ds_progress))
@@ -1267,12 +1258,12 @@ class PlatformService:
                 last_progress = max(last_progress, min(39, 5 + heartbeat))
                 await context.report(
                     last_progress,
-                    f"Still validating the authoritative 3DS_KB integrity gate ({heartbeat * 10}s elapsed).",
+                    f"Still validating the bundled Workbench reference integrity gate ({heartbeat * 10}s elapsed).",
                 )
             await validation_task
-            await context.report(42, "3DS_KB integrity gate passed; preparing persistent Workbench reference files.")
+            await context.report(42, "Bundled Workbench reference integrity gate passed; preparing persistent reference files.")
             result = await self.sync_workbench_agent_knowledge(session, project_id, branch_id, report=context.report)
-            await context.report(100, "Open WebUI finished processing the validated 3DS_KB controls and branch model file.")
+            await context.report(100, "Open WebUI finished processing the bundled Workbench reference and branch model file.")
             return result.model_dump(mode="json")
 
         return self.jobs.submit(job, handler)
@@ -1375,7 +1366,7 @@ class PlatformService:
             knowledge_file_id=working_secret.knowledge_file_id,
             knowledge_file_name=working_secret.knowledge_file_name,
             raw_response=raw_payload if isinstance(raw_payload, dict) else {"payload": raw_payload},
-            message="Workbench Agent used the mapped Open WebUI model with validated, query-routed evidence from the single authoritative 3DS_KB and the accessible branch model.",
+            message="Workbench Agent used the mapped Open WebUI model with validated, query-routed evidence from the bundled Workbench reference and the accessible branch model.",
         )
 
     def add_bookmark(self, session: SessionData, bookmark: Bookmark) -> list[Bookmark]:
@@ -10949,11 +10940,10 @@ class PlatformService:
 
     def _three_ds_query_context(self, query: str) -> str:
         corpus = self._validate_three_ds_corpus()
-        agent_settings = self.get_workbench_agent_admin_settings()
         documents = corpus.retrieve(
             f"TWC Workbench 2024x Refresh3 {query}",
-            maximum_documents=agent_settings.three_ds_kb_retrieval_max_documents,
-            maximum_characters=agent_settings.three_ds_kb_retrieval_max_characters,
+            maximum_documents=THREE_DS_KB_RETRIEVAL_MAX_DOCUMENTS,
+            maximum_characters=THREE_DS_KB_RETRIEVAL_MAX_CHARACTERS,
         )
         if not documents:
             return (
@@ -10961,7 +10951,7 @@ class PlatformService:
                 "Do not answer from model memory."
             )
         sections = [
-            "## Query-routed evidence from the single authoritative 3DS_KB",
+            "## Query-routed evidence from the bundled Workbench reference corpus",
             "",
             f"Completion certificate SHA-256: {corpus.validated().certificate_sha256}",
             "",
@@ -10998,9 +10988,9 @@ class PlatformService:
         )
         return (
             "You are the Workbench Agent inside TWC Workbench. "
-            "A processed branch file, validated 3DS control rails, and query-routed evidence from the single authoritative 3DS_KB are supplied with every request. "
+            "A processed branch file, validated reference control rails, and query-routed evidence from the bundled Workbench reference corpus are supplied with every request. "
             "Use the branch model file as the primary source of truth for project-specific names, IDs, containment, native specifications, stereotypes, relationships, and diagrams. "
-            "Use only the supplied 3DS_KB evidence for Cameo, MagicDraw, Teamwork Cloud, SysML, UML, plugin, or 3DS guidance. Never substitute model memory or another KB. "
+            "Use only the supplied bundled reference evidence for Cameo, MagicDraw, Teamwork Cloud, SysML, UML, plugin, or 3DS guidance. Never substitute model memory or another KB. "
             "Never invent an endpoint, Java API, property, stereotype value, or model fact that these sources do not establish. "
             "When helping with automation, default to Python requests scripts against the Workbench API. "
             "When explicitly asked to create a new Workbench API call, implement it in the proper Workbench layers: "
@@ -11078,7 +11068,7 @@ class PlatformService:
             corpus = self._three_ds_corpus_service()
             if corpus is None:
                 raise RuntimeError(
-                    "The bundled 3DS KB is unavailable. Workbench does not fall back to another KB."
+                    "The bundled Workbench reference is unavailable. Workbench does not fall back to another reference corpus."
                 )
             try:
                 corpus.validated()
@@ -11095,22 +11085,22 @@ class PlatformService:
             corpus = self._three_ds_corpus_service()
             if corpus is None:
                 return {
-                    "three_ds_kb_available": False,
-                    "three_ds_kb_page_count": 0,
-                    "three_ds_kb_chunk_count": 0,
+                    "reference_available": False,
+                    "reference_page_count": 0,
+                    "reference_chunk_count": 0,
                 }
             try:
                 _, entries = corpus.inspect()
             except RuntimeError:
                 return {
-                    "three_ds_kb_available": False,
-                    "three_ds_kb_page_count": 0,
-                    "three_ds_kb_chunk_count": 0,
+                    "reference_available": False,
+                    "reference_page_count": 0,
+                    "reference_chunk_count": 0,
                 }
             return {
-                "three_ds_kb_available": True,
-                "three_ds_kb_page_count": len(entries) + 3,
-                "three_ds_kb_chunk_count": len(entries) + 2,
+                "reference_available": True,
+                "reference_page_count": len(entries) + 3,
+                "reference_chunk_count": len(entries) + 2,
             }
 
     def _build_workbench_reference_documents(self) -> tuple[list[tuple[str, bytes]], dict[str, int], str]:
@@ -11125,7 +11115,7 @@ class PlatformService:
             "## Required response behavior",
             "",
             "1. For questions about Workbench operation, use the Workbench API routes and complete Python examples in this file.",
-            "2. For Cameo, MagicDraw, Teamwork Cloud, SysML, UML, plugin, or 3DS questions, use only the query-routed evidence supplied from the authoritative 3DS_KB.",
+            "2. For Cameo, MagicDraw, Teamwork Cloud, SysML, UML, plugin, or 3DS questions, use only the query-routed evidence supplied from the bundled Workbench reference corpus.",
             "3. Treat the separately attached branch model file as authoritative for project-specific names, IDs, structure, properties, stereotypes, and relationships.",
             "4. Never invent an endpoint, Java API, metaclass property, stereotype value, or model fact. Say when the attached sources do not prove it.",
             "5. When returning automation, prefer a complete runnable Python script against the scoped Workbench API unless the user explicitly asks for Cameo Java plugin code.",
@@ -11164,7 +11154,7 @@ class PlatformService:
         operating_content = "\n".join(common_lines).encode("utf-8")
         documents.append(("twc-workbench-operating-reference.md", operating_content))
         control_lines = [
-            "# Authoritative 3DS KB control rails",
+            "# Bundled Workbench reference control rails",
             "",
             f"Completion certificate: {corpus.validated().certificate_sha256}",
             "",
@@ -11208,7 +11198,7 @@ class PlatformService:
             and all(existing_ids)
         ):
             if report is not None:
-                await report(70, "Persistent Workbench + 3DS reference files are already processed in Open WebUI.")
+                await report(70, "Persistent bundled Workbench reference files are already processed in Open WebUI.")
             return list(zip(existing_ids, existing_names, strict=False)), stats, fingerprint
 
         expected_names = [name for name, _ in documents]
@@ -11328,7 +11318,7 @@ class PlatformService:
         lines = [
             f"# TWC Workbench knowledge: {project_name} / {branch_name}",
             "",
-            "This bundle is generated from the current user's accessible stored branch snapshot. It is authoritative for project-specific facts. Product, API, and Workbench operating guidance lives in the separately attached persistent Workbench + 3DS reference file set.",
+            "This bundle is generated from the current user's accessible stored branch snapshot. It is authoritative for project-specific facts. Product, API, and Workbench operating guidance lives in the separately attached persistent bundled Workbench reference file set.",
             "",
             "## Context",
             "",

@@ -71,23 +71,19 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "without credentials"):
             service._normalize_openwebui_base_url("https://user:secret@owui.example")
 
-    def test_agent_admin_settings_can_disable_https_certificate_verification_but_not_override_fixed_kb_path(self) -> None:
+    def test_agent_admin_settings_can_disable_https_certificate_verification(self) -> None:
         service = object.__new__(PlatformService)
         service.settings = SimpleNamespace(
             openwebui_verify_tls=True,
             openwebui_allow_insecure_http=False,
             openwebui_ca_bundle_path=None,
             openwebui_allowed_hosts=["old.example"],
-            three_ds_kb_path=Path("C:/old/3DS_KB"),
-            three_ds_kb_retrieval_max_documents=12,
-            three_ds_kb_retrieval_max_characters=120_000,
         )
         service.repo = SimpleNamespace(
             get_agent_admin_settings=lambda: WorkbenchAgentAdminSettings(
                 openwebui_verify_tls=False,
                 openwebui_allow_insecure_http=False,
                 openwebui_allowed_hosts=[],
-                three_ds_kb_path="C:/3dsKB",
             )
         )
 
@@ -95,7 +91,6 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must use HTTPS"):
             service._normalize_openwebui_base_url("http://owui.local/api")
         self.assertFalse(service._openwebui_verify())
-        self.assertNotEqual(str(service._effective_three_ds_kb_root()).replace("\\", "/"), "C:/3dsKB")
 
     def test_agent_admin_settings_can_explicitly_allow_plain_http_for_lab_hosts(self) -> None:
         service = object.__new__(PlatformService)
@@ -105,7 +100,6 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
                 openwebui_verify_tls=False,
                 openwebui_allow_insecure_http=True,
                 openwebui_allowed_hosts=[],
-                three_ds_kb_path="C:/3dsKB",
             )
         )
 
@@ -123,9 +117,9 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         )
         service._validate_three_ds_corpus = lambda: corpus
         service._three_ds_kb_status = lambda: {
-            "three_ds_kb_available": True,
-            "three_ds_kb_page_count": 163671,
-            "three_ds_kb_chunk_count": 163670,
+            "reference_available": True,
+            "reference_page_count": 163671,
+            "reference_chunk_count": 163670,
         }
         service._workbench_agent_example_payload = lambda: {"example.py": "print('workbench')"}
 
@@ -137,7 +131,7 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         self.assertEqual(combined.count("ONLY-AUTHORITATIVE-CONTROL"), 1)
         self.assertNotIn("C:\\authoritative\\3DS_KB", combined)
         self.assertNotIn("Corpus root:", combined)
-        self.assertEqual(stats["three_ds_kb_chunk_count"], 163670)
+        self.assertEqual(stats["reference_chunk_count"], 163670)
         self.assertEqual(len(fingerprint), 64)
 
     def test_reference_documents_teach_workbench_api_endpoint_creation(self) -> None:
@@ -150,9 +144,9 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         )
         service._validate_three_ds_corpus = lambda: corpus
         service._three_ds_kb_status = lambda: {
-            "three_ds_kb_available": True,
-            "three_ds_kb_page_count": 10,
-            "three_ds_kb_chunk_count": 9,
+            "reference_available": True,
+            "reference_page_count": 10,
+            "reference_chunk_count": 9,
         }
         service._workbench_agent_example_payload = lambda: {"36_workbench_owned_elements.py": "print('owned elements')"}
 
@@ -166,10 +160,7 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
 
     def test_query_context_contains_only_retrieved_authoritative_documents(self) -> None:
         service = object.__new__(PlatformService)
-        service.settings = SimpleNamespace(
-            three_ds_kb_retrieval_max_documents=12,
-            three_ds_kb_retrieval_max_characters=120_000,
-        )
+        service.settings = SimpleNamespace()
         corpus = SimpleNamespace(
             root=Path("C:/authoritative/3DS_KB"),
             validated=lambda: SimpleNamespace(certificate_sha256="b" * 64),
@@ -196,7 +187,7 @@ class WorkbenchAgentKnowledgeUploadTests(unittest.IsolatedAsyncioTestCase):
         ]
         service._build_workbench_reference_documents = lambda: (
             documents,
-            {"three_ds_kb_page_count": 2, "three_ds_kb_chunk_count": 2},
+            {"reference_page_count": 2, "reference_chunk_count": 2},
             "fingerprint",
         )
         uploads: list[tuple[str, bytes]] = []
@@ -218,7 +209,7 @@ class WorkbenchAgentKnowledgeUploadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(uploads, documents)
         self.assertEqual([file_id for file_id, _ in uploaded], ["file-1", "file-2"])
-        self.assertEqual(stats["three_ds_kb_chunk_count"], 2)
+        self.assertEqual(stats["reference_chunk_count"], 2)
         self.assertEqual(fingerprint, "fingerprint")
 
         reused_secret = SimpleNamespace(
@@ -238,7 +229,7 @@ class WorkbenchAgentKnowledgeUploadTests(unittest.IsolatedAsyncioTestCase):
         documents = [("operations.md", b"ops"), ("control-rails.md", b"controls")]
         service._build_workbench_reference_documents = lambda: (
             documents,
-            {"three_ds_kb_page_count": 2, "three_ds_kb_chunk_count": 2},
+            {"reference_page_count": 2, "reference_chunk_count": 2},
             "current-fingerprint",
         )
         uploaded_names: list[str] = []

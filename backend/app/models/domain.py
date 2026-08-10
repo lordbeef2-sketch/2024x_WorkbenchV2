@@ -1678,11 +1678,8 @@ class WorkbenchAgentAdminSettings(BaseModel):
     openwebui_allow_insecure_http: bool = False
     openwebui_ca_bundle_path: str = ""
     openwebui_allowed_hosts: list[str] = Field(default_factory=list)
-    three_ds_kb_path: str = "../3DS_KB"
-    three_ds_kb_retrieval_max_documents: int = Field(default=12, ge=1, le=50)
-    three_ds_kb_retrieval_max_characters: int = Field(default=120_000, ge=10_000, le=500_000)
 
-    @field_validator("openwebui_ca_bundle_path", "three_ds_kb_path", mode="before")
+    @field_validator("openwebui_ca_bundle_path", mode="before")
     @classmethod
     def normalize_agent_setting_strings(cls, value: object) -> str:
         if value is None:
@@ -1719,9 +1716,9 @@ class WorkbenchAgentStatus(BaseModel):
     reference_synced_at: datetime | None = None
     updated_at: datetime | None = None
     knowledge_synced_at: datetime | None = None
-    three_ds_kb_available: bool = False
-    three_ds_kb_page_count: int = 0
-    three_ds_kb_chunk_count: int = 0
+    reference_available: bool = False
+    reference_page_count: int = 0
+    reference_chunk_count: int = 0
     admin_settings: WorkbenchAgentAdminSettings | None = None
     message: str = ""
 
@@ -1752,8 +1749,8 @@ class WorkbenchAgentKnowledgeStatus(BaseModel):
     model_count: int = 0
     element_count: int = 0
     tree_node_count: int = 0
-    three_ds_kb_page_count: int = 0
-    three_ds_kb_chunk_count: int = 0
+    reference_page_count: int = 0
+    reference_chunk_count: int = 0
     message: str = ""
 
 

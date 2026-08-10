@@ -180,10 +180,9 @@ live-TWC smoke commands are documented in `backend/ops/README.md`.
 
 See the developer-facing cache API guide in [CACHE_API.md](../CACHE_API.md) and the runnable examples in [examples/README.md](../examples/README.md).
 
-Workbench Agent uses only
-`C:\Users\Main1\Documents\NI KB base\3DS_KB`. A background integrity gate
-serially verifies its controller anchors and all 163,668 manifest rows before
-retrieval. Persistent, content-fingerprinted OWUI files contain Workbench
+Workbench Agent uses only the reference corpus bundled with the Workbench
+application. A background integrity gate serially verifies its controller
+anchors and manifest rows before retrieval. Persistent, content-fingerprinted OWUI files contain Workbench
 operating instructions, runnable API examples, and the validated corpus control
 rails. For every question, Workbench injects query-routed documents from that
 corpus into the OWUI system context. A separate permission-scoped file contains

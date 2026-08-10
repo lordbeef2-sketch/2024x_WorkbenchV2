@@ -768,9 +768,6 @@ export interface WorkbenchAgentAdminSettings {
   openwebui_allow_insecure_http: boolean;
   openwebui_ca_bundle_path: string;
   openwebui_allowed_hosts: string[];
-  three_ds_kb_path: string;
-  three_ds_kb_retrieval_max_documents: number;
-  three_ds_kb_retrieval_max_characters: number;
 }
 
 export interface WorkbenchAgentStatus {
@@ -789,9 +786,9 @@ export interface WorkbenchAgentStatus {
   reference_synced_at?: string | null;
   updated_at?: string | null;
   knowledge_synced_at?: string | null;
-  three_ds_kb_available: boolean;
-  three_ds_kb_page_count: number;
-  three_ds_kb_chunk_count: number;
+  reference_available: boolean;
+  reference_page_count: number;
+  reference_chunk_count: number;
   admin_settings?: WorkbenchAgentAdminSettings | null;
   message: string;
 }
@@ -813,8 +810,8 @@ export interface WorkbenchAgentKnowledgeStatus {
   model_count: number;
   element_count: number;
   tree_node_count: number;
-  three_ds_kb_page_count: number;
-  three_ds_kb_chunk_count: number;
+  reference_page_count: number;
+  reference_chunk_count: number;
   message: string;
 }
 
