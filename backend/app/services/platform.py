@@ -185,8 +185,8 @@ def _truthy_query_value(value: Any, *, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
-DEFAULT_THREE_DS_KB_ROOT = Path("C:/Users/Main1/Documents/NI KB base/3DS_KB").resolve()
 BUNDLED_THREE_DS_KB_ROOT = Path(__file__).resolve().parents[3] / "3DS_KB"
+DEFAULT_THREE_DS_KB_ROOT = BUNDLED_THREE_DS_KB_ROOT.resolve()
 
 
 SERVER_ADMIN_ROLE_NAMES = {"server administrator", "configure server"}
@@ -10963,7 +10963,6 @@ class PlatformService:
         sections = [
             "## Query-routed evidence from the single authoritative 3DS_KB",
             "",
-            f"Corpus root: {corpus.root}",
             f"Completion certificate SHA-256: {corpus.validated().certificate_sha256}",
             "",
         ]
@@ -11017,13 +11016,7 @@ class PlatformService:
 
     def _default_three_ds_kb_root(self) -> Path:
         bundled = BUNDLED_THREE_DS_KB_ROOT.expanduser().resolve()
-        if self._looks_like_three_ds_kb_root(bundled):
-            return bundled
-        configured_value = getattr(self.settings, "three_ds_kb_path", DEFAULT_THREE_DS_KB_ROOT)
-        configured = Path(configured_value).expanduser().resolve()
-        if self._looks_like_three_ds_kb_root(configured):
-            return configured
-        return DEFAULT_THREE_DS_KB_ROOT
+        return bundled
 
     def _effective_three_ds_kb_root(self, agent_settings: WorkbenchAgentAdminSettings | None = None) -> Path:
         return self._default_three_ds_kb_root()
@@ -11085,8 +11078,7 @@ class PlatformService:
             corpus = self._three_ds_corpus_service()
             if corpus is None:
                 raise RuntimeError(
-                    "The authoritative 3DS KB is unavailable at "
-                    f"{self._effective_three_ds_kb_root()}. Workbench does not fall back to another KB."
+                    "The bundled 3DS KB is unavailable. Workbench does not fall back to another KB."
                 )
             try:
                 corpus.validated()
@@ -11139,7 +11131,7 @@ class PlatformService:
             "5. When returning automation, prefer a complete runnable Python script against the scoped Workbench API unless the user explicitly asks for Cameo Java plugin code.",
             "6. When the user commands creation of a new Workbench API call, create the endpoint in the Workbench codebase rather than only explaining it. Place the route in `backend/app/api/routes`, place reusable business logic in `backend/app/services/platform.py` or the matching service module, use existing session/CSRF/admin/cache permission helpers, add API Explorer metadata for user-facing calls, add `frontend/src/services/api.ts` helpers and `frontend/src/models/api.ts` types when the UI needs it, add copy-paste examples under `examples/`, update docs, run backend tests and frontend build, then report exact files and route.",
             "7. Never put real tokens, passwords, session cookies, or private TWC data into generated examples. Use environment variables and placeholders.",
-            "8. State product/release, execution surface, language/runtime, dependencies, authentication/privileges, runtime-validation status, transactions, destructive effects, cleanup/rollback, and exact 3DS KB paths used.",
+            "8. State product/release, execution surface, language/runtime, dependencies, authentication/privileges, runtime-validation status, transactions, destructive effects, and cleanup/rollback when relevant.",
             "",
             "## Workbench knowledge surfaces",
             "",
@@ -11174,7 +11166,6 @@ class PlatformService:
         control_lines = [
             "# Authoritative 3DS KB control rails",
             "",
-            f"Corpus root: {corpus.root}",
             f"Completion certificate: {corpus.validated().certificate_sha256}",
             "",
         ]

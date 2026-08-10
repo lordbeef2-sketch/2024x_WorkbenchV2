@@ -135,7 +135,8 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         self.assertEqual(documents[0][0], "twc-workbench-operating-reference.md")
         combined = b"\n".join(content for _, content in documents).decode("utf-8")
         self.assertEqual(combined.count("ONLY-AUTHORITATIVE-CONTROL"), 1)
-        self.assertIn("C:\\authoritative\\3DS_KB", combined)
+        self.assertNotIn("C:\\authoritative\\3DS_KB", combined)
+        self.assertNotIn("Corpus root:", combined)
         self.assertEqual(stats["three_ds_kb_chunk_count"], 163670)
         self.assertEqual(len(fingerprint), 64)
 
@@ -182,7 +183,8 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
 
         self.assertIn("CAMEO_JAVA_OPENAPI_2024xR3/Element.md", context)
         self.assertIn("getOwnedElement", context)
-        self.assertIn("C:\\authoritative\\3DS_KB", context)
+        self.assertNotIn("C:\\authoritative\\3DS_KB", context)
+        self.assertNotIn("Corpus root:", context)
 
 
 class WorkbenchAgentKnowledgeUploadTests(unittest.IsolatedAsyncioTestCase):
