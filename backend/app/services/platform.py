@@ -1121,6 +1121,7 @@ class PlatformService:
         session: SessionData,
         project_id: str,
         branch_id: str,
+        report: Callable[[int, str], Awaitable[None]] | None = None,
     ) -> WorkbenchAgentKnowledgeStatus:
         secret = self._workbench_agent_secret(session)
         if secret is None:
@@ -1132,14 +1133,29 @@ class PlatformService:
         if summary is None:
             raise ValueError("The selected stored project branch is not available to this Workbench user.")
 
-        await asyncio.to_thread(self._validate_three_ds_corpus)
+        if report is None:
+            await asyncio.to_thread(self._validate_three_ds_corpus)
+        if report is not None:
+            await report(45, "Building persistent Workbench + 3DS reference documents.")
         reference_files, reference_stats, reference_fingerprint = await self._ensure_workbench_reference_knowledge(
             secret,
             session=session,
+            report=report,
         )
         reference_file_id, reference_file_name = reference_files[0]
-        file_name, file_content, bundle_stats = self._build_workbench_agent_knowledge_document(session, project_id, branch_id)
+        if report is not None:
+            await report(78, "Building selected branch model knowledge document.")
+        file_name, file_content, bundle_stats = await asyncio.to_thread(
+            self._build_workbench_agent_knowledge_document,
+            session,
+            project_id,
+            branch_id,
+        )
+        if report is not None:
+            await report(86, f"Uploading selected branch model knowledge file: {file_name}.")
         file_id = await self._upload_openwebui_markdown_file(secret, file_name, file_content)
+        if report is not None:
+            await report(94, f"Open WebUI processed selected branch model knowledge file: {file_name}.")
 
         updated_secret = secret.model_copy(
             update={
@@ -1212,7 +1228,31 @@ class PlatformService:
 
         async def handler(context):
             await context.report(5, "Validating the authoritative 3DS_KB and preparing its control rails plus the branch model file.")
-            result = await self.sync_workbench_agent_knowledge(session, project_id, branch_id)
+            loop = asyncio.get_running_loop()
+            last_progress = 5
+
+            def report_three_ds_progress(done: int, total: int, relative_path: str) -> None:
+                nonlocal last_progress
+                progress = 5 + min(35, int(35 * done / max(1, total)))
+                last_progress = max(last_progress, progress)
+                message = f"Validated 3DS_KB evidence {done}/{total}: {relative_path}"
+                asyncio.run_coroutine_threadsafe(context.report(last_progress, message), loop)
+
+            validation_task = asyncio.create_task(asyncio.to_thread(self._validate_three_ds_corpus, report_three_ds_progress))
+            heartbeat = 0
+            while not validation_task.done():
+                await asyncio.sleep(10)
+                if validation_task.done():
+                    break
+                heartbeat += 1
+                last_progress = max(last_progress, min(39, 5 + heartbeat))
+                await context.report(
+                    last_progress,
+                    f"Still validating the authoritative 3DS_KB integrity gate ({heartbeat * 10}s elapsed).",
+                )
+            await validation_task
+            await context.report(42, "3DS_KB integrity gate passed; preparing persistent Workbench reference files.")
+            result = await self.sync_workbench_agent_knowledge(session, project_id, branch_id, report=context.report)
             await context.report(100, "Open WebUI finished processing the validated 3DS_KB controls and branch model file.")
             return result.model_dump(mode="json")
 
@@ -1235,7 +1275,7 @@ class PlatformService:
         if payload.sync_knowledge and (
             not secret.knowledge_file_id
             or secret.knowledge_project_id != payload.project_id
-            or secret.knowledge_branch_id != payload.branch_id
+            or not self._workbench_agent_branch_matches(session.server.id, payload.project_id, secret.knowledge_branch_id, payload.branch_id)
         ):
             await self.sync_workbench_agent_knowledge(session, payload.project_id, payload.branch_id)
             working_secret = self._workbench_agent_secret(session) or secret
@@ -3457,6 +3497,34 @@ class PlatformService:
             if requested_key in branch_names:
                 return summary.branch_id
         return requested
+
+    @staticmethod
+    def _workbench_agent_branch_key(value: str | None) -> str:
+        key = normalize_lookup_key(value or "")
+        return "trunk" if key == "master" else key
+
+    def _workbench_agent_branch_matches(
+        self,
+        server_id: str,
+        project_id: str,
+        stored_branch_id: str | None,
+        requested_branch_id: str,
+    ) -> bool:
+        if not stored_branch_id:
+            return False
+        stored_keys = {self._workbench_agent_branch_key(stored_branch_id)}
+        requested_keys = {self._workbench_agent_branch_key(requested_branch_id)}
+        for candidate in (stored_branch_id, requested_branch_id):
+            resolved = self._resolve_cached_branch_id(server_id, project_id, candidate)
+            requested_keys.add(self._workbench_agent_branch_key(resolved))
+            stored_keys.add(self._workbench_agent_branch_key(resolved))
+            summary = self.repo.get_branch_cache_summary(server_id, project_id, resolved)
+            if summary is not None:
+                stored_keys.add(self._workbench_agent_branch_key(summary.branch_id))
+                stored_keys.add(self._workbench_agent_branch_key(summary.branch_name))
+                requested_keys.add(self._workbench_agent_branch_key(summary.branch_id))
+                requested_keys.add(self._workbench_agent_branch_key(summary.branch_name))
+        return bool((stored_keys - {""}) & (requested_keys - {""}))
 
     def get_branch_access_manifest_status(
         self,
@@ -10960,7 +11028,7 @@ class PlatformService:
                 self._three_ds_corpus_root = root
             return self._three_ds_corpus
 
-    def _validate_three_ds_corpus(self) -> ThreeDsCorpus:
+    def _validate_three_ds_corpus(self, progress: Callable[[int, int, str], None] | None = None) -> ThreeDsCorpus:
         with self._three_ds_corpus_lock:
             corpus = self._three_ds_corpus_service()
             if corpus is None:
@@ -10971,8 +11039,11 @@ class PlatformService:
             try:
                 corpus.validated()
             except RuntimeError:
-                certificate_path = self.settings.database_path.expanduser().resolve().parent / "three_ds_corpus_certificate.tsv"
-                corpus.validate(certificate_path)
+                certificate_path = self.settings.resolved_database_path.parent / "three_ds_corpus_certificate.tsv"
+                try:
+                    corpus.load_validated_certificate(certificate_path)
+                except RuntimeError:
+                    corpus.validate(certificate_path, progress=progress)
             return corpus
 
     def _three_ds_kb_status(self) -> dict[str, Any]:
@@ -11079,8 +11150,9 @@ class PlatformService:
         secret: WorkbenchAgentSecret,
         *,
         session: SessionData | None = None,
+        report: Callable[[int, str], Awaitable[None]] | None = None,
     ) -> tuple[list[tuple[str, str]], dict[str, int], str]:
-        documents, stats, fingerprint = self._build_workbench_reference_documents()
+        documents, stats, fingerprint = await asyncio.to_thread(self._build_workbench_reference_documents)
         existing_ids = list(secret.reference_file_ids)
         existing_names = list(secret.reference_file_names)
         if not existing_ids and secret.reference_file_id:
@@ -11092,6 +11164,8 @@ class PlatformService:
             and len(existing_names) == len(documents)
             and all(existing_ids)
         ):
+            if report is not None:
+                await report(70, "Persistent Workbench + 3DS reference files are already processed in Open WebUI.")
             return list(zip(existing_ids, existing_names, strict=False)), stats, fingerprint
 
         expected_names = [name for name, _ in documents]
@@ -11105,9 +11179,16 @@ class PlatformService:
         uploaded: list[tuple[str, str]] = (
             list(zip(existing_ids, existing_names, strict=False)) if can_resume else []
         )
-        for file_name, content in documents[len(uploaded) :]:
+        total_documents = len(documents)
+        for index, (file_name, content) in enumerate(documents[len(uploaded) :], start=len(uploaded) + 1):
+            if report is not None:
+                progress = 48 + int(22 * (index - 1) / max(1, total_documents))
+                await report(progress, f"Uploading persistent reference file {index}/{total_documents}: {file_name}.")
             file_id = await self._upload_openwebui_markdown_file(secret, file_name, content)
             uploaded.append((file_id, file_name))
+            if report is not None:
+                progress = 48 + int(22 * index / max(1, total_documents))
+                await report(progress, f"Open WebUI processed persistent reference file {index}/{total_documents}: {file_name}.")
             if session is not None:
                 # Persist every completed segment so a gateway restart or a
                 # failed later segment resumes without re-uploading the files
@@ -11148,13 +11229,6 @@ class PlatformService:
         if summary is None:
             raise ValueError("The selected stored project branch is not available to this Workbench user.")
         snapshot = self.get_branch_cache_snapshot_for_user(session.server.id, session.user.preferred_username, project_id, branch_id)
-        elements = self.list_cached_branch_elements_for_user(
-            session.server.id,
-            session.user.preferred_username,
-            project_id,
-            branch_id,
-            all_results=True,
-        ).items
         manifest = self.cache_api_manifest(
             preferred_username=session.user.preferred_username,
             source="app-key",
@@ -11170,6 +11244,29 @@ class PlatformService:
             branch_id,
             include_orphans=True,
         )
+        tree_child_counts: dict[str, int] = {}
+
+        def index_tree_children(nodes: list[TreeNode]) -> None:
+            for node in nodes:
+                tree_child_counts[node.id] = len(node.children)
+                index_tree_children(node.children)
+
+        index_tree_children(tree_response.nodes)
+        with sqlite3.connect(self.settings.resolved_database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            element_rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT model_id, element_id, name, item_type, path, owner_id,
+                           qualified_name, metaclass, length(payload) AS payload_bytes
+                    FROM twc_cached_elements
+                    WHERE server_id = ? AND project_id = ? AND branch_id = ?
+                    ORDER BY COALESCE(NULLIF(qualified_name, ''), path, name, element_id)
+                    """,
+                    (session.server.id, project_id, branch_id),
+                ).fetchall()
+            ]
         model_count = len(snapshot.models) if snapshot is not None else 0
         lines = [
             f"# TWC Workbench knowledge: {project_name} / {branch_name}",
@@ -11184,8 +11281,12 @@ class PlatformService:
             f"- Branch: {branch_name} (`{branch_id}`)",
             f"- Revision: `{summary.latest_revision or 'unknown'}`",
             f"- Models: {model_count}",
-            f"- Elements: {len(elements)}",
+            f"- Elements: {len(element_rows)}",
             f"- Containment tree nodes: {tree_response.total_nodes}",
+            "",
+            "## Detail retrieval rule",
+            "",
+            "This branch knowledge file intentionally contains compact indexed element facts instead of every raw cached payload. For exact native specifications, relationships, inner elements, or owned elements, use the Workbench API routes listed near the bottom of this file against the element ID shown here.",
             "",
             "## Complete accessible model tree",
             "",
@@ -11208,37 +11309,43 @@ class PlatformService:
                         "",
                     ]
                 )
-        lines.extend(["## Element specifications", ""])
-        for record in elements:
-            payload = record.payload or {}
-            lines.extend(
-                [
-                    f"### {record.name or record.element_id}",
-                    "",
-                    f"- ID: `{record.element_id}`",
-                    f"- Model ID: `{record.model_id}`",
-                    f"- Type: {str(payload.get('metaclass') or record.item_type or 'Element')}",
-                    f"- Qualified path: {str(payload.get('qualified_name') or record.path or '').strip()}",
-                    f"- Owner ID: `{str(payload.get('owner_id') or '').strip()}`",
-                    f"- Child count: {record.child_count}",
-                    f"- Applied stereotypes: {', '.join(str(value) for value in payload.get('applied_stereotype_ids') or []) or 'none'}",
-                    "",
-                    str(payload.get("documentation") or "").strip(),
-                    "",
-                    "```json",
-                    json.dumps(
-                        {
-                            "attributes": payload.get("attributes") or {},
-                            "references": payload.get("references") or {},
-                            "spec_sections": payload.get("spec_sections") or {},
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    "```",
-                    "",
-                ]
+        lines.extend(
+            [
+                "## Compact element index",
+                "",
+                "Format: `element_id | metaclass | qualified path | owner_id | child_count | cached_payload_bytes`",
+                "",
+                "```text",
+            ]
+        )
+        for record in element_rows:
+            element_id = str(record.get("element_id") or "").strip()
+            name = str(record.get("name") or element_id).strip()
+            metaclass = str(record.get("metaclass") or record.get("item_type") or "Element").strip()
+            qualified_name = str(record.get("qualified_name") or record.get("path") or "").strip()
+            owner_id = str(record.get("owner_id") or "").strip()
+            payload_bytes = int(record.get("payload_bytes") or 0)
+            display_name = name if name and name != element_id else qualified_name
+            lines.append(
+                " | ".join(
+                    [
+                        element_id,
+                        metaclass,
+                        display_name or qualified_name,
+                        owner_id,
+                        str(tree_child_counts.get(element_id, 0)),
+                        str(payload_bytes),
+                    ]
+                )
             )
+        lines.extend(
+            [
+                "```",
+                "",
+                "Use `/api/workspace/model-cache/item`, `/api/workspace/model-cache/native-specifications`, `/api/workspace/model-cache/element-graph`, or `/api/workspace/model-cache/owned-elements` with an element ID above for exact native details.",
+                "",
+            ]
+        )
         lines.extend(["## Workbench cache API", "", manifest.message, ""])
         lines.extend(f"- `{route}`" for route in manifest.available_routes)
 
@@ -11247,7 +11354,7 @@ class PlatformService:
         file_name = f"workbench-{safe_project}-{safe_branch}-knowledge.md"
         stats = {
             "model_count": model_count,
-            "element_count": len(elements),
+            "element_count": len(element_rows),
             "tree_node_count": tree_response.total_nodes,
         }
         return file_name, "\n".join(lines).encode("utf-8"), stats

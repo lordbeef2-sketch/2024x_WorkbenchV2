@@ -241,6 +241,27 @@ class ThreeDsCorpus:
         self._validation = validation
         return validation
 
+    def load_validated_certificate(self, certificate_path: Path) -> CorpusValidation:
+        anchors, entries = self.inspect()
+        certificate_path = certificate_path.expanduser().resolve()
+        try:
+            certificate_bytes = certificate_path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError("3DS_CORPUS_INTEGRITY_FAILURE: completion certificate was not readable") from exc
+        if self._sha256_bytes(certificate_bytes) != anchors.certificate_sha256:
+            raise RuntimeError(
+                "3DS_CORPUS_INTEGRITY_FAILURE: cached completion certificate SHA-256 did not match AGENTS.md"
+            )
+        validation = CorpusValidation(
+            root=self.root,
+            document_count=len(entries) + 3,
+            evidence_record_count=len(entries) + 2,
+            certificate_sha256=anchors.certificate_sha256,
+            certificate_path=certificate_path,
+        )
+        self._validation = validation
+        return validation
+
     def validated(self) -> CorpusValidation:
         if self._validation is None:
             raise RuntimeError("3DS_CORPUS_INTEGRITY_FAILURE: corpus gate has not completed")

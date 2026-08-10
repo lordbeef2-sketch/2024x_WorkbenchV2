@@ -604,6 +604,11 @@ function normalizeLookupKey(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function normalizeWorkbenchBranchKey(value: string | null | undefined): string {
+  const key = normalizeLookupKey(value ?? "");
+  return key === "master" ? "trunk" : key;
+}
+
 function isRevisionValue(value: string): boolean {
   return /^\d+$/.test(value.trim());
 }
@@ -3812,6 +3817,18 @@ export default function WorkspacePage() {
   );
   const workbenchAgentProjectLabel = selectedProject?.name || "Select a project";
   const workbenchAgentBranchLabel = selectedBranchId ? branchLabel(selectedProjectBranches, selectedBranchId) : "Select a branch";
+  const selectedWorkbenchAgentBranch = selectedProjectBranches.find((branch) => branch.id === selectedBranchId) ?? null;
+  const selectedWorkbenchAgentBranchKeys = new Set(
+    [selectedBranchId, selectedWorkbenchAgentBranch?.name]
+      .map((value) => normalizeWorkbenchBranchKey(value))
+      .filter(Boolean),
+  );
+  const workbenchAgentKnowledgeMatchesSelection = Boolean(
+    selectedProjectId &&
+      selectedBranchId &&
+      workbenchAgentStatus?.knowledge_project_id === selectedProjectId &&
+      selectedWorkbenchAgentBranchKeys.has(normalizeWorkbenchBranchKey(workbenchAgentStatus?.knowledge_branch_id)),
+  );
   const compareLeftName = compareLeft.trim() ? humanReadableReference(compareLeft, referenceNameById) : "";
   const compareRightName = compareRight.trim() ? humanReadableReference(compareRight, referenceNameById) : "";
   const compareLeftFieldValue = compareLeftDisplay || compareLeft;
@@ -4901,7 +4918,7 @@ export default function WorkspacePage() {
     setAgentChatInput("");
     workbenchAgentChatMutation.mutate({
       messages: nextMessages,
-      syncKnowledge: agentSyncKnowledgeBeforeChat,
+      syncKnowledge: agentSyncKnowledgeBeforeChat && !workbenchAgentKnowledgeMatchesSelection,
     });
   };
 
