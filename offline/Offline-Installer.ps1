@@ -97,21 +97,21 @@ if (-not (Test-Path -LiteralPath $wheelhouse -PathType Container)) { throw "The 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($manifest.schema_version -ne 1) { throw "Unsupported offline manifest schema: $($manifest.schema_version)" }
 $bundledKnowledge = $false
-$bundlePathProperty = $manifest.PSObject.Properties["three_ds_kb_bundle_path"]
-if ($manifest.PSObject.Properties["three_ds_kb_bundled"] -and [bool]$manifest.three_ds_kb_bundled -and $bundlePathProperty) {
+$bundlePathProperty = $manifest.PSObject.Properties["reference_corpus_bundle_path"]
+if ($manifest.PSObject.Properties["reference_corpus_bundled"] -and [bool]$manifest.reference_corpus_bundled -and $bundlePathProperty) {
     $bundledKnowledge = $true
     $knowledgeRoot = [System.IO.Path]::GetFullPath((Join-Path $bundleRoot ("$($bundlePathProperty.Value)".Replace("/", "\"))))
 }
 else {
-    $knowledgeRoot = [System.IO.Path]::GetFullPath("$($manifest.three_ds_kb_path)")
+    throw "This offline bundle does not include the required Workbench reference corpus."
 }
 $knowledgeController = Join-Path $knowledgeRoot "AGENTS.md"
 $knowledgeManifest = Join-Path $knowledgeRoot "00_MACHINE_MANIFEST.md"
 $knowledgeValidation = Join-Path $knowledgeRoot "00_VALIDATION.md"
 foreach ($knowledgeCheck in @(
-    @($knowledgeController, "$($manifest.three_ds_kb_controller_sha256)"),
-    @($knowledgeManifest, "$($manifest.three_ds_kb_manifest_sha256)"),
-    @($knowledgeValidation, "$($manifest.three_ds_kb_validation_sha256)")
+    @($knowledgeController, "$($manifest.reference_corpus_controller_sha256)"),
+    @($knowledgeManifest, "$($manifest.reference_corpus_manifest_sha256)"),
+    @($knowledgeValidation, "$($manifest.reference_corpus_validation_sha256)")
 )) {
     if (-not (Test-Path -LiteralPath $knowledgeCheck[0] -PathType Leaf)) {
         throw "The single authoritative 3DS KB is unavailable: $($knowledgeCheck[0])"
@@ -187,14 +187,6 @@ if (-not (Test-Path -LiteralPath $envTarget)) {
 else {
     $content = Get-Content -LiteralPath $envTarget -Raw
     Write-Host "Preserved the existing backend/.env configuration." -ForegroundColor DarkGray
-}
-$installedKnowledgeRoot = if ($bundledKnowledge) { $knowledgeTarget } else { $knowledgeRoot }
-$knowledgeSetting = "THREE_DS_KB_PATH=$($installedKnowledgeRoot.Replace('\', '/'))"
-if ([regex]::IsMatch($content, '(?m)^THREE_DS_KB_PATH=.*$')) {
-    $content = [regex]::Replace($content, '(?m)^THREE_DS_KB_PATH=.*$', $knowledgeSetting)
-}
-else {
-    $content = $content.TrimEnd() + [Environment]::NewLine + $knowledgeSetting + [Environment]::NewLine
 }
 Set-Content -LiteralPath $envTarget -Value $content -Encoding utf8
 

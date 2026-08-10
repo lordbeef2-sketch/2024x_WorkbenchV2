@@ -101,12 +101,8 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
 $backendDir = Join-Path $rootDir "backend"
 $frontendDir = Join-Path $rootDir "frontend"
-$authoritativeKnowledgeRoot = [System.IO.Path]::GetFullPath("C:\Users\Main1\Documents\NI KB base\3DS_KB")
 if ([string]::IsNullOrWhiteSpace($KnowledgeBasePath)) {
-    $KnowledgeBasePath = $authoritativeKnowledgeRoot
-}
-if ([string]::IsNullOrWhiteSpace($KnowledgeBasePath)) {
-    throw "The authoritative 3DS KB path is required."
+    throw "KnowledgeBasePath is required so Prep can bundle the verified Workbench reference corpus."
 }
 $knowledgeRoot = [System.IO.Path]::GetFullPath($KnowledgeBasePath)
 $knowledgeController = Join-Path $knowledgeRoot "AGENTS.md"
@@ -268,13 +264,12 @@ $manifest = [ordered]@{
     source_commit = $commit
     source_dirty = $sourceDirty
     source_status_sha256 = $sourceDiffSha256
-    three_ds_kb_path = $knowledgeRoot
-    three_ds_kb_bundled = $true
-    three_ds_kb_bundle_path = "payload/3DS_KB"
-    three_ds_kb_controller_sha256 = (Get-FileHash -LiteralPath $knowledgeController -Algorithm SHA256).Hash.ToLowerInvariant()
-    three_ds_kb_manifest_sha256 = (Get-FileHash -LiteralPath $knowledgeManifest -Algorithm SHA256).Hash.ToLowerInvariant()
-    three_ds_kb_validation_sha256 = (Get-FileHash -LiteralPath $knowledgeValidation -Algorithm SHA256).Hash.ToLowerInvariant()
-    three_ds_kb_certificate_sha256 = (Get-FileHash -LiteralPath $knowledgeCertificate -Algorithm SHA256).Hash.ToLowerInvariant()
+    reference_corpus_bundled = $true
+    reference_corpus_bundle_path = "payload/3DS_KB"
+    reference_corpus_controller_sha256 = (Get-FileHash -LiteralPath $knowledgeController -Algorithm SHA256).Hash.ToLowerInvariant()
+    reference_corpus_manifest_sha256 = (Get-FileHash -LiteralPath $knowledgeManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+    reference_corpus_validation_sha256 = (Get-FileHash -LiteralPath $knowledgeValidation -Algorithm SHA256).Hash.ToLowerInvariant()
+    reference_corpus_certificate_sha256 = (Get-FileHash -LiteralPath $knowledgeCertificate -Algorithm SHA256).Hash.ToLowerInvariant()
     python_version = $pythonMetadata.version
     python_major_minor = $pythonMetadata.major_minor
     architecture = $pythonMetadata.architecture

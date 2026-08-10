@@ -185,20 +185,18 @@ the plugin-backed branch snapshot. The lazy child endpoint remains available
 for integrations and recovery, but filtering and navigation operate against
 the full tree instead of model headers alone.
 
-Workbench Agent uses a verified 3DS_KB corpus. Admins can set the server-side
-KB directory in Settings > Agentic Settings, for example `C:\3dsKB`. If a
-release/offline package ships a bundled `3DS_KB` folder, Workbench can use that
-copy by default; otherwise `.env` remains the bootstrap fallback. Before
-retrieval, the selected corpus controller, manifest, validation anchor, all
-manifest rows, and every Markdown document are serially verified to produce the
-controller-required completion certificate. Persistent OWUI files carry
-Workbench operating guidance and the validated corpus control rails. For each
-user question, Workbench routes the most relevant documents from that corpus
-into the OWUI system context and attaches the current user's permission-scoped
-branch model file. There is no generated-KB, repository, or `C:\sand` fallback.
-`THREE_DS_KB_RETRIEVAL_MAX_DOCUMENTS` and
-`THREE_DS_KB_RETRIEVAL_MAX_CHARACTERS` bound per-question context without
-creating another KB copy.
+Workbench Agent uses the verified reference corpus bundled with the installed
+Workbench application. The raw corpus is intentionally not committed into
+normal Git history because it is a multi-gigabyte release payload; the
+offline/release package copies it into the install root. Before retrieval, the
+bundled corpus controller, manifest, validation anchor, all manifest rows, and
+every Markdown document are serially verified to produce the controller-required
+completion certificate. Persistent OWUI files carry Workbench operating
+guidance and the validated reference control rails. For each user question,
+Workbench routes the most relevant documents from that internal corpus into the
+OWUI system context and attaches the current user's permission-scoped branch
+model file. There is no admin-configurable KB path, generated-KB, repository,
+external user-profile, or `C:\sand` fallback.
 Open WebUI connection policy is admin-managed in Settings > Agentic Settings.
 Local/enterprise defaults keep HTTPS as the required scheme but disable TLS
 certificate verification so an internal domain or self-signed/private-CA OWUI

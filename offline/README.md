@@ -13,7 +13,7 @@ architecture and Python major/minor version. It:
 - downloads/builds every required Python wheel;
 - verifies the wheelhouse using `pip --no-index` in a clean virtual environment;
 - copies the runtime application without secrets or database contents;
-- verifies the selected 3DS_KB corpus, records its controller, manifest,
+- verifies the selected reference corpus, records its controller, manifest,
   validation, and completion-certificate hashes, and bundles that full corpus
   under `payload\3DS_KB`;
 - records SHA-256 for every bundled file; and
@@ -24,10 +24,10 @@ architecture and Python major/minor version. It:
 powershell -ExecutionPolicy Bypass -File .\offline\Offline-Prep.ps1
 ```
 
-Prep defaults to `C:\Users\Main1\Documents\NI KB base\3DS_KB`, but
-`-KnowledgeBasePath` can point at another server-side 3DS_KB folder such as
-`C:\3dsKB`. Prep stops if its integrity gate does not reproduce the controller
-certificate.
+Prep requires `-KnowledgeBasePath` to point at the verified corpus folder used
+to build this release package. That build-time source path is not written into
+the installed application. Prep stops if its integrity gate does not reproduce
+the controller certificate.
 
 Use `-SkipFrontendInstall` only when `frontend/node_modules` already matches the
 checked-in lockfile. The production frontend is always rebuilt.
@@ -56,9 +56,9 @@ The installer:
 - preserves an existing `backend/.env` and `backend/data` during upgrades;
 - copies the new app and frontend into an install-local staging directory
   before replacing the prior runtime directories;
-- installs the bundled `3DS_KB` folder under the Workbench install root,
-  verifies its three control hashes, and replaces any prior `THREE_DS_KB_PATH`
-  setting with that installed bundled path;
+- installs the bundled reference corpus under the Workbench install root and
+  verifies its three control hashes. The installed application discovers that
+  bundled copy directly; no KB path setting is created or edited;
 - generates a cryptographically random `SESSION_SECRET` on first install; and
 - creates `Start-Workbench.ps1` in the installation folder.
 
