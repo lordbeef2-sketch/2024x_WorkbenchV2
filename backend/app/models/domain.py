@@ -1678,7 +1678,7 @@ class WorkbenchAgentAdminSettings(BaseModel):
     openwebui_allow_insecure_http: bool = False
     openwebui_ca_bundle_path: str = ""
     openwebui_allowed_hosts: list[str] = Field(default_factory=list)
-    three_ds_kb_path: str = "C:/Users/Main1/Documents/NI KB base/3DS_KB"
+    three_ds_kb_path: str = "../3DS_KB"
     three_ds_kb_retrieval_max_documents: int = Field(default=12, ge=1, le=50)
     three_ds_kb_retrieval_max_characters: int = Field(default=120_000, ge=10_000, le=500_000)
 

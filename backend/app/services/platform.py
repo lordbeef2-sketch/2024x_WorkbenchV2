@@ -1046,7 +1046,7 @@ class PlatformService:
 
     def _normalize_workbench_agent_admin_settings(self, settings: WorkbenchAgentAdminSettings) -> WorkbenchAgentAdminSettings:
         ca_bundle_path = settings.openwebui_ca_bundle_path.strip()
-        three_ds_kb_path = settings.three_ds_kb_path.strip() or str(self._default_three_ds_kb_root())
+        three_ds_kb_path = str(self._default_three_ds_kb_root())
         allowed_hosts = list(dict.fromkeys(host.strip().lower() for host in settings.openwebui_allowed_hosts if host.strip()))
         return settings.model_copy(
             update={
@@ -10970,10 +10970,6 @@ class PlatformService:
         return DEFAULT_THREE_DS_KB_ROOT
 
     def _effective_three_ds_kb_root(self, agent_settings: WorkbenchAgentAdminSettings | None = None) -> Path:
-        settings = agent_settings or self.get_workbench_agent_admin_settings()
-        value = settings.three_ds_kb_path.strip()
-        if value:
-            return Path(value).expanduser().resolve()
         return self._default_three_ds_kb_root()
 
     @staticmethod

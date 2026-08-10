@@ -27,7 +27,7 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "without credentials"):
             service._normalize_openwebui_base_url("https://user:secret@owui.example")
 
-    def test_agent_admin_settings_can_disable_https_certificate_verification_and_override_kb_path(self) -> None:
+    def test_agent_admin_settings_can_disable_https_certificate_verification_but_not_override_fixed_kb_path(self) -> None:
         service = object.__new__(PlatformService)
         service.settings = SimpleNamespace(
             openwebui_verify_tls=True,
@@ -51,7 +51,7 @@ class WorkbenchAgentKnowledgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must use HTTPS"):
             service._normalize_openwebui_base_url("http://owui.local/api")
         self.assertFalse(service._openwebui_verify())
-        self.assertEqual(str(service._effective_three_ds_kb_root()).replace("\\", "/"), "C:/3dsKB")
+        self.assertNotEqual(str(service._effective_three_ds_kb_root()).replace("\\", "/"), "C:/3dsKB")
 
     def test_agent_admin_settings_can_explicitly_allow_plain_http_for_lab_hosts(self) -> None:
         service = object.__new__(PlatformService)

@@ -8790,20 +8790,11 @@ export default function WorkspacePage() {
             <Box>
               <Typography variant="h6">Server-side Agentic Settings</Typography>
               <Typography variant="body2" color="text.secondary">
-                These settings are stored in Workbench, not only in .env. Use them for enterprise/local Open WebUI hosts and for the server-side 3DS KB folder.
+                These settings are stored in Workbench, not only in .env. Use them for enterprise/local Open WebUI hosts and 3DS evidence retrieval limits. The 3DS_KB folder is fixed by the Workbench install package.
               </Typography>
             </Box>
             <Grid container spacing={2}>
-              <Grid item xs={12} md={7}>
-                <TextField
-                  label="3DS KB Directory"
-                  value={agentAdminSettingsDraft.three_ds_kb_path}
-                  onChange={(event) => setAgentAdminSettingsDraft((current) => ({ ...current, three_ds_kb_path: event.target.value }))}
-                  helperText="Server-side folder. Example: C:\\3dsKB. Bundled packages can ship a verified 3DS_KB folder and point here."
-                  fullWidth
-                />
-              </Grid>
-              <Grid item xs={12} md={5}>
+              <Grid item xs={12} md={6}>
                 <TextField
                   label="Open WebUI allowed hosts"
                   value={agentAdminSettingsDraft.openwebui_allowed_hosts.join(", ")}
@@ -8825,6 +8816,11 @@ export default function WorkspacePage() {
                   helperText="Optional PEM bundle. Leave blank when TLS verification is off."
                   fullWidth
                 />
+              </Grid>
+              <Grid item xs={12}>
+                <Alert severity="info">
+                  3DS_KB source is install-fixed: {agentAdminSettingsDraft.three_ds_kb_path || "../3DS_KB"}. Replace the bundled folder during installation or offline prep, not from this settings page.
+                </Alert>
               </Grid>
               <Grid item xs={6} md={3}>
                 <TextField
