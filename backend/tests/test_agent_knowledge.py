@@ -4,11 +4,27 @@ from pathlib import Path
 import unittest
 
 from app.services.platform import PlatformService
-from app.models.domain import WorkbenchAgentAdminSettings, WorkbenchAgentSecret
+from app.models.domain import BranchCacheSummary, WorkbenchAgentAdminSettings, WorkbenchAgentSecret
 from app.services.three_ds_corpus import CorpusDocument
 
 
 class WorkbenchAgentKnowledgeTests(unittest.TestCase):
+    def test_workbench_admin_summary_access_does_not_require_self_grant(self) -> None:
+        service = object.__new__(PlatformService)
+        summary = BranchCacheSummary(server_id="twc-2024x", project_id="p1", branch_id="master", model_count=2)
+        service._require_server = lambda *args, **kwargs: None
+        service.repo = SimpleNamespace(get_branch_cache_summary=lambda *args: summary)
+
+        allowed = service.get_branch_cache_summary_for_user(
+            "twc-2024x",
+            "admin",
+            "p1",
+            "master",
+            include_all_workbench_admin=True,
+        )
+
+        self.assertEqual(allowed, summary)
+
     def test_agent_secret_falls_back_from_legacy_server_scope_to_user_global_scope(self) -> None:
         service = object.__new__(PlatformService)
         secret = WorkbenchAgentSecret(base_url="http://127.0.0.1:9172", api_key="secret", model_id="oss:20b")

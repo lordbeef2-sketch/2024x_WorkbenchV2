@@ -1141,7 +1141,13 @@ class PlatformService:
         if not secret.model_id:
             raise ValueError("Choose an Open WebUI agent or model before syncing knowledge.")
 
-        summary = self.get_branch_cache_summary_for_user(session.server.id, session.user.preferred_username, project_id, branch_id)
+        summary = self.get_branch_cache_summary_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
+        )
         if summary is None:
             raise ValueError("The selected stored project branch is not available to this Workbench user.")
 
@@ -1216,6 +1222,7 @@ class PlatformService:
             session.user.preferred_username,
             project_id,
             branch_id,
+            include_all_workbench_admin=self._has_workbench_admin_model_visibility(session),
         )
         if summary is None:
             raise ValueError("The selected stored project branch is not available to this Workbench user.")
@@ -3663,11 +3670,15 @@ class PlatformService:
         preferred_username: str,
         project_id: str,
         branch_id: str,
+        *,
+        include_all_workbench_admin: bool = False,
     ) -> BranchCacheSummary | None:
         self._require_server(server_id, include_disabled=True)
         summary = self.repo.get_branch_cache_summary(server_id, project_id, branch_id)
         if summary is None:
             return None
+        if include_all_workbench_admin:
+            return summary
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 self._user_key(preferred_username),
@@ -3695,12 +3706,26 @@ class PlatformService:
         preferred_username: str,
         project_id: str,
         branch_id: str,
+        *,
+        include_all_workbench_admin: bool = False,
     ) -> BranchCacheSnapshot | None:
         self._require_server(server_id, include_disabled=True)
-        summary = self.get_branch_cache_summary_for_user(server_id, preferred_username, project_id, branch_id)
+        summary = self.get_branch_cache_summary_for_user(
+            server_id,
+            preferred_username,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         if summary is None:
             return None
         user_id = self._user_key(preferred_username)
+        if include_all_workbench_admin:
+            models = [
+                CachedModelView(model=model, permissions=None)
+                for model in self.repo.list_cached_models(server_id, project_id, branch_id)
+            ]
+            return BranchCacheSnapshot(summary=summary, models=models)
         if self._is_plugin_managed_summary(summary):
             branch_access = self._plugin_branch_access_or_source_fallback(
                 user_id,
@@ -11252,10 +11277,23 @@ class PlatformService:
         project_id: str,
         branch_id: str,
     ) -> tuple[str, bytes, dict[str, int]]:
-        summary = self.get_branch_cache_summary_for_user(session.server.id, session.user.preferred_username, project_id, branch_id)
+        include_all_workbench_admin = self._has_workbench_admin_model_visibility(session)
+        summary = self.get_branch_cache_summary_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         if summary is None:
             raise ValueError("The selected stored project branch is not available to this Workbench user.")
-        snapshot = self.get_branch_cache_snapshot_for_user(session.server.id, session.user.preferred_username, project_id, branch_id)
+        snapshot = self.get_branch_cache_snapshot_for_user(
+            session.server.id,
+            session.user.preferred_username,
+            project_id,
+            branch_id,
+            include_all_workbench_admin=include_all_workbench_admin,
+        )
         manifest = self.cache_api_manifest(
             preferred_username=session.user.preferred_username,
             source="app-key",
@@ -11270,6 +11308,7 @@ class PlatformService:
             project_id,
             branch_id,
             include_orphans=True,
+            include_all_workbench_admin=include_all_workbench_admin,
         )
         tree_child_counts: dict[str, int] = {}
 
