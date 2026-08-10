@@ -8790,7 +8790,7 @@ export default function WorkspacePage() {
             <Box>
               <Typography variant="h6">Server-side Agentic Settings</Typography>
               <Typography variant="body2" color="text.secondary">
-                These settings are stored in Workbench, not only in .env. Use them for enterprise/local Open WebUI hosts and 3DS evidence retrieval limits. The 3DS_KB folder is fixed by the Workbench install package.
+                These settings are stored in Workbench, not only in .env. Use them for enterprise/local Open WebUI hosts.
               </Typography>
             </Box>
             <Grid container spacing={2}>
@@ -8814,39 +8814,6 @@ export default function WorkspacePage() {
                   value={agentAdminSettingsDraft.openwebui_ca_bundle_path}
                   onChange={(event) => setAgentAdminSettingsDraft((current) => ({ ...current, openwebui_ca_bundle_path: event.target.value }))}
                   helperText="Optional PEM bundle. Leave blank when TLS verification is off."
-                  fullWidth
-                />
-              </Grid>
-              <Grid item xs={12}>
-                <Alert severity="info">
-                  3DS_KB source is install-fixed by the Workbench package. Replace the bundled folder during installation or offline prep, not from this settings page.
-                </Alert>
-              </Grid>
-              <Grid item xs={6} md={3}>
-                <TextField
-                  label="Max KB docs"
-                  type="number"
-                  value={agentAdminSettingsDraft.three_ds_kb_retrieval_max_documents}
-                  onChange={(event) =>
-                    setAgentAdminSettingsDraft((current) => ({
-                      ...current,
-                      three_ds_kb_retrieval_max_documents: Math.max(1, Math.min(50, Number(event.target.value) || 12)),
-                    }))
-                  }
-                  fullWidth
-                />
-              </Grid>
-              <Grid item xs={6} md={3}>
-                <TextField
-                  label="Max KB characters"
-                  type="number"
-                  value={agentAdminSettingsDraft.three_ds_kb_retrieval_max_characters}
-                  onChange={(event) =>
-                    setAgentAdminSettingsDraft((current) => ({
-                      ...current,
-                      three_ds_kb_retrieval_max_characters: Math.max(10_000, Math.min(500_000, Number(event.target.value) || 120_000)),
-                    }))
-                  }
                   fullWidth
                 />
               </Grid>
