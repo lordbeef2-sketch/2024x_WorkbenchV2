@@ -701,6 +701,17 @@ class SqliteRepository:
             return None
         return str(row["payload"]), str(row["updated_at"])
 
+    def list_app_secret_scopes(self, prefix: str = "") -> list[str]:
+        with self._lock, self._connect() as connection:
+            if prefix:
+                rows = connection.execute(
+                    "SELECT scope FROM app_secrets WHERE scope LIKE ? ORDER BY updated_at DESC",
+                    (f"{prefix}%",),
+                ).fetchall()
+            else:
+                rows = connection.execute("SELECT scope FROM app_secrets ORDER BY updated_at DESC").fetchall()
+        return [str(row["scope"]) for row in rows]
+
     def upsert_app_secret(self, scope: str, payload: str) -> str:
         updated_at = utcnow().isoformat()
         with self._lock, self._connect() as connection:
@@ -2283,6 +2294,7 @@ class SqliteRepository:
             str(row["scope"])
             for row in rows
             if str(row["scope"]) not in valid_scopes
+            and not str(row["scope"]).startswith("workbench-agent:global:")
             and not any(
                 str(row["scope"]).startswith(f"workbench-agent:{server_id}:")
                 for server_id in valid_server_ids

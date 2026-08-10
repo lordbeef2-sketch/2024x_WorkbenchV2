@@ -1091,7 +1091,19 @@ class PlatformService:
         )
 
     def clear_workbench_agent_config(self, session: SessionData) -> WorkbenchAgentStatus:
-        self.repo.delete_app_secret(self._workbench_agent_scope(session.server.id, self._user_key(session.user.preferred_username)))
+        user_id = self._user_key(session.user.preferred_username)
+        scopes = {
+            self._workbench_agent_scope(session.server.id, user_id),
+            self._workbench_agent_global_scope(user_id),
+        }
+        if hasattr(self.repo, "list_app_secret_scopes"):
+            scopes.update(
+                scope
+                for scope in self.repo.list_app_secret_scopes("workbench-agent:")
+                if scope.endswith(f":{user_id}")
+            )
+        for scope in scopes:
+            self.repo.delete_app_secret(scope)
         return WorkbenchAgentStatus(
             configured=False,
             **self._three_ds_kb_status(),
@@ -10701,6 +10713,9 @@ class PlatformService:
     def _workbench_agent_scope(self, server_id: str, user_id: str) -> str:
         return f"workbench-agent:{server_id}:{user_id}"
 
+    def _workbench_agent_global_scope(self, user_id: str) -> str:
+        return f"workbench-agent:global:{user_id}"
+
     def _normalize_openwebui_base_url(self, base_url: str) -> str:
         agent_settings = self.get_workbench_agent_admin_settings()
         normalized = base_url.strip().rstrip("/")
@@ -10723,25 +10738,41 @@ class PlatformService:
 
     def _workbench_agent_secret(self, session: SessionData) -> WorkbenchAgentSecret | None:
         user_id = self._user_key(session.user.preferred_username)
-        stored = self.repo.get_app_secret(self._workbench_agent_scope(session.server.id, user_id))
-        if not stored:
-            return None
-        encrypted_payload, _updated_at_raw = stored
-        try:
-            raw = self.sessions.cipher.decrypt_raw(encrypted_payload)
-            secret = WorkbenchAgentSecret.model_validate_json(raw)
-        except Exception:
-            self.repo.delete_app_secret(self._workbench_agent_scope(session.server.id, user_id))
-            return None
-        if not secret.base_url or not secret.api_key:
-            self.repo.delete_app_secret(self._workbench_agent_scope(session.server.id, user_id))
-            return None
-        return secret
+        current_scope = self._workbench_agent_scope(session.server.id, user_id)
+        global_scope = self._workbench_agent_global_scope(user_id)
+        candidate_scopes = [current_scope, global_scope]
+        if session.server.id != "localhost":
+            candidate_scopes.append(self._workbench_agent_scope("localhost", user_id))
+        if hasattr(self.repo, "list_app_secret_scopes"):
+            candidate_scopes.extend(
+                scope
+                for scope in self.repo.list_app_secret_scopes("workbench-agent:")
+                if scope.endswith(f":{user_id}") and scope not in candidate_scopes
+            )
+        for scope in candidate_scopes:
+            stored = self.repo.get_app_secret(scope)
+            if not stored:
+                continue
+            encrypted_payload, _updated_at_raw = stored
+            try:
+                raw = self.sessions.cipher.decrypt_raw(encrypted_payload)
+                secret = WorkbenchAgentSecret.model_validate_json(raw)
+            except Exception:
+                self.repo.delete_app_secret(scope)
+                continue
+            if not secret.base_url or not secret.api_key:
+                self.repo.delete_app_secret(scope)
+                continue
+            if scope not in {current_scope, global_scope}:
+                self._store_workbench_agent_secret(session, secret)
+            return secret
+        return None
 
     def _store_workbench_agent_secret(self, session: SessionData, secret: WorkbenchAgentSecret) -> None:
         user_id = self._user_key(session.user.preferred_username)
         encrypted_payload = self.sessions.cipher.encrypt_raw(secret.model_dump_json().encode("utf-8"))
         self.repo.upsert_app_secret(self._workbench_agent_scope(session.server.id, user_id), encrypted_payload)
+        self.repo.upsert_app_secret(self._workbench_agent_global_scope(user_id), encrypted_payload)
 
     def _openwebui_headers(self, api_key: str) -> dict[str, str]:
         return {

@@ -9,6 +9,34 @@ from app.services.three_ds_corpus import CorpusDocument
 
 
 class WorkbenchAgentKnowledgeTests(unittest.TestCase):
+    def test_agent_secret_falls_back_from_legacy_server_scope_to_user_global_scope(self) -> None:
+        service = object.__new__(PlatformService)
+        secret = WorkbenchAgentSecret(base_url="http://127.0.0.1:9172", api_key="secret", model_id="oss:20b")
+        stored_payloads = {"workbench-agent:localhost:admin": secret.model_dump_json()}
+        writes: list[tuple[str, str]] = []
+
+        service.sessions = SimpleNamespace(cipher=SimpleNamespace(
+            decrypt_raw=lambda value: value.encode("utf-8"),
+            encrypt_raw=lambda value: value.decode("utf-8"),
+        ))
+        service.repo = SimpleNamespace(
+            get_app_secret=lambda scope: (stored_payloads[scope], "now") if scope in stored_payloads else None,
+            delete_app_secret=lambda scope: stored_payloads.pop(scope, None),
+            list_app_secret_scopes=lambda prefix="": [scope for scope in stored_payloads if scope.startswith(prefix)],
+            upsert_app_secret=lambda scope, payload: writes.append((scope, payload)) or "now",
+        )
+        session = SimpleNamespace(
+            server=SimpleNamespace(id="twc-2024x"),
+            user=SimpleNamespace(preferred_username="admin"),
+        )
+
+        resolved = service._workbench_agent_secret(session)
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.model_id, "oss:20b")
+        self.assertIn("workbench-agent:twc-2024x:admin", [scope for scope, _ in writes])
+        self.assertIn("workbench-agent:global:admin", [scope for scope, _ in writes])
+
     def test_openwebui_origin_is_https_and_allowlist_scoped_by_default(self) -> None:
         service = object.__new__(PlatformService)
         service.settings = SimpleNamespace(

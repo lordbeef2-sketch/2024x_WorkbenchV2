@@ -8819,7 +8819,7 @@ export default function WorkspacePage() {
               </Grid>
               <Grid item xs={12}>
                 <Alert severity="info">
-                  3DS_KB source is install-fixed: {agentAdminSettingsDraft.three_ds_kb_path || "../3DS_KB"}. Replace the bundled folder during installation or offline prep, not from this settings page.
+                  3DS_KB source is install-fixed by the Workbench package. Replace the bundled folder during installation or offline prep, not from this settings page.
                 </Alert>
               </Grid>
               <Grid item xs={6} md={3}>
