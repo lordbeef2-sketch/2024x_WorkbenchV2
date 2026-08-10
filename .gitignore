@@ -18,3 +18,8 @@ Knowlege/
 plugin/bin/
 offline/artifacts/
 
+# Local bundled 3DS KB payload. The offline prep/installer copies this into
+# release artifacts and installed runtimes; do not commit the 4GB+ corpus into
+# normal Git history.
+/3DS_KB/
+

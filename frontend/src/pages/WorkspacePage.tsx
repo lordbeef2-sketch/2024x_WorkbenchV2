@@ -100,7 +100,7 @@ const DEFAULT_AGENT_ADMIN_SETTINGS: WorkbenchAgentAdminSettings = {
   openwebui_allow_insecure_http: false,
   openwebui_ca_bundle_path: "",
   openwebui_allowed_hosts: [],
-  three_ds_kb_path: "C:/Users/Main1/Documents/NI KB base/3DS_KB",
+  three_ds_kb_path: "../3DS_KB",
   three_ds_kb_retrieval_max_documents: 12,
   three_ds_kb_retrieval_max_characters: 120_000,
 };
