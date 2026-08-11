@@ -138,7 +138,7 @@ if ($AllowUntrustedPackageHosts) {
     Write-Warning "TLS verification is disabled only for pypi.org and files.pythonhosted.org during this prep run. Prefer -PackageCaFile or an approved -PipIndexUrl."
 }
 
-Write-Phase "Validating the single authoritative 3DS KB"
+Write-Phase "Validating the bundled Workbench reference corpus"
 $knowledgeCertificate = Join-Path $stageRoot "three_ds_corpus_certificate.tsv"
 $knowledgeValidationCode = "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); from app.services.three_ds_corpus import ThreeDsCorpus; ThreeDsCorpus(Path(sys.argv[2])).validate(Path(sys.argv[3]))"
 Invoke-Checked -Executable $python.Executable -Arguments (@($python.Arguments) + @(

@@ -114,11 +114,11 @@ foreach ($knowledgeCheck in @(
     @($knowledgeValidation, "$($manifest.reference_corpus_validation_sha256)")
 )) {
     if (-not (Test-Path -LiteralPath $knowledgeCheck[0] -PathType Leaf)) {
-        throw "The single authoritative 3DS KB is unavailable: $($knowledgeCheck[0])"
+        throw "The bundled Workbench reference corpus is unavailable: $($knowledgeCheck[0])"
     }
     $knowledgeHash = (Get-FileHash -LiteralPath $knowledgeCheck[0] -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($knowledgeHash -ne $knowledgeCheck[1].ToLowerInvariant()) {
-        throw "The authoritative 3DS KB control hash changed: $($knowledgeCheck[0])"
+        throw "The bundled Workbench reference control hash changed: $($knowledgeCheck[0])"
     }
 }
 
