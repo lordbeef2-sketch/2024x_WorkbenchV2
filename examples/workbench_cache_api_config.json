@@ -1,7 +1,7 @@
 {
   "workbench_base_url": "https://your-workbench-host",
   "api_key": "",
-  "verify_tls": true,
+  "verify_tls": false,
   "server_id": "twc-2022x",
   "project_id": "",
   "branch_id": "master",

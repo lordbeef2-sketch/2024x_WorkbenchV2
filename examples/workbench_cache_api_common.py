@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import urllib3
 
 
 CONFIG_PATH = Path(__file__).with_name("workbench_cache_api_config.json")
@@ -31,6 +32,12 @@ def verify_value(config: dict[str, Any]) -> bool | str:
     return verify_tls
 
 
+def build_session(*, trust_env: bool = False) -> requests.Session:
+    session = requests.Session()
+    session.trust_env = trust_env
+    return session
+
+
 def request_json(
     method: str,
     base_url: str,
@@ -40,7 +47,11 @@ def request_json(
     payload: Any | None = None,
     verify: bool | str = True,
 ) -> Any:
-    response = requests.request(
+    if verify is False:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    session = build_session()
+    response = session.request(
         method=method,
         url=build_url(base_url, path),
         headers={

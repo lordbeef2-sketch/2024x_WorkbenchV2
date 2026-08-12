@@ -198,6 +198,13 @@ The helper module is:
 
 - [workbench_cache_api_common.py](workbench_cache_api_common.py)
 
+For internal Workbench deployments behind Caddy or an enterprise reverse proxy,
+the Workbench examples default `verify_tls` to `false` and the helper disables
+Requests environment trust (`Session.trust_env = False`). That keeps Python from
+loading broken local proxy/certificate-store settings before it reaches
+Workbench. Set `verify_tls` to `true` only when the host presents a certificate
+chain trusted by the Python runtime running the script.
+
 Quick run examples:
 
 ```powershell

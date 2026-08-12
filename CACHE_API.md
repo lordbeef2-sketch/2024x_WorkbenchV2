@@ -90,6 +90,12 @@ the server explicitly with `serverId=<id>` or `server_id=<id>`, or with
 `x-workbench-server-id` / `x-twc-server-id`. If omitted, Workbench falls back to
 the API-key owner's selected/last server and then the first configured server.
 
+For internal HTTPS deployments, Python `requests` clients should use a
+`requests.Session()` with `session.trust_env = False` when local proxy or
+certificate-store settings are not trusted. The shipped examples default
+`verify_tls` to `false` for this reason; turn it on only when the Workbench
+certificate chain is trusted by that Python runtime.
+
 Bearer API keys are not accepted as a blanket write/admin session. Browser and
 admin mutations still require a live Workbench browser session and CSRF token
 unless the specific route is a documented cache-ingest or cache-edit API route

@@ -158,7 +158,10 @@ import requests
 BASE_URL = "https://your-workbench-host"
 API_KEY = "<workbench-read-api-key>"
 
-response = requests.get(
+session = requests.Session()
+session.trust_env = False
+
+response = session.get(
     f"{BASE_URL}/api/workspace/model-cache/owned-elements",
     params={
         "serverId": "twc-2024x",
