@@ -301,6 +301,10 @@ class PlatformService:
         authorization_context = getattr(session, "authorization_context", None)
         return bool(getattr(authorization_context, "can_manage_server_presets", False))
 
+    def is_workbench_admin_username(self, preferred_username: str) -> bool:
+        user = self.repo.get_workbench_user(self._user_key(preferred_username))
+        return bool(user and user.enabled and user.role == WorkbenchUserRole.ADMIN)
+
     def can_manage_groups(self, session: SessionData) -> bool:
         return session.authorization_context.can_manage_server_presets or session.authorization_context.can_manage_groups
 

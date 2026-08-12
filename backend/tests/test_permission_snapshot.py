@@ -6,6 +6,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
+
+from app.api.routes.workspace import model_cache_owned_elements
 from app.core.storage import SqliteRepository
 from app.jobs.coordinator import JobCoordinator
 from app.models.domain import (
@@ -48,6 +51,56 @@ from app.services.platform import (
 
 
 class PermissionSnapshotReplacementTests(unittest.TestCase):
+    def test_owned_elements_workspace_route_accepts_read_api_key_with_server_id(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        class Platform:
+            def is_workbench_admin_username(self, preferred_username: str) -> bool:
+                calls.append({"admin_check": preferred_username})
+                return True
+
+            def get_cached_branch_owned_elements_for_user(self, *args, **kwargs):
+                calls.append({"args": args, "kwargs": kwargs})
+                return {"schema_version": "workbench-owned-elements.v1"}
+
+        response = model_cache_owned_elements(
+            projectId="project",
+            branchId="master",
+            elementId="element",
+            serverId="twc-2024x",
+            access=SimpleNamespace(
+                get=lambda key: {
+                    "session": None,
+                    "identity": SimpleNamespace(preferred_username="admin"),
+                }.get(key)
+            ),
+            container=SimpleNamespace(platform=Platform()),
+        )
+
+        self.assertEqual(response["schema_version"], "workbench-owned-elements.v1")
+        service_call = calls[-1]
+        self.assertEqual(service_call["args"][:5], ("twc-2024x", "admin", "project", "master", "element"))
+        self.assertTrue(service_call["kwargs"]["include_all_workbench_admin"])
+
+    def test_owned_elements_workspace_route_requires_server_id_for_api_key(self) -> None:
+        with self.assertRaises(HTTPException) as raised:
+            model_cache_owned_elements(
+                projectId="project",
+                branchId="master",
+                elementId="element",
+                serverId=None,
+                access=SimpleNamespace(
+                    get=lambda key: {
+                        "session": None,
+                        "identity": SimpleNamespace(preferred_username="admin"),
+                    }.get(key)
+                ),
+                container=SimpleNamespace(platform=SimpleNamespace()),
+            )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertIn("serverId is required", raised.exception.detail)
+
     def test_project_listing_filters_actual_cache_entries_through_branch_summaries(self) -> None:
         service = object.__new__(PlatformService)
         service.list_cached_projects_for_user = lambda server_id, username: [

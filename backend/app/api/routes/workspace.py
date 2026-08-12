@@ -7,7 +7,7 @@ import re
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse
 
-from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf
+from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf, require_workspace_read_access
 from app.models.domain import (
     BranchAccessManifestStatus,
     CacheApiKeyCreateRequest,
@@ -504,24 +504,42 @@ def model_cache_owned_elements(
     projectId: str = Query(...),
     branchId: str = Query(...),
     elementId: str = Query(...),
+    serverId: str | None = Query(default=None),
     modelId: str | None = Query(default=None),
     includeDetails: bool = Query(default=True),
     includeRawPayload: bool = Query(default=False),
-    session=Depends(get_session),
+    access=Depends(require_workspace_read_access),
     container: ApplicationContainer = Depends(get_container),
 ):
+    session = access.get("session")
+    identity = access.get("identity")
+    server_id = (serverId or (session.server.id if session is not None else "")).strip()
+    if not server_id:
+        raise HTTPException(status_code=422, detail="serverId is required when using a Workbench API key.")
+    preferred_username = (
+        session.user.preferred_username
+        if session is not None
+        else identity.preferred_username
+    )
+    include_all_workbench_admin = (
+        container.platform.can_manage_server_presets(session)
+        if session is not None
+        else container.platform.is_workbench_admin_username(preferred_username)
+    )
     try:
         return container.platform.get_cached_branch_owned_elements_for_user(
-            session.server.id,
-            session.user.preferred_username,
+            server_id,
+            preferred_username,
             projectId,
             branchId,
             elementId,
             model_id=modelId,
             include_details=includeDetails,
             include_raw_payload=includeRawPayload,
-            include_all_workbench_admin=container.platform.can_manage_server_presets(session),
+            include_all_workbench_admin=include_all_workbench_admin,
         )
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown server: {exc.args[0]}") from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:

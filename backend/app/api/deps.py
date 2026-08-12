@@ -128,3 +128,21 @@ def require_cache_api_scope(scope: CacheApiKeyScope):
         return identity
 
     return dependency
+
+
+async def require_workspace_read_access(
+    request: Request,
+    container: ApplicationContainer = Depends(get_container),
+):
+    token = _extract_bearer_token(request)
+    if token:
+        identity = container.platform.authenticate_cache_api_token(token)
+        if not identity or not identity.preferred_username.strip():
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Valid Workbench API bearer token required")
+        if CacheApiKeyScope.READ not in identity.scopes:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This API key does not allow workspace reads.")
+        return {"source": "api-key", "identity": identity, "session": None}
+    session = await container.platform.get_live_session(request.cookies.get(container.settings.session_cookie_name))
+    if not session:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    return {"source": "session", "identity": None, "session": session}
