@@ -19,7 +19,7 @@ GET /api/workspace/api-variable-catalog
 | `WORKBENCH_BASE_URL` | Script/config | Root Workbench URL | Example: `http://localhost:8000`. |
 | `SESSION_COOKIE` | Cookie | Browser/session-authenticated `/api/workspace/...` routes | Created by local Workbench login, TWC token login, or TWC SSO callback. |
 | `X-CSRF-Token` | Header | Session-authenticated writes | Get `csrf_token` from `/api/auth/session` or the login response. Required for `POST`, `PUT`, `PATCH`, and `DELETE` routes using session auth. |
-| `CACHE_API_BEARER_TOKEN` | `Authorization` header | Scoped `/api/cache/...` automation routes | Format: `Authorization: Bearer <cache_api_key>`. Created by admins in Settings. |
+| `WORKBENCH_API_BEARER_TOKEN` | `Authorization` header | Workbench read routes and scoped cache automation routes | Format: `Authorization: Bearer <api_key>`. A `read` key works on Workbench `GET`/`HEAD`/`OPTIONS` read routes. `write` and `edit` are honored only by documented cache-ingest/cache-edit routes. |
 
 ## Main selectors
 
@@ -57,7 +57,7 @@ GET /api/workspace/tree?projectId={projectId}&branchId={branchId}
 GET /api/workspace/tree/children?projectId={projectId}&branchId={branchId}&parentId={itemId}
 GET /api/workspace/items/{itemId}?projectId={projectId}&branchId={branchId}
 GET /api/workspace/model-cache/project-dump?projectId={projectId}&branchId={branchId}
-GET /api/workspace/model-cache/owned-elements?projectId={projectId}&branchId={branchId}&elementId={itemId}
+GET /api/workspace/model-cache/owned-elements?serverId={serverId}&projectId={projectId}&branchId={branchId}&elementId={itemId}
 GET /api/workspace/model-cache/spec-diagnostic?projectId={projectId}&branchId={branchId}&elementId={itemId}
 GET /api/workspace/api-variable-catalog
 ```
@@ -67,13 +67,14 @@ GET /api/workspace/api-variable-catalog
 Use this when someone asks: “Given this element id, show me everything under its Cameo `Owned Element` property.”
 
 ```text
-GET /api/workspace/model-cache/owned-elements?projectId={projectId}&branchId={branchId}&elementId={itemId}
+GET /api/workspace/model-cache/owned-elements?serverId={serverId}&projectId={projectId}&branchId={branchId}&elementId={itemId}
 ```
 
 Optional query parameters:
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
+| `serverId` | selected/last server fallback | Required for bearer API-key scripts unless relying on the key owner's stored server selection. |
 | `modelId` | omitted | Disambiguates the parent element when multiple cached models contain the same id. |
 | `includeDetails` | `true` | Include derived Workbench `ItemDetails` for each owned element. |
 | `includeRawPayload` | `false` | Include raw Cameo/plugin snapshot payload for each owned element. |
@@ -123,7 +124,8 @@ Response shape:
 - Backend/Python internals usually use snake_case: `project_id`, `branch_id`, `model_id`, `element_id`.
 - Teamwork Cloud RealSwagger often uses `resourceId` where Workbench examples say `projectId`.
 - Cameo/plugin payloads may use `element_id`, `local_id`, `@id`, or `id`; Workbench item routes use the resolved `itemId`/`elementId`.
-- Do not send passwords to Workbench automation routes. Use session cookies plus CSRF, or scoped cache API bearer keys.
+- Do not send passwords to Workbench automation routes. Use session cookies plus CSRF, or scoped Workbench API bearer keys.
+- Bearer API keys are accepted by read routes only (`GET`, `HEAD`, `OPTIONS`) unless a route explicitly documents `write` or `edit` scope. Browser/admin mutations still require a live Workbench session and CSRF token.
 
 ## Minimal Python pattern
 
@@ -146,4 +148,30 @@ projects.raise_for_status()
 
 headers = {"X-CSRF-Token": csrf_token}
 # Use headers on mutating routes only.
+```
+
+## Minimal read-key Python pattern
+
+```python
+import requests
+
+BASE_URL = "https://your-workbench-host"
+API_KEY = "<workbench-read-api-key>"
+
+response = requests.get(
+    f"{BASE_URL}/api/workspace/model-cache/owned-elements",
+    params={
+        "serverId": "twc-2024x",
+        "projectId": "Property Based Requirements.mdzip",
+        "branchId": "master",
+        "elementId": "_element_id",
+        "includeDetails": "true",
+        "includeRawPayload": "false",
+    },
+    headers={"Authorization": f"Bearer {API_KEY}"},
+    timeout=120,
+    verify=False,
+)
+response.raise_for_status()
+print(response.json())
 ```

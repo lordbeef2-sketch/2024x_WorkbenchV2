@@ -21,7 +21,7 @@ The backend also supports plugin-fed model cache ingestion. The preferred setup 
 - `POST /api/cache-ingest/branch-tombstones`
 - `POST /api/cache-ingest/project-tombstones`
 
-Users can now create their own cache API keys from Workbench Settings for scripts, AI tools, and other integrations. Each key carries explicit `read`, `write`, and `edit` scopes. `CACHE_API_TOKENS` remains available as a legacy fallback for environment-managed bearer tokens. Cache access is exposed through:
+Users can now create their own Workbench API keys from Settings for scripts, AI tools, and other integrations. A key with `read` scope authenticates Workbench `GET`, `HEAD`, and `OPTIONS` read routes with `Authorization: Bearer <api-key>`. This includes the cache endpoints below plus workspace read helpers such as owned-elements and branch comparison. For workspace routes that do not include `{server_id}` in the path, pass `serverId` / `server_id` or `x-workbench-server-id` / `x-twc-server-id`; otherwise Workbench falls back to the key owner's selected/last server and then the first configured server. `CACHE_API_TOKENS` remains available as a legacy fallback for environment-managed bearer tokens. Cache access is exposed through:
 
 - `GET /api/cache`
 - `GET /api/cache/servers`
@@ -42,8 +42,8 @@ Users can now create their own cache API keys from Workbench Settings for script
 
 Workspace comparison also supports `GET /api/workspace/compare/branches` with independent `leftProjectId`, `leftBranchId`, `rightProjectId`, and `rightBranchId` parameters. It compares the complete accessible cached element sets, matches same-project branches by element ID, and matches different projects by qualified path plus metaclass.
 
-Use `Authorization: Bearer <api-key>` on those requests. The API key identity maps back to the Workbench user who created it, so cache reads stay scoped to that user's cached visibility instead of becoming a server-wide bypass.
-`write` scope also allows the cache-ingest snapshot, delta, and tombstone routes. `edit` scope allows cache edits on plugin-backed branches when the user's TWC model permission overlay marks that model editable.
+Use `Authorization: Bearer <api-key>` on those requests. The API key identity maps back to the Workbench user who created it, so reads stay scoped to that user's cached visibility instead of becoming a server-wide bypass. Workbench-local admins keep the same admin model visibility they have in the browser.
+`write` scope allows the cache-ingest snapshot, delta, and tombstone routes only. `edit` scope allows cache edits on plugin-backed branches when the user's TWC model permission overlay marks that model editable. Browser/admin mutations still require a live Workbench browser session and CSRF token; a bearer key is not a general admin/write session.
 Stereotype search accepts either a stereotype id or a stereotype name fragment and can return either lightweight cached element records or full cached item details with `includeDetails=true`.
 Key labels, creation time, and last-used time are stored for light auditability, while the full secret is only shown once at creation time.
 

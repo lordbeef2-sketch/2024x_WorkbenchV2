@@ -118,7 +118,15 @@ external integrations.
 
 - Users create labeled API keys from the Workbench `Developer API` tab or
   Settings.
-- Keys support `read`, `write`, and `edit` scopes.
+- `read` keys authenticate Workbench `GET`, `HEAD`, and `OPTIONS` read routes
+  with `Authorization: Bearer <api-key>`. This includes cache reads and
+  workspace read helpers such as model-cache/owned-elements and comparison
+  endpoints when the route accepts the same query parameters the browser uses.
+- Browser/admin mutations still require a live Workbench browser session and
+  CSRF token. Plugin cache ingestion uses the separate plugin ingest token, or
+  a Workbench API key with the dedicated `write` scope on cache-ingest routes.
+- `edit` scope is reserved for scoped cache-edit endpoints and does not turn a
+  bearer key into a general Workbench admin/write session.
 - The shared model cache is stored once per branch, while Workbench maintains a
   per-user visibility and editability overlay so TWC access stays user-scoped
   without caching the same model N times.

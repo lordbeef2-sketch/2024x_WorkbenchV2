@@ -12,9 +12,12 @@ Use this when a developer or Workbench Agent is asked to create a new Workbench 
 4. Put auth/session/bootstrap routes in `backend/app/api/routes/auth.py`.
 5. Keep the route thin. Put reusable business logic in `backend/app/services/platform.py` or a focused service module.
 6. Enforce access before data work:
-   - `get_session` for normal authenticated reads.
+   - `get_session` for normal authenticated reads. It accepts a live browser
+     session first, then a `read`-scoped Workbench bearer API key for
+     `GET`/`HEAD`/`OPTIONS` routes.
    - `require_csrf` for user writes.
    - `require_admin` or `require_admin_csrf` for Workbench-admin actions.
+   - `require_cache_ingest_token` or `require_cache_api_scope(CacheApiKeyScope.WRITE)` only for documented cache-ingest automation routes.
    - Existing effective branch-access helpers for project, branch, model, and element reads.
 7. Add API Explorer support for user-facing Workbench calls:
    - define a `WORKBENCH_*_OPERATION_KEY`;
@@ -40,6 +43,10 @@ Use this when a developer or Workbench Agent is asked to create a new Workbench 
 - Do not bypass Workbench permission helpers.
 - Do not make admin-only calls visible or executable to non-admin users unless the route is intentionally read-only documentation.
 - If a route exposes model data, it must respect the current user's effective Workbench/TWC access unless the caller is an explicit Workbench admin path.
+- Do not allow bearer API keys to mutate Settings, users/groups, server presets,
+  or general workspace state through `get_session`. Shared API-key support is
+  for read routes; mutation routes must use session + CSRF unless a scoped
+  cache-ingest/cache-edit route explicitly documents otherwise.
 
 ## Minimal backend shape
 
@@ -64,6 +71,10 @@ def my_feature(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 ```
 
+For bearer-key clients calling workspace routes, include `serverId` or
+`server_id` as a query parameter when the route path does not contain the server
+id. `get_session` also accepts `x-workbench-server-id` and `x-twc-server-id`.
+
 ## Minimal frontend helper
 
 ```ts
@@ -72,4 +83,3 @@ myFeature(projectId: string, branchId: string) {
   return request<MyFeatureResponse>(`/workspace/my-feature?${params.toString()}`);
 }
 ```
-

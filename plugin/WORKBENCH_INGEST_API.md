@@ -41,6 +41,17 @@ Recommended:
 Authorization: Bearer <workbench-api-token>
 ```
 
+A Workbench API token with `read` scope authenticates Workbench read routes
+(`GET`, `HEAD`, and `OPTIONS`) and is evaluated as the Workbench user who owns
+the key. For workspace read helpers that do not carry `server_id` in the path,
+send `serverId=<id>` / `server_id=<id>` or `x-workbench-server-id` /
+`x-twc-server-id`.
+
+Do not use the cached-data API token as the Cameo plugin ingest secret unless
+the key was intentionally created with `write` scope for cache-ingest routes.
+Workbench Settings/admin mutations still require a browser session and CSRF
+token.
+
 ## Ingest Endpoints
 
 ### POST `/api/cache-ingest/branch-snapshots`

@@ -47,16 +47,21 @@ while a REST refresh is running.
 
 Users create API keys from Workbench Settings or the `Developer API` tab.
 
-Each key can carry one or more scopes:
+Each key can carry one or more scopes. The scopes are intentionally narrow:
 
 - `read`
-  - read cached servers, projects, branches, models, elements, and the cache
-    manifest
+  - authenticate Workbench `GET`, `HEAD`, and `OPTIONS` read routes with
+    `Authorization: Bearer <api-key>`
+  - read cached servers, projects, branches, models, elements, the cache
+    manifest, workspace comparison data, and workspace model-cache read helpers
+    that accept the same query parameters as the browser
 - `write`
-  - publish branch snapshots and branch deltas into Workbench
+  - publish branch snapshots, branch deltas, and tombstones into Workbench
+    through the cache-ingest routes only
 - `edit`
   - edit cached element content on **plugin-backed** branches when the user's
     cached TWC visibility overlay marks the model editable
+  - does not create a general browser/admin write session
 
 Every key has:
 
@@ -76,8 +81,19 @@ Use:
 Authorization: Bearer <api-key>
 ```
 
-The bearer key maps back to the Workbench user who created it. Cache reads stay
-scoped to that user's cached visibility.
+The bearer key maps back to the Workbench user who created it. Reads stay scoped
+to that user's cached visibility and, for Workbench admin users, the same
+Workbench-local admin model visibility used by the browser.
+
+For workspace read routes that do not include `{server_id}` in the path, pass
+the server explicitly with `serverId=<id>` or `server_id=<id>`, or with
+`x-workbench-server-id` / `x-twc-server-id`. If omitted, Workbench falls back to
+the API-key owner's selected/last server and then the first configured server.
+
+Bearer API keys are not accepted as a blanket write/admin session. Browser and
+admin mutations still require a live Workbench browser session and CSRF token
+unless the specific route is a documented cache-ingest or cache-edit API route
+that checks `write` or `edit` scope.
 
 ## Core endpoints
 
@@ -101,6 +117,17 @@ scoped to that user's cached visibility.
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/details`
 - `GET /api/cache/servers/{server_id}/projects/{project_id}/branches/{branch_id}/elements/{element_id}/graph`
+
+### Workspace read helpers
+
+These are browser-backed Workbench read helpers that also accept
+`Authorization: Bearer <api-key>` when the key has `read` scope:
+
+- `GET /api/workspace/model-cache/owned-elements?serverId={server_id}&projectId={project_id}&branchId={branch_id}&elementId={element_id}`
+- `GET /api/workspace/compare/branches?serverId={server_id}&leftProjectId={project_id}&leftBranchId={branch_id}&rightProjectId={project_id}&rightBranchId={branch_id}`
+
+Use the query parameters from the API Explorer/examples exactly. These routes
+use the API-key owner for permission filtering instead of the browser user.
 
 ### Plugin/cache write endpoints
 
@@ -237,6 +264,10 @@ curl -X POST \
   -d @branch-snapshot.json
 ```
 
+Publishing snapshots with a bearer token requires the plugin ingest token or a
+Workbench API key that carries `write` scope. General Workbench Settings/admin
+POST routes are not opened by API keys.
+
 ### Edit cached plugin-backed element content
 
 ```bash
@@ -246,6 +277,10 @@ curl -X PATCH \
   https://your-workbench-host/api/cache/servers/<server_id>/projects/<project_id>/branches/<branch_id>/elements/<element_id> \
   -d "{\"documentation\":\"Updated from automation\"}"
 ```
+
+Editing cached plugin-backed content requires `edit` scope and the user's
+effective edit permission overlay for that model. It is not a substitute for a
+browser admin session.
 
 ## Ready-to-run examples
 

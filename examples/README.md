@@ -165,6 +165,14 @@ Workbench Settings rather than the TWC AuthServer flow above. Keys can carry
 `read`, `write`, and `edit` scopes, and Workbench tracks their labels plus
 last-used timestamps for basic usage audit.
 
+For normal scripts, start with a `read` key. It works on Workbench `GET`,
+`HEAD`, and `OPTIONS` read routes, including cache reads and workspace read
+helpers such as owned-elements and branch comparison. When the endpoint does
+not put the server id in the path, pass `serverId` or `server_id` in the query
+string. `write` is only for cache-ingest snapshot/delta/tombstone examples, and
+`edit` is only for cache-edit examples. Browser/admin Settings mutations still
+require the logged-in Workbench session and CSRF token.
+
 Files:
 
 - `22_workbench_cache_api_manifest.py`
