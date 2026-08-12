@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
+from app.api.deps import get_session
 from app.api.routes.workspace import model_cache_owned_elements
 from app.core.storage import SqliteRepository
 from app.jobs.coordinator import JobCoordinator
@@ -23,6 +24,8 @@ from app.models.domain import (
     CapabilitySummary,
     CacheProjectBranchEntry,
     CacheProjectEntry,
+    CacheApiKeyScope,
+    CacheApiTokenIdentity,
     CachedModelRecord,
     JobRecord,
     JobStatus,
@@ -40,6 +43,8 @@ from app.models.domain import (
     SessionData,
     SwaggerExecuteRequest,
     UserContext,
+    WorkbenchUserRecord,
+    WorkbenchUserRole,
 )
 from app.services.platform import PermissionSnapshotIndeterminateError, PlatformService
 from app.services.platform import (
@@ -100,6 +105,7 @@ class PermissionSnapshotReplacementTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 422)
         self.assertIn("serverId is required", raised.exception.detail)
+
 
     def test_project_listing_filters_actual_cache_entries_through_branch_summaries(self) -> None:
         service = object.__new__(PlatformService)
@@ -498,6 +504,62 @@ class PermissionSnapshotReplacementTests(unittest.TestCase):
             self.assertEqual(stored.status, JobStatus.FAILED)
             self.assertIn("restart", stored.message.lower())
             self.assertEqual(repo.get_job(fresh.id).status, JobStatus.RUNNING)
+
+
+class WorkspaceApiKeySessionDependencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_get_session_accepts_read_api_key_for_workspace_get_routes(self) -> None:
+        server = ServerProfile(id="twc-2024x", name="TWC 2024x", base_url="https://twc.example")
+        user = WorkbenchUserRecord(username="admin", password_hash="hash", role=WorkbenchUserRole.ADMIN, enabled=True)
+        container = SimpleNamespace(
+            settings=SimpleNamespace(session_cookie_name="twc_session"),
+            platform=SimpleNamespace(
+                get_live_session=AsyncMock(return_value=None),
+                authenticate_cache_api_token=lambda token: CacheApiTokenIdentity(
+                    preferred_username="admin",
+                    scopes=[CacheApiKeyScope.READ],
+                )
+                if token == "good"
+                else None,
+                get_server=lambda server_id, include_disabled=True: server if server_id == "twc-2024x" else None,
+                _snapshot_capabilities=lambda selected_server: CapabilitySummary(detected_version="2024x"),
+            ),
+            repo=SimpleNamespace(
+                get_user_server_state=lambda user_id: None,
+                list_servers=lambda include_disabled=True: [server],
+                get_workbench_user=lambda user_id: user if user_id == "admin" else None,
+            ),
+        )
+        request = SimpleNamespace(
+            method="GET",
+            cookies={},
+            headers={"authorization": "Bearer good"},
+            query_params={"serverId": "twc-2024x"},
+        )
+
+        session = await get_session(request, container)
+
+        self.assertEqual(session.user.preferred_username, "admin")
+        self.assertEqual(session.server.id, "twc-2024x")
+        self.assertTrue(session.authorization_context.can_manage_server_presets)
+        self.assertEqual(session.authorization_context.source, "workbench-api-key")
+
+    async def test_get_session_blocks_api_key_write_routes_without_browser_csrf_flow(self) -> None:
+        container = SimpleNamespace(
+            settings=SimpleNamespace(session_cookie_name="twc_session"),
+            platform=SimpleNamespace(get_live_session=AsyncMock(return_value=None)),
+        )
+        request = SimpleNamespace(
+            method="POST",
+            cookies={},
+            headers={"authorization": "Bearer good"},
+            query_params={},
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            await get_session(request, container)
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertIn("read routes", raised.exception.detail)
 
 
 class PermissionAttachmentComparisonTests(unittest.TestCase):
