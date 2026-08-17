@@ -16,8 +16,10 @@ if TYPE_CHECKING:
     from app.services.platform import ApplicationContainer
 
 
-def build_callback_url(settings: Settings) -> str:
-    return settings.resolved_twc_auth_callback_url
+def build_callback_url(settings: Settings, server=None) -> str:
+    server_public_url = _server_auth_value(server, "workbench_public_url") if server is not None else None
+    origin = (server_public_url or settings.resolved_app_origin).strip().rstrip("/")
+    return f"{origin}{settings.resolved_twc_auth_callback_path}"
 
 
 def _auth_override(settings: Settings, server):
@@ -35,7 +37,9 @@ def _server_auth_value(server, field_name: str) -> Any | None:
 def _auth_client_id(settings: Settings, server) -> str | None:
     override = _auth_override(settings, server)
     return (
-        _server_auth_value(server, "auth_client_id")
+        _server_auth_value(server, "auth_application_ids")
+        or _server_auth_value(server, "auth_client_id")
+        or (override.application_ids if override and override.application_ids else None)
         or (override.client_id if override and override.client_id else None)
         or settings.resolved_twc_auth_client_id
     )
@@ -233,10 +237,11 @@ def build_twc_oidc_authorization_url(container: ApplicationContainer, server, st
     client_id = _auth_client_id(settings, server)
     if not client_id:
         raise ValueError(
-            "A TWC AuthServer client id must be configured for Teamwork Cloud SSO. "
-            "Use the generated OpenID Connect client id in TWC_AUTH_CLIENT_ID or a per-server TWC_AUTH_SERVER_OVERRIDES entry."
+            "A TWC AuthServer Application ID(s) value must be configured for Teamwork Cloud SSO. "
+            "Use the TWC Application ID(s) value in the server profile, TWC_AUTH_APPLICATION_IDS, "
+            "TWC_AUTH_CLIENT_ID, or a per-server TWC_AUTH_SERVER_OVERRIDES entry."
         )
-    callback_url = build_callback_url(settings)
+    callback_url = build_callback_url(settings, server)
     login_url = _build_twc_authorize_base_url(settings, server)
     query_values = {
         _auth_return_url_parameter(settings, server): callback_url,
@@ -312,8 +317,9 @@ async def _request_authserver_tokens(
     client_secret = _auth_client_secret(settings, server)
     if not client_id or not client_secret:
         raise PermissionError(
-            "A generated TWC OpenID Connect client id and secret must be configured for SSO code exchange. "
-            "Use TWC_AUTH_CLIENT_ID/TWC_AUTH_CLIENT_SECRET or per-server TWC_AUTH_SERVER_OVERRIDES."
+            "A TWC AuthServer Application ID(s) value and secret must be configured for SSO code exchange. "
+            "Use the server profile Application ID(s), TWC_AUTH_APPLICATION_IDS/TWC_AUTH_CLIENT_SECRET, "
+            "or per-server TWC_AUTH_SERVER_OVERRIDES."
         )
 
     configuration = await resolve_twc_oidc_configuration(settings, server)
@@ -346,9 +352,9 @@ async def _request_authserver_tokens(
 async def exchange_twc_auth_code(container: ApplicationContainer, server, code: str) -> TokenBundle:
     client_id = _auth_client_id(container.settings, server)
     if not client_id:
-        raise PermissionError("A TWC AuthServer client id must be configured for Teamwork Cloud SSO.")
+        raise PermissionError("A TWC AuthServer Application ID(s) value must be configured for Teamwork Cloud SSO.")
     form_data = {
-        "redirect_uri": build_callback_url(container.settings),
+        "redirect_uri": build_callback_url(container.settings, server),
         "client_id": client_id,
         "grant_type": "authorization_code",
         "code": code,
@@ -365,9 +371,9 @@ async def exchange_twc_auth_code(container: ApplicationContainer, server, code: 
 async def refresh_twc_auth_token(settings: Settings, server, refresh_token: str) -> TokenBundle:
     client_id = _auth_client_id(settings, server)
     if not client_id:
-        raise PermissionError("A TWC AuthServer client id must be configured for Teamwork Cloud token refresh.")
+        raise PermissionError("A TWC AuthServer Application ID(s) value must be configured for Teamwork Cloud token refresh.")
     form_data = {
-        "redirect_uri": build_callback_url(settings),
+        "redirect_uri": build_callback_url(settings, server),
         "client_id": client_id,
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,

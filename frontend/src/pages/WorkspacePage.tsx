@@ -107,6 +107,7 @@ function createServerProfileDraft(overrides: Partial<ServerProfileInput> = {}): 
     id: "",
     name: "",
     base_url: "",
+    workbench_public_url: null,
     version: "2024x",
     verify_tls: true,
     ca_bundle_path: null,
@@ -118,7 +119,8 @@ function createServerProfileDraft(overrides: Partial<ServerProfileInput> = {}): 
     auth_login_path: null,
     auth_login_port: null,
     auth_token_path: null,
-    auth_client_id: null,
+    auth_application_ids: "twcworkbench",
+    auth_client_id: "twcworkbench",
     auth_client_secret: null,
     auth_scope: "openid",
     auth_return_url_parameter: "redirect_uri",
@@ -2801,6 +2803,7 @@ export default function WorkspacePage() {
         next[server.id] = current[server.id] ?? createServerProfileDraft({
           name: server.name,
           base_url: server.base_url,
+          workbench_public_url: server.workbench_public_url,
           version: server.version,
           verify_tls: server.verify_tls,
           ca_bundle_path: server.ca_bundle_path,
@@ -2812,7 +2815,8 @@ export default function WorkspacePage() {
           auth_login_path: server.auth_login_path,
           auth_login_port: server.auth_login_port,
           auth_token_path: server.auth_token_path,
-          auth_client_id: server.auth_client_id,
+          auth_application_ids: server.auth_application_ids ?? server.auth_client_id ?? "twcworkbench",
+          auth_client_id: server.auth_client_id ?? "twcworkbench",
           auth_client_secret: null,
           auth_scope: server.auth_scope ?? "openid",
           auth_return_url_parameter: server.auth_return_url_parameter ?? "redirect_uri",
@@ -7044,7 +7048,10 @@ export default function WorkspacePage() {
           </Stack>
           {managedServersQuery.error ? <Alert severity="error">{errorMessage(managedServersQuery.error)}</Alert> : null}
           <Alert severity="info">
-            Workbench callback URI for SSO is separate from the TWC Base URL. Register <code>{workbenchOrigin}/api/auth/callback</code> with the TWC/AuthServer client, but set Base URL to the real Teamwork Cloud server.
+            Workbench callback URI for SSO is separate from the TWC Base URL. For Caddy/reverse-proxy deployments, set each server&apos;s Workbench Public URL to the outside address users browse to, for example <code>https://workbench.company.com:8050</code>. Register <code>{workbenchOrigin}/api/auth/callback</code> or that server&apos;s public callback with the TWC/AuthServer client, but set Base URL to the real Teamwork Cloud server.
+          </Alert>
+          <Alert severity="info">
+            Application ID(s) defaults to <code>twcworkbench</code> for 2024x profiles. This matches the TWC Configs Application ID(s) control. Only explicit 2024x server profiles can use Workbench OpenID; 2022x and auto profiles use Workbench sign-in or TWC token sign-in.
           </Alert>
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.5}>
@@ -7076,6 +7083,15 @@ export default function WorkspacePage() {
                     fullWidth
                   />
                 </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    label="Workbench Public URL"
+                    value={newServerPreset.workbench_public_url ?? ""}
+                    onChange={(event) => setNewServerPreset((current) => ({ ...current, workbench_public_url: event.target.value || null }))}
+                    helperText="Caddy/front-door URL. Example: https://workbench.company.com:8050"
+                    fullWidth
+                  />
+                </Grid>
                 {newServerLooksLikeWorkbench ? (
                   <Grid item xs={12}>
                     <Alert severity="warning">
@@ -7088,7 +7104,16 @@ export default function WorkspacePage() {
                     select
                     label="Version"
                     value={newServerPreset.version}
-                    onChange={(event) => setNewServerPreset((current) => ({ ...current, version: event.target.value as ServerProfileInput["version"] }))}
+                    onChange={(event) => {
+                      const version = event.target.value as ServerProfileInput["version"];
+                      setNewServerPreset((current) => ({
+                        ...current,
+                        version,
+                        auth_scope: version === "2022x" ? current.auth_scope || null : current.auth_scope || "openid",
+                        auth_application_ids: current.auth_application_ids || current.auth_client_id || "twcworkbench",
+                        auth_client_id: current.auth_client_id || "twcworkbench",
+                      }));
+                    }}
                     fullWidth
                   >
                     <MenuItem value="2024x">2024x</MenuItem>
@@ -7127,11 +7152,12 @@ export default function WorkspacePage() {
                   </Stack>
                 </Grid>
               </Grid>
-              <Accordion variant="outlined" disableGutters>
-                <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                  <Typography fontWeight={700}>TWC AuthServer / SSO overrides</Typography>
-                </AccordionSummary>
-                <AccordionDetails>
+              {newServerPreset.version === "2024x" ? (
+                <Accordion variant="outlined" disableGutters>
+                  <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                    <Typography fontWeight={700}>TWC OpenID / AuthServer setup</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
                   <Grid container spacing={1.5}>
                     <Grid item xs={12} md={6}>
                       <TextField
@@ -7185,10 +7211,17 @@ export default function WorkspacePage() {
                     </Grid>
                     <Grid item xs={12} md={6}>
                       <TextField
-                        label="Client ID"
-                        value={newServerPreset.auth_client_id ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_client_id: event.target.value || null }))}
-                        placeholder="twcworkbench-twc-2024x"
+                        label="Application ID(s)"
+                        value={newServerPreset.auth_application_ids ?? newServerPreset.auth_client_id ?? ""}
+                        onChange={(event) =>
+                          setNewServerPreset((current) => ({
+                            ...current,
+                            auth_application_ids: event.target.value || null,
+                            auth_client_id: event.target.value || null,
+                          }))
+                        }
+                        placeholder="twcworkbench"
+                        helperText="Matches the TWC Configs Application ID(s) value for this Workbench link."
                         fullWidth
                       />
                     </Grid>
@@ -7203,8 +7236,13 @@ export default function WorkspacePage() {
                       />
                     </Grid>
                   </Grid>
-                </AccordionDetails>
-              </Accordion>
+                  </AccordionDetails>
+                </Accordion>
+              ) : (
+                <Alert severity="info">
+                  Only explicit 2024x server profiles use Workbench OpenID setup. Use Workbench sign-in or TWC token sign-in for this server.
+                </Alert>
+              )}
               <Accordion variant="outlined" disableGutters>
                 <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                   <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
@@ -7278,7 +7316,8 @@ export default function WorkspacePage() {
                   auth_login_path: server.auth_login_path,
                   auth_login_port: server.auth_login_port,
                   auth_token_path: server.auth_token_path,
-                  auth_client_id: server.auth_client_id,
+                  auth_application_ids: server.auth_application_ids ?? server.auth_client_id ?? "twcworkbench",
+                  auth_client_id: server.auth_client_id ?? server.auth_application_ids ?? "twcworkbench",
                   auth_client_secret: null,
                   auth_scope: server.auth_scope ?? "openid",
                   auth_return_url_parameter: server.auth_return_url_parameter ?? "redirect_uri",
@@ -7348,17 +7387,38 @@ export default function WorkspacePage() {
                             fullWidth
                           />
                         </Grid>
+                        <Grid item xs={12} md={3}>
+                          <TextField
+                            label="Workbench Public URL"
+                            value={draft.workbench_public_url ?? ""}
+                            onChange={(event) =>
+                              setServerPresetDrafts((current) => ({
+                                ...current,
+                                [server.id]: { ...draft, workbench_public_url: event.target.value || null },
+                              }))
+                            }
+                            helperText="Caddy/front-door URL used for SSO callback and redirects."
+                            fullWidth
+                          />
+                        </Grid>
                         <Grid item xs={12} md={2}>
                           <TextField
                             select
                             label="Version"
                             value={draft.version}
-                            onChange={(event) =>
+                            onChange={(event) => {
+                              const version = event.target.value as ServerProfileInput["version"];
                               setServerPresetDrafts((current) => ({
                                 ...current,
-                                [server.id]: { ...draft, version: event.target.value as ServerProfileInput["version"] },
-                              }))
-                            }
+                                [server.id]: {
+                                  ...draft,
+                                  version,
+                                  auth_scope: version === "2022x" ? draft.auth_scope || null : draft.auth_scope || "openid",
+                                  auth_application_ids: draft.auth_application_ids || draft.auth_client_id || "twcworkbench",
+                                  auth_client_id: draft.auth_client_id || "twcworkbench",
+                                },
+                              }));
+                            }}
                             fullWidth
                           >
                             <MenuItem value="2024x">2024x</MenuItem>
@@ -7385,11 +7445,12 @@ export default function WorkspacePage() {
                           This Base URL matches the Workbench app. SSO will loop back to Workbench instead of Teamwork Cloud until this is changed to the real TWC URL.
                         </Alert>
                       ) : null}
-                      <Accordion variant="outlined" disableGutters>
-                        <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                          <Typography fontWeight={700}>TWC AuthServer / SSO overrides</Typography>
-                        </AccordionSummary>
-                        <AccordionDetails>
+                      {draft.version === "2024x" ? (
+                        <Accordion variant="outlined" disableGutters>
+                          <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                            <Typography fontWeight={700}>TWC OpenID / AuthServer setup</Typography>
+                          </AccordionSummary>
+                          <AccordionDetails>
                           <Grid container spacing={1.5}>
                             <Grid item xs={12} md={6}>
                               <TextField
@@ -7461,15 +7522,21 @@ export default function WorkspacePage() {
                               />
                             </Grid>
                             <Grid item xs={12} md={6}>
-                              <TextField
-                                label="Client ID"
-                                value={draft.auth_client_id ?? ""}
+                      <TextField
+                        label="Application ID(s)"
+                        value={draft.auth_application_ids ?? draft.auth_client_id ?? ""}
                                 onChange={(event) =>
                                   setServerPresetDrafts((current) => ({
                                     ...current,
-                                    [server.id]: { ...draft, auth_client_id: event.target.value || null },
+                                    [server.id]: {
+                                      ...draft,
+                                      auth_application_ids: event.target.value || null,
+                                      auth_client_id: event.target.value || null,
+                                    },
                                   }))
                                 }
+                                placeholder="twcworkbench"
+                                helperText="Matches the TWC Configs Application ID(s) value for this Workbench link."
                                 fullWidth
                               />
                             </Grid>
@@ -7489,8 +7556,13 @@ export default function WorkspacePage() {
                               />
                             </Grid>
                           </Grid>
-                        </AccordionDetails>
-                      </Accordion>
+                          </AccordionDetails>
+                        </Accordion>
+                      ) : (
+                        <Alert severity="info">
+                          Only explicit 2024x server profiles use Workbench OpenID setup. Use Workbench sign-in or TWC token sign-in for this server.
+                        </Alert>
+                      )}
                       <Accordion variant="outlined" disableGutters>
                         <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                           <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>

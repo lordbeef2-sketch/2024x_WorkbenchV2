@@ -22,6 +22,7 @@ class TWCAuthServerOverride(BaseModel):
     login_path: str | None = None
     login_port: int | None = None
     token_path: str | None = None
+    application_ids: str | None = None
     client_id: str | None = None
     client_secret: str | None = None
     scope: str | None = None
@@ -39,6 +40,10 @@ class TWCAuthServerOverride(BaseModel):
             "authorize_url": ("authorization_endpoint", "authentication_authorize_url"),
             "token_url": ("token_endpoint", "authentication_token_url"),
             "client_id": (
+                "application_ids",
+                "application_id",
+                "auth_application_ids",
+                "auth_application_id",
                 "authentication.client.id",
                 "authentication.client.ids",
                 "authentication_client_id",
@@ -66,6 +71,7 @@ class TWCAuthServerOverride(BaseModel):
         "token_url",
         "login_path",
         "token_path",
+        "application_ids",
         "client_id",
         "client_secret",
         "scope",
@@ -106,7 +112,9 @@ class Settings(BaseSettings):
     pending_server_cookie_name: str = "twc_pending_server"
     auth_state_cookie_name: str = "twc_auth_state"
     twc_preset_servers: list[PresetServerDefinition] = Field(default_factory=list)
-    twc_auth_client_id: str | None = None
+    twc_auth_client_id: str | None = "twcworkbench"
+    twc_auth_application_ids: str | None = None
+    twc_application_ids: str | None = None
     twc_auth_client_secret: str | None = None
     twc_authentication_client_id: str | None = None
     twc_authentication_client_ids: str | None = None
@@ -195,6 +203,8 @@ class Settings(BaseSettings):
         "export_dir",
         "app_origin",
         "twc_auth_client_id",
+        "twc_auth_application_ids",
+        "twc_application_ids",
         "twc_auth_client_secret",
         "twc_authentication_client_id",
         "twc_authentication_client_ids",
@@ -459,6 +469,8 @@ class Settings(BaseSettings):
     def resolved_twc_auth_client_id(self) -> str | None:
         return _first_config_value(
             self.twc_auth_client_id,
+            self.twc_auth_application_ids,
+            self.twc_application_ids,
             self.twc_authentication_client_id,
             self.twc_authentication_client_ids,
         )

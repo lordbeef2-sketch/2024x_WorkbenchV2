@@ -308,7 +308,7 @@ export default function LandingPage() {
             <Stack spacing={2}>
               <Typography variant="h4">Teamwork Cloud Presets</Typography>
               <Typography variant="body2" color="text.secondary">
-                Choose the configured Teamwork Cloud 2024x server before app authentication. Preset definitions are global app data, readable on this landing page without prior login, and managed centrally by administrators.
+                Choose the configured Teamwork Cloud server before app authentication. Preset definitions are global app data, readable on this landing page without prior login, and managed centrally by administrators.
               </Typography>
               {serversQuery.isLoading ? (
                 <Paper sx={{ p: 4, borderRadius: 5 }}>
@@ -318,6 +318,8 @@ export default function LandingPage() {
                 <Grid container spacing={2}>
                   {servers.map((server) => {
                     const health = healthById.get(server.id);
+                    const serverVersion = server.version === "auto" ? health?.version_hint ?? "auto" : server.version;
+                    const oidcSignInAvailable = redirectSignInEnabled && server.version === "2024x";
                     return (
                       <Grid item xs={12} md={6} key={server.id}>
                         <Paper sx={{ p: 3, borderRadius: 2, height: "100%" }}>
@@ -334,7 +336,7 @@ export default function LandingPage() {
                                 </Box>
                               </Stack>
                               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                <Chip label={`Version ${health?.version_hint ?? "2024x"}`} variant="outlined" />
+                                <Chip label={`Version ${serverVersion}`} variant="outlined" />
                                 <Chip label={`Order ${server.display_order}`} variant="outlined" />
                                 <Chip label={userManagementMode === "local" ? "Workbench user auth" : "TWC user auth"} variant="outlined" />
                                 <Chip label={health?.status ?? "probing"} color={healthColor(health?.status)} />
@@ -342,7 +344,7 @@ export default function LandingPage() {
                               </Stack>
                               <Stack spacing={0.75}>
                                 <Typography variant="body2" color="text.secondary">
-                                  The selected preset server is established first. Sign in via TWC preserves that selection through the callback and binds the app session to that same Teamwork Cloud server.
+                                  The selected preset server is established first. Only explicit 2024x profiles use TWC AuthServer OpenID Connect. 2022x and auto profiles use Workbench Sign-In or TWC token sign-in.
                                 </Typography>
                                 {health?.message ? (
                                   <Typography variant="body2" color="warning.main">
@@ -361,7 +363,7 @@ export default function LandingPage() {
                                     Workbench Sign-In
                                   </Button>
                                 ) : null}
-                                {redirectSignInEnabled ? (
+                                {oidcSignInAvailable ? (
                                   <Button
                                     fullWidth
                                     variant={localSignInEnabled ? "outlined" : "contained"}
@@ -369,6 +371,10 @@ export default function LandingPage() {
                                     onClick={() => window.location.assign(api.signInUrl(server.id))}
                                   >
                                     Sign In via TWC
+                                  </Button>
+                                ) : redirectSignInEnabled && server.version !== "2024x" ? (
+                                  <Button fullWidth variant="outlined" disabled startIcon={<LoginRoundedIcon />}>
+                                    Token/Auth Only
                                   </Button>
                                 ) : null}
                                 {authOptions?.token_signin_enabled !== false ? (

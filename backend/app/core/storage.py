@@ -571,6 +571,7 @@ class SqliteRepository:
                     id=definition.id,
                     name=definition.name,
                     base_url=definition.base_url,
+                    workbench_public_url=definition.workbench_public_url,
                     version=definition.version,
                     verify_tls=definition.verify_tls,
                     ca_bundle_path=definition.ca_bundle_path,

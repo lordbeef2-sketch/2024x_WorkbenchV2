@@ -54,6 +54,7 @@ class ThemeMode(str, Enum):
 class ServerProfileBase(BaseModel):
     name: str
     base_url: str
+    workbench_public_url: str | None = None
     version: TWCVersion = TWCVersion.V2024X
     verify_tls: bool = True
     ca_bundle_path: str | None = None
@@ -65,6 +66,7 @@ class ServerProfileBase(BaseModel):
     auth_login_path: str | None = None
     auth_login_port: int | None = Field(default=None, ge=1, le=65535)
     auth_token_path: str | None = None
+    auth_application_ids: str | None = None
     auth_client_id: str | None = None
     auth_client_secret: str | None = None
     auth_scope: str | None = None
@@ -83,24 +85,48 @@ class ServerProfileBase(BaseModel):
         payload.pop("auth_mode", None)
         if payload.get("auth_authorize_url") is None and payload.get("auth_url"):
             payload["auth_authorize_url"] = payload.get("auth_url")
+        if payload.get("auth_application_ids") is None:
+            for alias in (
+                "application_ids",
+                "application_id",
+                "auth_application_id",
+                "authentication.client.ids",
+                "authentication_client_ids",
+                "authentication.client.id",
+                "authentication_client_id",
+            ):
+                if payload.get(alias):
+                    payload["auth_application_ids"] = payload.get(alias)
+                    break
         if payload.get("auth_client_id") is None and payload.get("client_id"):
             payload["auth_client_id"] = payload.get("client_id")
+        if payload.get("auth_client_id") is None and payload.get("auth_application_ids"):
+            payload["auth_client_id"] = payload.get("auth_application_ids")
         if payload.get("oslc_callback_url") is None and payload.get("callback_url"):
             payload["oslc_callback_url"] = payload.get("callback_url")
         payload.pop("auth_url", None)
         payload.pop("client_id", None)
+        payload.pop("application_ids", None)
+        payload.pop("application_id", None)
+        payload.pop("auth_application_id", None)
+        payload.pop("authentication.client.ids", None)
+        payload.pop("authentication_client_ids", None)
+        payload.pop("authentication.client.id", None)
+        payload.pop("authentication_client_id", None)
         payload.pop("callback_url", None)
         return payload
 
     @field_validator(
         "name",
         "base_url",
+        "workbench_public_url",
         "ca_bundle_path",
         "auth_discovery_url",
         "auth_authorize_url",
         "auth_token_url",
         "auth_login_path",
         "auth_token_path",
+        "auth_application_ids",
         "auth_client_id",
         "auth_client_secret",
         "auth_scope",
@@ -131,6 +157,7 @@ class ServerProfileCreate(ServerProfileBase):
 class ServerProfileUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
+    workbench_public_url: str | None = None
     version: TWCVersion | None = None
     verify_tls: bool | None = None
     ca_bundle_path: str | None = None
@@ -142,6 +169,7 @@ class ServerProfileUpdate(BaseModel):
     auth_login_path: str | None = None
     auth_login_port: int | None = Field(default=None, ge=1, le=65535)
     auth_token_path: str | None = None
+    auth_application_ids: str | None = None
     auth_client_id: str | None = None
     auth_client_secret: str | None = None
     auth_scope: str | None = None
@@ -160,24 +188,48 @@ class ServerProfileUpdate(BaseModel):
         payload.pop("auth_mode", None)
         if payload.get("auth_authorize_url") is None and payload.get("auth_url"):
             payload["auth_authorize_url"] = payload.get("auth_url")
+        if payload.get("auth_application_ids") is None:
+            for alias in (
+                "application_ids",
+                "application_id",
+                "auth_application_id",
+                "authentication.client.ids",
+                "authentication_client_ids",
+                "authentication.client.id",
+                "authentication_client_id",
+            ):
+                if payload.get(alias):
+                    payload["auth_application_ids"] = payload.get(alias)
+                    break
         if payload.get("auth_client_id") is None and payload.get("client_id"):
             payload["auth_client_id"] = payload.get("client_id")
+        if payload.get("auth_client_id") is None and payload.get("auth_application_ids"):
+            payload["auth_client_id"] = payload.get("auth_application_ids")
         if payload.get("oslc_callback_url") is None and payload.get("callback_url"):
             payload["oslc_callback_url"] = payload.get("callback_url")
         payload.pop("auth_url", None)
         payload.pop("client_id", None)
+        payload.pop("application_ids", None)
+        payload.pop("application_id", None)
+        payload.pop("auth_application_id", None)
+        payload.pop("authentication.client.ids", None)
+        payload.pop("authentication_client_ids", None)
+        payload.pop("authentication.client.id", None)
+        payload.pop("authentication_client_id", None)
         payload.pop("callback_url", None)
         return payload
 
     @field_validator(
         "name",
         "base_url",
+        "workbench_public_url",
         "ca_bundle_path",
         "auth_discovery_url",
         "auth_authorize_url",
         "auth_token_url",
         "auth_login_path",
         "auth_token_path",
+        "auth_application_ids",
         "auth_client_id",
         "auth_client_secret",
         "auth_scope",

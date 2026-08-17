@@ -11,10 +11,11 @@ import unittest
 from unittest.mock import patch
 
 import httpx
+from fastapi import HTTPException
 
 from app.api.routes import auth, workspace
 from app.adapters.teamwork import TeamworkAdapter
-from app.auth.twc import build_twc_oidc_authorization_url, exchange_twc_auth_code
+from app.auth.twc import build_callback_url, build_twc_oidc_authorization_url, exchange_twc_auth_code
 from app.core.storage import SqliteRepository
 from app.models.domain import (
     BranchAccessRecord,
@@ -23,6 +24,7 @@ from app.models.domain import (
     ServerProfileCreate,
     CachedElementRecord,
     CachedModelRecord,
+    TWCVersion,
     WorkbenchAuthSettingsUpdate,
     WorkbenchGroupCreateRequest,
     WorkbenchGroupUpdateRequest,
@@ -83,6 +85,73 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
         self.assertEqual(query["client_id"], ["profile-client"])
         self.assertEqual(query["scope"], ["openid profile"])
         self.assertEqual(query["redirect_uri"], ["https://workbench.example/api/auth/callback"])
+
+    def test_server_profile_workbench_public_url_wins_for_sso_callback(self) -> None:
+        settings = Settings(
+            app_origin="http://localhost:8000",
+            twc_auth_client_secret="test-secret",
+            twc_oidc_authorize_url="https://twc.example:8443/authentication/oidc/authorize",
+        )
+        server = ServerProfile(
+            id="twc-2024x",
+            name="TWC 2024x",
+            base_url="https://twc.example:8111",
+            workbench_public_url="https://tx22svaw6159.northgrum.com:8050",
+        )
+
+        url = build_twc_oidc_authorization_url(SimpleNamespace(settings=settings), server, "state-value")
+        query = parse_qs(urlparse(url).query)
+
+        self.assertEqual(query["client_id"], ["twcworkbench"])
+        self.assertEqual(query["redirect_uri"], ["https://tx22svaw6159.northgrum.com:8050/api/auth/callback"])
+        self.assertEqual(build_callback_url(settings, server), "https://tx22svaw6159.northgrum.com:8050/api/auth/callback")
+
+    def test_server_profile_application_ids_drive_auth_client_id(self) -> None:
+        settings = Settings(
+            app_origin="https://workbench.example",
+            twc_auth_client_id="global-client",
+            twc_oidc_authorize_url="https://twc.example:8443/authentication/oidc/authorize",
+        )
+        server = ServerProfile(
+            id="twc",
+            name="TWC",
+            base_url="https://twc.example:8111",
+            auth_application_ids="twcworkbench",
+        )
+
+        url = build_twc_oidc_authorization_url(SimpleNamespace(settings=settings), server, "state-value")
+        query = parse_qs(urlparse(url).query)
+
+        self.assertEqual(query["client_id"], ["twcworkbench"])
+
+    def test_env_application_ids_alias_drives_auth_client_id(self) -> None:
+        settings = Settings(
+            app_origin="https://workbench.example",
+            twc_auth_client_id=None,
+            twc_auth_application_ids="twcworkbench",
+            twc_oidc_authorize_url="https://twc.example:8443/authentication/oidc/authorize",
+        )
+        server = ServerProfile(id="twc", name="TWC", base_url="https://twc.example:8111")
+
+        url = build_twc_oidc_authorization_url(SimpleNamespace(settings=settings), server, "state-value")
+        query = parse_qs(urlparse(url).query)
+
+        self.assertEqual(query["client_id"], ["twcworkbench"])
+
+    def test_2022x_server_profile_rejects_openid_redirect_signin(self) -> None:
+        server = ServerProfile(id="twc-2022x", name="TWC 2022x", base_url="https://twc.example:8111", version=TWCVersion.V2022X)
+        container = SimpleNamespace(
+            platform=SimpleNamespace(
+                get_auth_settings=lambda: SimpleNamespace(twc_redirect_enabled=True),
+                get_server=lambda server_id, include_disabled=False: server if server_id == "twc-2022x" else None,
+            )
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(auth.signin("twc-2022x", container))
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertIn("OpenID sign-in is only allowed for 2024x", raised.exception.detail)
 
     def test_oslc_base_url_override_is_used_for_osmc_candidates_only(self) -> None:
         adapter = object.__new__(TeamworkAdapter)
@@ -870,6 +939,23 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
             self.assertEqual(refreshed.get_server("localhost").auth_authorize_url, "https://real-twc.example:8443/authentication/oidc/authorize")
             self.assertEqual(refreshed.get_server("extra").base_url, "https://extra.example:8111")
             self.assertEqual(refreshed.get_server("seeded").base_url, "https://seeded.example:8111")
+
+    def test_server_profile_persists_workbench_public_url(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            database_path = Path(directory) / "workbench.db"
+            repo = SqliteRepository(database_path)
+            repo.upsert_server(
+                ServerProfile(
+                    id="twc",
+                    name="TWC",
+                    base_url="https://twc.example:8111",
+                    workbench_public_url="https://workbench.example:8050",
+                )
+            )
+
+            persisted = SqliteRepository(database_path).get_server("twc")
+            self.assertIsNotNone(persisted)
+            self.assertEqual(persisted.workbench_public_url, "https://workbench.example:8050")
 
     def test_admin_created_server_profile_can_use_explicit_plugin_key(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:

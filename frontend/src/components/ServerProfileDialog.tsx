@@ -33,6 +33,7 @@ function createDefaultProfile(defaultDisplayOrder = 0): ServerProfileInput {
     id: "",
     name: "",
     base_url: "",
+    workbench_public_url: null,
     version: "2024x",
     verify_tls: true,
     ca_bundle_path: null,
@@ -44,7 +45,8 @@ function createDefaultProfile(defaultDisplayOrder = 0): ServerProfileInput {
     auth_login_path: null,
     auth_login_port: null,
     auth_token_path: null,
-    auth_client_id: null,
+    auth_application_ids: "twcworkbench",
+    auth_client_id: "twcworkbench",
     auth_client_secret: null,
     auth_scope: "openid",
     auth_return_url_parameter: "redirect_uri",
@@ -71,6 +73,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
       id: initialValue.id,
       name: initialValue.name,
       base_url: initialValue.base_url,
+      workbench_public_url: initialValue.workbench_public_url,
       version: initialValue.version,
       verify_tls: initialValue.verify_tls,
       ca_bundle_path: initialValue.ca_bundle_path,
@@ -82,7 +85,8 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
       auth_login_path: initialValue.auth_login_path,
       auth_login_port: initialValue.auth_login_port,
       auth_token_path: initialValue.auth_token_path,
-      auth_client_id: initialValue.auth_client_id,
+      auth_application_ids: initialValue.auth_application_ids ?? initialValue.auth_client_id ?? "twcworkbench",
+      auth_client_id: initialValue.auth_client_id ?? "twcworkbench",
       auth_client_secret: null,
       auth_scope: initialValue.auth_scope ?? "openid",
       auth_return_url_parameter: initialValue.auth_return_url_parameter ?? "redirect_uri",
@@ -100,12 +104,14 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
         ...form,
         id: form.id?.trim() || undefined,
         base_url: form.base_url.trim(),
+        workbench_public_url: form.workbench_public_url?.trim() || null,
         ca_bundle_path: form.ca_bundle_path?.trim() || null,
         auth_discovery_url: form.auth_discovery_url?.trim() || null,
         auth_authorize_url: form.auth_authorize_url?.trim() || null,
         auth_token_url: form.auth_token_url?.trim() || null,
         auth_login_path: form.auth_login_path?.trim() || null,
         auth_token_path: form.auth_token_path?.trim() || null,
+        auth_application_ids: form.auth_application_ids?.trim() || form.auth_client_id?.trim() || null,
         auth_client_id: form.auth_client_id?.trim() || null,
         auth_client_secret: form.auth_client_secret?.trim() || null,
         auth_scope: form.auth_scope?.trim() || null,
@@ -166,7 +172,14 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
               select
               label="Version"
               value={form.version}
-              onChange={(event) => setField("version", event.target.value as TWCVersion)}
+              onChange={(event) => {
+                const version = event.target.value as TWCVersion;
+                setForm((current) => ({
+                  ...current,
+                  version,
+                  auth_scope: version === "2022x" ? current.auth_scope || null : current.auth_scope || "openid",
+                }));
+              }}
               fullWidth
             >
               <MenuItem value="2024x">2024x</MenuItem>
@@ -184,11 +197,22 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
             />
           </Grid>
           <Grid item xs={12}>
-            <Accordion variant="outlined" disableGutters>
-              <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                <Typography fontWeight={700}>TWC AuthServer / SSO overrides</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
+            <TextField
+              label="Workbench Public URL"
+              value={form.workbench_public_url ?? ""}
+              onChange={(event) => setField("workbench_public_url", event.target.value || null)}
+              placeholder="https://workbench.company.example:8050"
+              helperText="Caddy/front-door URL used for SSO callback and post-login redirects. Leave blank only for local dev."
+              fullWidth
+            />
+          </Grid>
+          <Grid item xs={12}>
+            {form.version === "2024x" ? (
+              <Accordion variant="outlined" disableGutters>
+                <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                  <Typography fontWeight={700}>TWC OpenID / AuthServer setup</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
                 <Grid container spacing={2}>
                   <Grid item xs={12} md={6}>
                     <TextField label="OIDC discovery URL" value={form.auth_discovery_url ?? ""} onChange={(event) => setField("auth_discovery_url", event.target.value || null)} fullWidth />
@@ -212,14 +236,29 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
                     <TextField label="Scope" value={form.auth_scope ?? ""} onChange={(event) => setField("auth_scope", event.target.value || null)} fullWidth />
                   </Grid>
                   <Grid item xs={12} md={6}>
-                    <TextField label="Client ID" value={form.auth_client_id ?? ""} onChange={(event) => setField("auth_client_id", event.target.value || null)} fullWidth />
+                    <TextField
+                      label="Application ID(s)"
+                      value={form.auth_application_ids ?? form.auth_client_id ?? ""}
+                      onChange={(event) => {
+                        setField("auth_application_ids", event.target.value || null);
+                        setField("auth_client_id", event.target.value || null);
+                      }}
+                      placeholder="twcworkbench"
+                      helperText="Matches the TWC Configs Application ID(s) value for this Workbench link."
+                      fullWidth
+                    />
                   </Grid>
                   <Grid item xs={12} md={6}>
                     <TextField label="Client secret" type="password" value={form.auth_client_secret ?? ""} onChange={(event) => setField("auth_client_secret", event.target.value || null)} helperText="Saved on submit; not shown again after reload." fullWidth />
                   </Grid>
                 </Grid>
-              </AccordionDetails>
-            </Accordion>
+                </AccordionDetails>
+              </Accordion>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                Only explicit 2024x server profiles use Workbench OpenID setup. Use Workbench sign-in or TWC token sign-in for this server.
+              </Typography>
+            )}
           </Grid>
           <Grid item xs={12}>
             <Accordion variant="outlined" disableGutters>

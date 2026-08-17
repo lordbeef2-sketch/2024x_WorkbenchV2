@@ -17,6 +17,7 @@ from app.api.deps import get_container, get_session, require_admin, require_admi
 from app.auth.twc import build_twc_oidc_signin_url, exchange_twc_auth_code
 from app.models.domain import (
     TokenLoginRequest,
+    TWCVersion,
     WorkbenchAuthSettings,
     WorkbenchAuthSettingsUpdate,
     WorkbenchFirstAdminSetupRequest,
@@ -82,31 +83,38 @@ def set_auth_state_cookie(response: Response, container: ApplicationContainer, v
     )
 
 
+def server_app_origin(container: ApplicationContainer, server=None) -> str:
+    server_origin = getattr(server, "workbench_public_url", None)
+    origin = server_origin or container.settings.resolved_app_origin
+    return str(origin).strip().rstrip("/")
+
+
 def build_workspace_redirect(
     container: ApplicationContainer,
     session_id: str,
     *,
     params: dict[str, str] | None = None,
+    server=None,
 ) -> RedirectResponse:
     suffix = f"?{urlencode(params)}" if params else ""
-    redirect = RedirectResponse(f"{container.settings.resolved_app_origin}/workspace{suffix}", status_code=status.HTTP_302_FOUND)
+    redirect = RedirectResponse(f"{server_app_origin(container, server)}/workspace{suffix}", status_code=status.HTTP_302_FOUND)
     set_session_cookie(redirect, container, session_id)
     clear_pending_server_cookie(redirect, container)
     clear_auth_state_cookie(redirect, container)
     return redirect
 
 
-def build_session_redirect(container: ApplicationContainer, session_id: str) -> RedirectResponse:
-    redirect = RedirectResponse(f"{container.settings.resolved_app_origin}/", status_code=status.HTTP_302_FOUND)
+def build_session_redirect(container: ApplicationContainer, session_id: str, *, server=None) -> RedirectResponse:
+    redirect = RedirectResponse(f"{server_app_origin(container, server)}/", status_code=status.HTTP_302_FOUND)
     set_session_cookie(redirect, container, session_id)
     clear_pending_server_cookie(redirect, container)
     clear_auth_state_cookie(redirect, container)
     return redirect
 
 
-def build_error_redirect(container: ApplicationContainer, detail: str) -> RedirectResponse:
+def build_error_redirect(container: ApplicationContainer, detail: str, *, server=None) -> RedirectResponse:
     query = urlencode({"authError": detail})
-    redirect = RedirectResponse(f"{container.settings.resolved_app_origin}/?{query}", status_code=status.HTTP_302_FOUND)
+    redirect = RedirectResponse(f"{server_app_origin(container, server)}/?{query}", status_code=status.HTTP_302_FOUND)
     clear_pending_server_cookie(redirect, container)
     clear_auth_state_cookie(redirect, container)
     return redirect
@@ -233,13 +241,18 @@ async def signin(server_id: str, container: ApplicationContainer = Depends(get_c
     server = container.platform.get_server(server_id, include_disabled=False)
     if not server:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
+    if server.version != TWCVersion.V2024X:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="OpenID sign-in is only allowed for 2024x Teamwork Cloud server profiles. Use Workbench sign-in or TWC token sign-in for 2022x.",
+        )
 
     state, cookie_value = create_auth_state_cookie(container, server.id)
     try:
         twc_signin_url, oidc_configuration = await build_twc_oidc_signin_url(container, server, state)
     except ValueError as exc:
         logger.warning("auth-signin-failed", auth_mode="twc-authserver-redirect-start", server_id=server.id, detail=str(exc))
-        return build_error_redirect(container, str(exc))
+        return build_error_redirect(container, str(exc), server=server)
     redirect = RedirectResponse(twc_signin_url, status_code=status.HTTP_302_FOUND)
     set_pending_server_cookie(redirect, container, server.id)
     set_auth_state_cookie(redirect, container, cookie_value)
@@ -249,7 +262,7 @@ async def signin(server_id: str, container: ApplicationContainer = Depends(get_c
         server_id=server.id,
         twc_authorize_url=oidc_configuration.get("authorization_endpoint"),
         oidc_configuration_source=oidc_configuration.get("source"),
-        callback=container.settings.resolved_twc_auth_callback_url,
+        callback=f"{server_app_origin(container, server)}{container.settings.resolved_twc_auth_callback_path}",
     )
     return redirect
 
@@ -301,7 +314,7 @@ async def callback(
             )
         except PermissionError as exc:
             logger.warning("auth-callback-failed", auth_mode="authserver-code-callback", server_id=server.id, detail=str(exc))
-            return build_error_redirect(container, str(exc))
+            return build_error_redirect(container, str(exc), server=server)
 
     access_token, session_cookies, preferred_username = upstream_signin_context(request, container)
     if session is None and not access_token and not session_cookies:
@@ -314,6 +327,7 @@ async def callback(
         return build_error_redirect(
             container,
             "TWC sign-in returned to the app, but the callback did not receive an AuthServer code, Teamwork Cloud session cookies, or forwarded access token.",
+            server=server,
         )
 
     if session is None:
@@ -328,7 +342,7 @@ async def callback(
             )
         except PermissionError as exc:
             logger.warning("auth-callback-failed", auth_mode="redirect-callback", server_id=server.id, detail=str(exc))
-            return build_error_redirect(container, str(exc))
+            return build_error_redirect(container, str(exc), server=server)
 
     logger.info(
         "auth-mode-selected",
@@ -338,7 +352,7 @@ async def callback(
         has_access_token=bool(access_token),
         cookie_count=len(session_cookies),
     )
-    return build_session_redirect(container, session.session_id)
+    return build_session_redirect(container, session.session_id, server=server)
 
 
 @router.post("/token")

@@ -12,6 +12,7 @@ export interface ServerProfile {
   id: string;
   name: string;
   base_url: string;
+  workbench_public_url: string | null;
   version: TWCVersion;
   verify_tls: boolean;
   ca_bundle_path: string | null;
@@ -23,6 +24,7 @@ export interface ServerProfile {
   auth_login_path: string | null;
   auth_login_port: number | null;
   auth_token_path: string | null;
+  auth_application_ids: string | null;
   auth_client_id: string | null;
   auth_client_secret: string | null;
   auth_scope: string | null;
@@ -39,6 +41,7 @@ export interface ServerProfileInput {
   id?: string;
   name: string;
   base_url: string;
+  workbench_public_url?: string | null;
   version: TWCVersion;
   verify_tls: boolean;
   ca_bundle_path: string | null;
@@ -50,6 +53,7 @@ export interface ServerProfileInput {
   auth_login_path?: string | null;
   auth_login_port?: number | null;
   auth_token_path?: string | null;
+  auth_application_ids?: string | null;
   auth_client_id?: string | null;
   auth_client_secret?: string | null;
   auth_scope?: string | null;
