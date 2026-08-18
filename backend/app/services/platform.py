@@ -340,7 +340,7 @@ class PlatformService:
             twc_token_enabled = True
         return settings.model_copy(
             update={
-                "local_users_enabled": False,
+                "local_users_enabled": True,
                 "twc_redirect_enabled": twc_redirect_enabled,
                 "twc_token_enabled": twc_token_enabled,
             }
@@ -688,6 +688,8 @@ class PlatformService:
         user_record = self.repo.get_workbench_user(username)
         if not user_record or not user_record.enabled or not self._verify_workbench_password(payload.password, user_record.password_hash):
             raise PermissionError("Invalid Workbench username or password.")
+        if settings.user_management_mode == "twc" and user_record.role != WorkbenchUserRole.ADMIN:
+            raise PermissionError("Workbench local sign-in is limited to administrators while TWC user management is active.")
         user = UserContext(
             preferred_username=username,
             server_id=server.id,

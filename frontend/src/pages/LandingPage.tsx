@@ -360,7 +360,7 @@ export default function LandingPage() {
                                     startIcon={<AccountCircleRoundedIcon />}
                                     onClick={() => openLocalDialog(server.id)}
                                   >
-                                    Workbench Sign-In
+                                    {userManagementMode === "twc" ? "Workbench Admin Sign-In" : "Workbench Sign-In"}
                                   </Button>
                                 ) : null}
                                 {twcRedirectSignInAvailable ? (
@@ -486,7 +486,7 @@ export default function LandingPage() {
       </Dialog>
 
       <Dialog open={localDialogOpen} onClose={closeLocalDialog} fullWidth maxWidth="sm">
-        <DialogTitle>{authOptions?.first_admin_setup_required ? "Create First Workbench Admin" : "Workbench Sign-In"}</DialogTitle>
+        <DialogTitle>{authOptions?.first_admin_setup_required ? "Create First Workbench Admin" : userManagementMode === "twc" ? "Workbench Admin Recovery Sign-In" : "Workbench Sign-In"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <Alert severity={authOptions?.first_admin_setup_required ? "warning" : "info"}>

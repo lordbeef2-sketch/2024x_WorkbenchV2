@@ -7991,7 +7991,7 @@ export default function WorkspacePage() {
             <Box>
               <Typography variant="h5">Authentication Type & Settings</Typography>
               <Typography variant="body2" color="text.secondary">
-                Choose exactly one sign-in authority. Workbench local users and TWC-managed users are intentionally mutually exclusive.
+                Choose the normal user authority. TWC mode keeps Workbench local admin recovery sign-in available so admins can fix bad SSO/server settings.
               </Typography>
             </Box>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
@@ -8009,7 +8009,7 @@ export default function WorkspacePage() {
           </Stack>
 
           <Alert severity="info">
-            Use local mode for Workbench-managed username/password users, or TWC mode for TWC-managed users. Workbench will not enable both modes at the same time.
+            Use local mode for Workbench-managed username/password users, or TWC mode for TWC-managed users. In TWC mode, local password sign-in is restricted to Workbench administrators only.
           </Alert>
           {status?.first_admin_setup_required ? (
             <Alert severity="warning">
@@ -8048,13 +8048,13 @@ export default function WorkspacePage() {
                       : {
                           ...current,
                           user_management_mode: "twc",
-                          local_users_enabled: false,
+                          local_users_enabled: true,
                           twc_redirect_enabled: current.twc_redirect_enabled || true,
                           twc_token_enabled: current.twc_token_enabled,
                         },
                   );
                 }}
-                helperText="Only one authority is active at a time."
+                helperText="TWC can be the user authority while Workbench keeps local admin recovery sign-in available."
                 fullWidth
               >
                 <MenuItem value="local">Workbench local users</MenuItem>
@@ -8069,7 +8069,7 @@ export default function WorkspacePage() {
                       onChange={(event) => setAuthSettingsDraft((current) => ({ ...current, local_users_enabled: event.target.checked }))}
                     />
                   }
-                  label="Workbench username/password users"
+                  label={userManagementMode === "twc" ? "Workbench admin recovery sign-in" : "Workbench username/password users"}
                 />
                 <FormControlLabel
                   control={

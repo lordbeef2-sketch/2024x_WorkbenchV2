@@ -82,9 +82,25 @@ def set_auth_state_cookie(response: Response, container: ApplicationContainer, v
     )
 
 
-def server_app_origin(container: ApplicationContainer, server=None) -> str:
+def request_app_origin(request: Request) -> str:
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",", 1)[0].strip()
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+    )
+    return f"{proto}://{host}".strip().rstrip("/")
+
+
+def server_for_request_origin(server, request: Request):
+    if getattr(server, "workbench_public_url", None):
+        return server
+    return server.model_copy(update={"workbench_public_url": request_app_origin(request)})
+
+
+def server_app_origin(container: ApplicationContainer, server=None, request: Request | None = None) -> str:
     server_origin = getattr(server, "workbench_public_url", None)
-    origin = server_origin or container.settings.resolved_app_origin
+    origin = server_origin or (request_app_origin(request) if request is not None else None) or container.settings.resolved_app_origin
     return str(origin).strip().rstrip("/")
 
 
@@ -134,13 +150,14 @@ def _urlsafe_b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + ("=" * (-len(value) % 4)))
 
 
-def create_auth_state_cookie(container: ApplicationContainer, server_id: str) -> tuple[str, str]:
+def create_auth_state_cookie(container: ApplicationContainer, server_id: str, *, app_origin: str | None = None) -> tuple[str, str]:
     state = secrets.token_urlsafe(24)
     payload = json.dumps(
         {
             "state": state,
             "server_id": server_id,
             "issued_at": datetime.now(UTC).isoformat(),
+            "app_origin": app_origin,
         },
         separators=(",", ":"),
     ).encode("utf-8")
@@ -181,7 +198,10 @@ def load_auth_state_cookie(container: ApplicationContainer, raw_value: str | Non
 
     if not isinstance(data.get("state"), str) or not isinstance(data.get("server_id"), str):
         return None
-    return {"state": data["state"], "server_id": data["server_id"]}
+    result = {"state": data["state"], "server_id": data["server_id"]}
+    if isinstance(data.get("app_origin"), str) and data["app_origin"].strip():
+        result["app_origin"] = data["app_origin"].strip().rstrip("/")
+    return result
 
 
 @router.get("/session")
@@ -215,8 +235,7 @@ async def get_session_snapshot(
     return snapshot.model_copy(update={"pending_server": pending_server})
 
 
-@router.get("/options")
-def get_auth_options(container: ApplicationContainer = Depends(get_container)):
+def auth_options_payload(container: ApplicationContainer, request: Request | None = None):
     platform = getattr(container, "platform", None)
     repo = getattr(container, "repo", None)
     settings = platform.get_auth_settings() if platform is not None else WorkbenchAuthSettings()
@@ -228,25 +247,31 @@ def get_auth_options(container: ApplicationContainer = Depends(get_container)):
         "local_signin_enabled": settings.local_users_enabled,
         "first_admin_setup_required": settings.local_users_enabled and user_count == 0,
         "redirect_signin_message": REDIRECT_SIGNIN_MESSAGE,
-        "redirect_uri": container.settings.resolved_twc_auth_callback_url,
+        "redirect_uri": f"{server_app_origin(container, request=request)}{container.settings.resolved_twc_auth_callback_path}",
         "csrf_header_name": container.settings.csrf_header_name,
     }
 
 
+@router.get("/options")
+def get_auth_options(request: Request, container: ApplicationContainer = Depends(get_container)):
+    return auth_options_payload(container, request)
+
+
 @router.get("/signin/{server_id}")
-async def signin(server_id: str, container: ApplicationContainer = Depends(get_container)):
+async def signin(server_id: str, request: Request, container: ApplicationContainer = Depends(get_container)):
     if not container.platform.get_auth_settings().twc_redirect_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="TWC redirect sign-in is disabled.")
     server = container.platform.get_server(server_id, include_disabled=False)
     if not server:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
+    signin_server = server_for_request_origin(server, request)
 
-    state, cookie_value = create_auth_state_cookie(container, server.id)
+    state, cookie_value = create_auth_state_cookie(container, server.id, app_origin=server_app_origin(container, signin_server))
     try:
-        twc_signin_url, oidc_configuration = await build_twc_oidc_signin_url(container, server, state)
+        twc_signin_url, oidc_configuration = await build_twc_oidc_signin_url(container, signin_server, state)
     except ValueError as exc:
         logger.warning("auth-signin-failed", auth_mode="twc-authserver-redirect-start", server_id=server.id, detail=str(exc))
-        return build_error_redirect(container, str(exc), server=server)
+        return build_error_redirect(container, str(exc), server=signin_server)
     redirect = RedirectResponse(twc_signin_url, status_code=status.HTTP_302_FOUND)
     set_pending_server_cookie(redirect, container, server.id)
     set_auth_state_cookie(redirect, container, cookie_value)
@@ -256,7 +281,7 @@ async def signin(server_id: str, container: ApplicationContainer = Depends(get_c
         server_id=server.id,
         twc_authorize_url=oidc_configuration.get("authorization_endpoint"),
         oidc_configuration_source=oidc_configuration.get("source"),
-        callback=f"{server_app_origin(container, server)}{container.settings.resolved_twc_auth_callback_path}",
+        callback=f"{server_app_origin(container, signin_server)}{container.settings.resolved_twc_auth_callback_path}",
     )
     return redirect
 
@@ -295,11 +320,12 @@ async def callback(
     if not server:
         logger.warning("auth-callback-failed", auth_mode="redirect-callback", detail="Preset server not found")
         return build_error_redirect(container, "Preset server not found")
+    callback_server = server.model_copy(update={"workbench_public_url": auth_state.get("app_origin")}) if auth_state.get("app_origin") else server
 
     session = None
     if code:
         try:
-            token_bundle = await exchange_twc_auth_code(container, server, code)
+            token_bundle = await exchange_twc_auth_code(container, callback_server, code)
             session = await container.platform.login_with_token_bundle(
                 server.id,
                 token_bundle,
@@ -308,7 +334,7 @@ async def callback(
             )
         except PermissionError as exc:
             logger.warning("auth-callback-failed", auth_mode="authserver-code-callback", server_id=server.id, detail=str(exc))
-            return build_error_redirect(container, str(exc), server=server)
+            return build_error_redirect(container, str(exc), server=callback_server)
 
     access_token, session_cookies, preferred_username = upstream_signin_context(request, container)
     if session is None and not access_token and not session_cookies:
@@ -321,7 +347,7 @@ async def callback(
         return build_error_redirect(
             container,
             "TWC sign-in returned to the app, but the callback did not receive an AuthServer code, Teamwork Cloud session cookies, or forwarded access token.",
-            server=server,
+            server=callback_server,
         )
 
     if session is None:
@@ -336,7 +362,7 @@ async def callback(
             )
         except PermissionError as exc:
             logger.warning("auth-callback-failed", auth_mode="redirect-callback", server_id=server.id, detail=str(exc))
-            return build_error_redirect(container, str(exc), server=server)
+            return build_error_redirect(container, str(exc), server=callback_server)
 
     logger.info(
         "auth-mode-selected",
@@ -346,7 +372,7 @@ async def callback(
         has_access_token=bool(access_token),
         cookie_count=len(session_cookies),
     )
-    return build_session_redirect(container, session.session_id, server=server)
+    return build_session_redirect(container, session.session_id, server=callback_server)
 
 
 @router.post("/token")

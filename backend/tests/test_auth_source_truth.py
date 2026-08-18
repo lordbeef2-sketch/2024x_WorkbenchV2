@@ -105,6 +105,38 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
         self.assertEqual(query["redirect_uri"], ["https://tx22svaw6159.northgrum.com:8050/api/auth/callback"])
         self.assertEqual(build_callback_url(settings, server), "https://tx22svaw6159.northgrum.com:8050/api/auth/callback")
 
+    def test_signin_uses_forwarded_workbench_origin_when_profile_origin_blank(self) -> None:
+        settings = Settings(
+            app_origin="http://localhost:8000",
+            twc_auth_client_secret="test-secret",
+        )
+        server = ServerProfile(
+            id="twc-2024x",
+            name="TWC 2024x",
+            base_url="https://twc.example:8111",
+            auth_authorize_url="https://twc.example:8443/authentication/oidc/authorize",
+            auth_token_url="https://twc.example:8443/authentication/api/oidc/token",
+        )
+        container = SimpleNamespace(
+            settings=settings,
+            platform=SimpleNamespace(
+                get_auth_settings=lambda: SimpleNamespace(twc_redirect_enabled=True),
+                get_server=lambda server_id, include_disabled=False: server if server_id == "twc-2024x" else None,
+            ),
+        )
+        request = SimpleNamespace(
+            headers={
+                "x-forwarded-proto": "https",
+                "x-forwarded-host": "tx22svaw6159.northgrum.com:8050",
+            },
+            url=SimpleNamespace(scheme="http", netloc="localhost:8000"),
+        )
+
+        response = asyncio.run(auth.signin("twc-2024x", request, container))
+        query = parse_qs(urlparse(response.headers["location"]).query)
+
+        self.assertEqual(query["redirect_uri"], ["https://tx22svaw6159.northgrum.com:8050/api/auth/callback"])
+
     def test_server_profile_application_ids_drive_auth_client_id(self) -> None:
         settings = Settings(
             app_origin="https://workbench.example",
@@ -255,7 +287,7 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
     def test_auth_options_exposes_exact_redirect_uri(self) -> None:
         settings = Settings(app_origin="https://workbench.example")
 
-        options = auth.get_auth_options(SimpleNamespace(settings=settings))
+        options = auth.auth_options_payload(SimpleNamespace(settings=settings))
 
         self.assertEqual(options["redirect_uri"], "https://workbench.example/api/auth/callback")
 
@@ -292,7 +324,7 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
             self.assertFalse(settings.twc_redirect_enabled)
             self.assertFalse(settings.twc_token_enabled)
 
-    def test_workbench_user_management_mode_twc_disables_local_auth_path(self) -> None:
+    def test_workbench_user_management_mode_twc_keeps_admin_recovery_auth_path(self) -> None:
         with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             service = object.__new__(PlatformService)
             service.settings = Settings(workbench_user_management_mode="twc")
@@ -301,13 +333,61 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
             settings = service.get_auth_settings()
 
             self.assertEqual(settings.user_management_mode, "twc")
-            self.assertFalse(settings.local_users_enabled)
+            self.assertTrue(settings.local_users_enabled)
             self.assertTrue(settings.twc_redirect_enabled)
             self.assertTrue(settings.twc_token_enabled)
 
             with self.assertRaisesRegex(ValueError, "At least one TWC sign-in method"):
                 service.update_auth_settings(
                     WorkbenchAuthSettingsUpdate(twc_redirect_enabled=False, twc_token_enabled=False)
+                )
+
+    def test_twc_mode_local_password_login_is_admin_recovery_only(self) -> None:
+        with TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            service = object.__new__(PlatformService)
+            service.settings = Settings(workbench_user_management_mode="twc")
+            service.repo = SqliteRepository(Path(directory) / "workbench.db")
+            service.sessions = SimpleNamespace(
+                create_session=lambda server, user, authorization_context, token_bundle, capabilities: SimpleNamespace(
+                    session_id="session",
+                    server=server,
+                    user=user,
+                    authorization_context=authorization_context,
+                    created_at=datetime.now().astimezone(),
+                )
+            )
+            service._require_server = lambda server_id, include_disabled=False: ServerProfile(
+                id=server_id,
+                name="TWC",
+                base_url="https://twc.example",
+            )
+            service._snapshot_capabilities = lambda server: SimpleNamespace(capabilities={})
+            service._update_user_server_state = lambda *args, **kwargs: None
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="admin",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.ADMIN,
+                    enabled=True,
+                )
+            )
+            service.create_workbench_user(
+                WorkbenchUserCreateRequest(
+                    username="plainuser",
+                    password="long-safe-passphrase",
+                    role=WorkbenchUserRole.USER,
+                    enabled=True,
+                )
+            )
+
+            admin_session = service.login_with_workbench_password(
+                auth.WorkbenchLocalLoginRequest(server_id="twc", username="admin", password="long-safe-passphrase")
+            )
+
+            self.assertTrue(admin_session.authorization_context.can_manage_server_presets)
+            with self.assertRaisesRegex(PermissionError, "limited to administrators"):
+                service.login_with_workbench_password(
+                    auth.WorkbenchLocalLoginRequest(server_id="twc", username="plainuser", password="long-safe-passphrase")
                 )
 
     def test_default_admin_bootstrap_creates_rotatable_local_admin(self) -> None:
