@@ -1,5 +1,6 @@
 // Created by: Raymond Reeves Engineering Tech 4 2026
 export type TWCVersion = "auto" | "2022x" | "2024x";
+export type TWCServerAuthMethod = "oauth" | "openid" | "authentication_id";
 export type ThemeMode = "light" | "dark" | "system";
 export type ItemDetailViewMode = "standard" | "expert" | "all";
 export type CapabilityState = "ready" | "restricted" | "not_available" | "unknown";
@@ -14,6 +15,7 @@ export interface ServerProfile {
   base_url: string;
   workbench_public_url: string | null;
   version: TWCVersion;
+  auth_method: TWCServerAuthMethod;
   verify_tls: boolean;
   ca_bundle_path: string | null;
   enabled: boolean;
@@ -43,6 +45,7 @@ export interface ServerProfileInput {
   base_url: string;
   workbench_public_url?: string | null;
   version: TWCVersion;
+  auth_method: TWCServerAuthMethod;
   verify_tls: boolean;
   ca_bundle_path: string | null;
   enabled: boolean;

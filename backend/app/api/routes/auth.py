@@ -17,7 +17,6 @@ from app.api.deps import get_container, get_session, require_admin, require_admi
 from app.auth.twc import build_twc_oidc_signin_url, exchange_twc_auth_code
 from app.models.domain import (
     TokenLoginRequest,
-    TWCVersion,
     WorkbenchAuthSettings,
     WorkbenchAuthSettingsUpdate,
     WorkbenchFirstAdminSetupRequest,
@@ -241,11 +240,6 @@ async def signin(server_id: str, container: ApplicationContainer = Depends(get_c
     server = container.platform.get_server(server_id, include_disabled=False)
     if not server:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset server not found")
-    if server.version != TWCVersion.V2024X:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="OpenID sign-in is only allowed for 2024x Teamwork Cloud server profiles. Use Workbench sign-in or TWC token sign-in for 2022x.",
-        )
 
     state, cookie_value = create_auth_state_cookie(container, server.id)
     try:

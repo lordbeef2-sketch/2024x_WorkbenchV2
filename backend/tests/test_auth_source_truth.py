@@ -11,7 +11,6 @@ import unittest
 from unittest.mock import patch
 
 import httpx
-from fastapi import HTTPException
 
 from app.api.routes import auth, workspace
 from app.adapters.teamwork import TeamworkAdapter
@@ -24,7 +23,7 @@ from app.models.domain import (
     ServerProfileCreate,
     CachedElementRecord,
     CachedModelRecord,
-    TWCVersion,
+    TWCServerAuthMethod,
     WorkbenchAuthSettingsUpdate,
     WorkbenchGroupCreateRequest,
     WorkbenchGroupUpdateRequest,
@@ -138,20 +137,19 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
 
         self.assertEqual(query["client_id"], ["twcworkbench"])
 
-    def test_2022x_server_profile_rejects_openid_redirect_signin(self) -> None:
-        server = ServerProfile(id="twc-2022x", name="TWC 2022x", base_url="https://twc.example:8111", version=TWCVersion.V2022X)
-        container = SimpleNamespace(
-            platform=SimpleNamespace(
-                get_auth_settings=lambda: SimpleNamespace(twc_redirect_enabled=True),
-                get_server=lambda server_id, include_disabled=False: server if server_id == "twc-2022x" else None,
-            )
+    def test_server_auth_method_is_persisted_from_settings_payload(self) -> None:
+        server = ServerProfile(
+            id="twc",
+            name="TWC",
+            base_url="https://twc.example:8111",
+            auth_method="oauth",
         )
 
-        with self.assertRaises(HTTPException) as raised:
-            asyncio.run(auth.signin("twc-2022x", container))
-
-        self.assertEqual(raised.exception.status_code, 403)
-        self.assertIn("OpenID sign-in is only allowed for 2024x", raised.exception.detail)
+        self.assertEqual(server.auth_method, TWCServerAuthMethod.OAUTH)
+        self.assertEqual(
+            ServerProfile.model_validate_json(server.model_dump_json()).auth_method,
+            TWCServerAuthMethod.OAUTH,
+        )
 
     def test_oslc_base_url_override_is_used_for_osmc_candidates_only(self) -> None:
         adapter = object.__new__(TeamworkAdapter)

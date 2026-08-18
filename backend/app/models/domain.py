@@ -19,6 +19,12 @@ class TWCVersion(str, Enum):
     V2024X = "2024x"
 
 
+class TWCServerAuthMethod(str, Enum):
+    OAUTH = "oauth"
+    OPENID = "openid"
+    AUTHENTICATION_ID = "authentication_id"
+
+
 class CapabilityState(str, Enum):
     READY = "ready"
     RESTRICTED = "restricted"
@@ -56,6 +62,7 @@ class ServerProfileBase(BaseModel):
     base_url: str
     workbench_public_url: str | None = None
     version: TWCVersion = TWCVersion.V2024X
+    auth_method: TWCServerAuthMethod = TWCServerAuthMethod.AUTHENTICATION_ID
     verify_tls: bool = True
     ca_bundle_path: str | None = None
     enabled: bool = True
@@ -82,7 +89,10 @@ class ServerProfileBase(BaseModel):
         if not isinstance(raw, dict):
             return raw
         payload = dict(raw)
-        payload.pop("auth_mode", None)
+        if payload.get("auth_method") is None and payload.get("auth_mode"):
+            payload["auth_method"] = payload.get("auth_mode")
+        if payload.get("auth_method") in {"authentication-id", "authentication id", "auth_id", "auth-id", "application_id"}:
+            payload["auth_method"] = TWCServerAuthMethod.AUTHENTICATION_ID.value
         if payload.get("auth_authorize_url") is None and payload.get("auth_url"):
             payload["auth_authorize_url"] = payload.get("auth_url")
         if payload.get("auth_application_ids") is None:
@@ -120,6 +130,7 @@ class ServerProfileBase(BaseModel):
         "name",
         "base_url",
         "workbench_public_url",
+        "auth_method",
         "ca_bundle_path",
         "auth_discovery_url",
         "auth_authorize_url",
@@ -159,6 +170,7 @@ class ServerProfileUpdate(BaseModel):
     base_url: str | None = None
     workbench_public_url: str | None = None
     version: TWCVersion | None = None
+    auth_method: TWCServerAuthMethod | None = None
     verify_tls: bool | None = None
     ca_bundle_path: str | None = None
     enabled: bool | None = None
@@ -185,7 +197,10 @@ class ServerProfileUpdate(BaseModel):
         if not isinstance(raw, dict):
             return raw
         payload = dict(raw)
-        payload.pop("auth_mode", None)
+        if payload.get("auth_method") is None and payload.get("auth_mode"):
+            payload["auth_method"] = payload.get("auth_mode")
+        if payload.get("auth_method") in {"authentication-id", "authentication id", "auth_id", "auth-id", "application_id"}:
+            payload["auth_method"] = TWCServerAuthMethod.AUTHENTICATION_ID.value
         if payload.get("auth_authorize_url") is None and payload.get("auth_url"):
             payload["auth_authorize_url"] = payload.get("auth_url")
         if payload.get("auth_application_ids") is None:
@@ -223,6 +238,7 @@ class ServerProfileUpdate(BaseModel):
         "name",
         "base_url",
         "workbench_public_url",
+        "auth_method",
         "ca_bundle_path",
         "auth_discovery_url",
         "auth_authorize_url",

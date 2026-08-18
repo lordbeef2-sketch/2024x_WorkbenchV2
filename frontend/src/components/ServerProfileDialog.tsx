@@ -18,7 +18,7 @@ import {
 import Grid from "@mui/material/GridLegacy";
 import ExpandMoreRoundedIcon from "@mui/icons-material/ExpandMoreRounded";
 
-import { ServerProfile, ServerProfileInput, TWCVersion } from "../models/api";
+import { ServerProfile, ServerProfileInput, TWCServerAuthMethod, TWCVersion } from "../models/api";
 
 interface ServerProfileDialogProps {
   open: boolean;
@@ -35,6 +35,7 @@ function createDefaultProfile(defaultDisplayOrder = 0): ServerProfileInput {
     base_url: "",
     workbench_public_url: null,
     version: "2024x",
+    auth_method: "authentication_id",
     verify_tls: true,
     ca_bundle_path: null,
     enabled: true,
@@ -75,6 +76,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
       base_url: initialValue.base_url,
       workbench_public_url: initialValue.workbench_public_url,
       version: initialValue.version,
+      auth_method: initialValue.auth_method ?? "authentication_id",
       verify_tls: initialValue.verify_tls,
       ca_bundle_path: initialValue.ca_bundle_path,
       enabled: initialValue.enabled,
@@ -130,6 +132,11 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
   const setField = <K extends keyof ServerProfileInput>(key: K, value: ServerProfileInput[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
+
+  const authMethod = form.auth_method ?? "authentication_id";
+  const showOauthFields = authMethod === "oauth";
+  const showOpenIdFields = authMethod === "openid";
+  const showAuthenticationIdFields = authMethod === "authentication_id";
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
@@ -207,13 +214,30 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
             />
           </Grid>
           <Grid item xs={12}>
-            {form.version === "2024x" ? (
-              <Accordion variant="outlined" disableGutters>
+            <TextField
+              select
+              label="Server authentication setup"
+              value={authMethod}
+              onChange={(event) => setField("auth_method", event.target.value as TWCServerAuthMethod)}
+              helperText="Choose the TWC sign-in/configuration method for this server. Settings here are the authority for Workbench."
+              fullWidth
+            >
+              <MenuItem value="authentication_id">Authentication ID method</MenuItem>
+              <MenuItem value="openid">OpenID</MenuItem>
+              <MenuItem value="oauth">OAuth</MenuItem>
+            </TextField>
+          </Grid>
+          <Grid item xs={12}>
+            <Accordion variant="outlined" disableGutters>
                 <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                  <Typography fontWeight={700}>TWC OpenID / AuthServer setup</Typography>
+                  <Typography fontWeight={700}>
+                    {showOpenIdFields ? "OpenID setup" : showOauthFields ? "OAuth setup" : "Authentication ID setup"}
+                  </Typography>
                 </AccordionSummary>
                 <AccordionDetails>
                 <Grid container spacing={2}>
+                  {showOpenIdFields ? (
+                    <>
                   <Grid item xs={12} md={6}>
                     <TextField label="OIDC discovery URL" value={form.auth_discovery_url ?? ""} onChange={(event) => setField("auth_discovery_url", event.target.value || null)} fullWidth />
                   </Grid>
@@ -235,6 +259,49 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
                   <Grid item xs={12} md={3}>
                     <TextField label="Scope" value={form.auth_scope ?? ""} onChange={(event) => setField("auth_scope", event.target.value || null)} fullWidth />
                   </Grid>
+                    </>
+                  ) : null}
+                  {showAuthenticationIdFields ? (
+                    <>
+                      <Grid item xs={12} md={6}>
+                        <TextField
+                          label="AuthServer authorize path"
+                          value={form.auth_login_path ?? ""}
+                          onChange={(event) => setField("auth_login_path", event.target.value || null)}
+                          placeholder="/authentication/oidc/authorize"
+                          helperText="Path from authserver.properties based Authentication Server setup."
+                          fullWidth
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <TextField
+                          label="AuthServer token path"
+                          value={form.auth_token_path ?? ""}
+                          onChange={(event) => setField("auth_token_path", event.target.value || null)}
+                          placeholder="/authentication/api/oidc/token"
+                          fullWidth
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <TextField
+                          label="Login port"
+                          type="number"
+                          value={form.auth_login_port ?? ""}
+                          onChange={(event) => setField("auth_login_port", event.target.value ? Number.parseInt(event.target.value, 10) : null)}
+                          placeholder="8443"
+                          fullWidth
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <TextField label="Scope" value={form.auth_scope ?? ""} onChange={(event) => setField("auth_scope", event.target.value || null)} placeholder="openid" fullWidth />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <TextField label="Return URL parameter" value={form.auth_return_url_parameter ?? ""} onChange={(event) => setField("auth_return_url_parameter", event.target.value || null)} placeholder="redirect_uri" fullWidth />
+                      </Grid>
+                    </>
+                  ) : null}
+                  {showOpenIdFields || showAuthenticationIdFields ? (
+                    <>
                   <Grid item xs={12} md={6}>
                     <TextField
                       label="Application ID(s)"
@@ -251,16 +318,30 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
                   <Grid item xs={12} md={6}>
                     <TextField label="Client secret" type="password" value={form.auth_client_secret ?? ""} onChange={(event) => setField("auth_client_secret", event.target.value || null)} helperText="Saved on submit; not shown again after reload." fullWidth />
                   </Grid>
+                    </>
+                  ) : null}
+                  {showOauthFields ? (
+                    <>
+                      <Grid item xs={12} md={6}>
+                        <TextField label="OSLC/OSMC Base URL" value={form.oslc_base_url ?? ""} onChange={(event) => setField("oslc_base_url", event.target.value || null)} helperText="Leave blank to use the TWC Base URL for /osmc requests." fullWidth />
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <TextField label="OAuth callback URL" value={form.oslc_callback_url ?? ""} onChange={(event) => setField("oslc_callback_url", event.target.value || null)} fullWidth />
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <TextField label="OAuth consumer key" value={form.oslc_consumer_key ?? ""} onChange={(event) => setField("oslc_consumer_key", event.target.value || null)} fullWidth />
+                      </Grid>
+                      <Grid item xs={12} md={6}>
+                        <TextField label="OAuth consumer secret" type="password" value={form.oslc_consumer_secret ?? ""} onChange={(event) => setField("oslc_consumer_secret", event.target.value || null)} helperText="Saved on submit; not shown again after reload." fullWidth />
+                      </Grid>
+                    </>
+                  ) : null}
                 </Grid>
                 </AccordionDetails>
-              </Accordion>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                Only explicit 2024x server profiles use Workbench OpenID setup. Use Workbench sign-in or TWC token sign-in for this server.
-              </Typography>
-            )}
+            </Accordion>
           </Grid>
-          <Grid item xs={12}>
+          {showOauthFields ? null : (
+            <Grid item xs={12}>
             <Accordion variant="outlined" disableGutters>
               <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                 <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
@@ -283,6 +364,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
               </AccordionDetails>
             </Accordion>
           </Grid>
+          )}
           <Grid item xs={12}>
             <Stack
               spacing={0.5}

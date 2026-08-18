@@ -18,7 +18,8 @@ GET /api/workspace/api-variable-catalog
 | --- | --- | --- | --- |
 | `WORKBENCH_BASE_URL` | Script/config | Root Workbench URL | Example: `http://localhost:8000`. |
 | `WORKBENCH_PUBLIC_URL` | Settings > Servers | Public browser-facing Workbench URL for SSO callbacks and redirects | Example: `https://workbench.company.com:8050`; set this when Caddy/reverse proxy fronts backend port `8000`. |
-| `TWC_AUTH_APPLICATION_IDS` | Settings > Servers / env | TWC Configs Application ID(s) value used for the Workbench AuthServer link | Defaults to `twcworkbench`; `TWC_AUTH_CLIENT_ID` remains a compatibility alias. |
+| `auth_method` | Settings > Servers | Per-server auth setup selector | Use `authentication_id`, `openid`, or `oauth`; this controls which auth fields the Settings page shows. |
+| `TWC_AUTH_APPLICATION_IDS` | Settings > Servers / legacy env | TWC Configs Application ID(s) value used for the Workbench AuthServer link | Settings owns this per server; env is only bootstrap/compatibility fallback. Defaults to `twcworkbench`; `TWC_AUTH_CLIENT_ID` remains a compatibility alias. |
 | `SESSION_COOKIE` | Cookie | Browser/session-authenticated `/api/workspace/...` routes | Created by local Workbench login, TWC token login, or TWC SSO callback. |
 | `X-CSRF-Token` | Header | Session-authenticated writes | Get `csrf_token` from `/api/auth/session` or the login response. Required for `POST`, `PUT`, `PATCH`, and `DELETE` routes using session auth. |
 | `WORKBENCH_API_BEARER_TOKEN` | `Authorization` header | Workbench read routes and scoped cache automation routes | Format: `Authorization: Bearer <api_key>`. A `read` key works on Workbench `GET`/`HEAD`/`OPTIONS` read routes. `write` and `edit` are honored only by documented cache-ingest/cache-edit routes. |

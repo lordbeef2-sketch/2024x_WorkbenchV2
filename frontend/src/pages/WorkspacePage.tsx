@@ -75,6 +75,7 @@ import {
   SwaggerParameterSpec,
   TreeNode,
   ThemeMode,
+  TWCServerAuthMethod,
   WorkbenchAgentAdminSettings,
   WorkbenchAgentChatMessage,
   WorkbenchAgentKnowledgeStatus,
@@ -109,6 +110,7 @@ function createServerProfileDraft(overrides: Partial<ServerProfileInput> = {}): 
     base_url: "",
     workbench_public_url: null,
     version: "2024x",
+    auth_method: "authentication_id",
     verify_tls: true,
     ca_bundle_path: null,
     enabled: true,
@@ -2805,6 +2807,7 @@ export default function WorkspacePage() {
           base_url: server.base_url,
           workbench_public_url: server.workbench_public_url,
           version: server.version,
+          auth_method: server.auth_method ?? "authentication_id",
           verify_tls: server.verify_tls,
           ca_bundle_path: server.ca_bundle_path,
           enabled: server.enabled,
@@ -7026,6 +7029,10 @@ export default function WorkspacePage() {
     const serverBusy = createServerMutation.isPending || updateServerMutation.isPending || deleteServerMutation.isPending;
     const workbenchOrigin = window.location.origin.replace(/\/$/, "");
     const newServerLooksLikeWorkbench = newServerPreset.base_url.trim().replace(/\/$/, "") === workbenchOrigin;
+    const newServerAuthMethod = newServerPreset.auth_method ?? "authentication_id";
+    const newServerUsesOauth = newServerAuthMethod === "oauth";
+    const newServerUsesOpenId = newServerAuthMethod === "openid";
+    const newServerUsesAuthenticationId = newServerAuthMethod === "authentication_id";
 
     return (
       <Paper sx={{ p: 3, borderRadius: 2 }}>
@@ -7051,7 +7058,7 @@ export default function WorkspacePage() {
             Workbench callback URI for SSO is separate from the TWC Base URL. For Caddy/reverse-proxy deployments, set each server&apos;s Workbench Public URL to the outside address users browse to, for example <code>https://workbench.company.com:8050</code>. Register <code>{workbenchOrigin}/api/auth/callback</code> or that server&apos;s public callback with the TWC/AuthServer client, but set Base URL to the real Teamwork Cloud server.
           </Alert>
           <Alert severity="info">
-            Application ID(s) defaults to <code>twcworkbench</code> for 2024x profiles. This matches the TWC Configs Application ID(s) control. Only explicit 2024x server profiles can use Workbench OpenID; 2022x and auto profiles use Workbench sign-in or TWC token sign-in.
+            Application ID(s) defaults to <code>twcworkbench</code>. This maps to the TWC AuthServer <code>authentication.client.ids</code> / TWC Configs Application ID(s) value for this Workbench link.
           </Alert>
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack spacing={1.5}>
@@ -7129,6 +7136,25 @@ export default function WorkspacePage() {
                     fullWidth
                   />
                 </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    select
+                    label="Authentication setup"
+                    value={newServerAuthMethod}
+                    onChange={(event) =>
+                      setNewServerPreset((current) => ({
+                        ...current,
+                        auth_method: event.target.value as TWCServerAuthMethod,
+                      }))
+                    }
+                    helperText="Controls which server auth fields are shown and saved."
+                    fullWidth
+                  >
+                    <MenuItem value="authentication_id">Authentication ID method</MenuItem>
+                    <MenuItem value="openid">OpenID</MenuItem>
+                    <MenuItem value="oauth">OAuth</MenuItem>
+                  </TextField>
+                </Grid>
                 <Grid item xs={12} md={12}>
                   <Stack>
                     <FormControlLabel
@@ -7152,13 +7178,16 @@ export default function WorkspacePage() {
                   </Stack>
                 </Grid>
               </Grid>
-              {newServerPreset.version === "2024x" ? (
-                <Accordion variant="outlined" disableGutters>
+              <Accordion variant="outlined" disableGutters>
                   <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                    <Typography fontWeight={700}>TWC OpenID / AuthServer setup</Typography>
+                    <Typography fontWeight={700}>
+                      {newServerUsesOpenId ? "OpenID setup" : newServerUsesOauth ? "OAuth setup" : "Authentication ID setup"}
+                    </Typography>
                   </AccordionSummary>
                   <AccordionDetails>
                   <Grid container spacing={1.5}>
+                    {newServerUsesOpenId ? (
+                      <>
                     <Grid item xs={12} md={6}>
                       <TextField
                         label="OIDC discovery URL"
@@ -7209,6 +7238,65 @@ export default function WorkspacePage() {
                         fullWidth
                       />
                     </Grid>
+                      </>
+                    ) : null}
+                    {newServerUsesAuthenticationId ? (
+                      <>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="AuthServer authorize path"
+                        value={newServerPreset.auth_login_path ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_login_path: event.target.value || null }))}
+                        placeholder="/authentication/oidc/authorize"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="AuthServer token path"
+                        value={newServerPreset.auth_token_path ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_token_path: event.target.value || null }))}
+                        placeholder="/authentication/api/oidc/token"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <TextField
+                        label="Login port"
+                        type="number"
+                        value={newServerPreset.auth_login_port ?? ""}
+                        onChange={(event) =>
+                          setNewServerPreset((current) => ({
+                            ...current,
+                            auth_login_port: event.target.value ? Number.parseInt(event.target.value, 10) : null,
+                          }))
+                        }
+                        placeholder="8443"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <TextField
+                        label="Scope"
+                        value={newServerPreset.auth_scope ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_scope: event.target.value || null }))}
+                        placeholder="openid"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={4}>
+                      <TextField
+                        label="Return URL parameter"
+                        value={newServerPreset.auth_return_url_parameter ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_return_url_parameter: event.target.value || null }))}
+                        placeholder="redirect_uri"
+                        fullWidth
+                      />
+                    </Grid>
+                      </>
+                    ) : null}
+                    {newServerUsesOpenId || newServerUsesAuthenticationId ? (
+                      <>
                     <Grid item xs={12} md={6}>
                       <TextField
                         label="Application ID(s)"
@@ -7235,14 +7323,52 @@ export default function WorkspacePage() {
                         fullWidth
                       />
                     </Grid>
+                      </>
+                    ) : null}
+                    {newServerUsesOauth ? (
+                      <>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="OAuth / OSLC base URL"
+                        value={newServerPreset.oslc_base_url ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_base_url: event.target.value || null }))}
+                        helperText="Leave blank to use the TWC Base URL for /osmc requests."
+                        placeholder="https://twc.example:8111"
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="OAuth callback URL"
+                        value={newServerPreset.oslc_callback_url ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_callback_url: event.target.value || null }))}
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="OAuth consumer key"
+                        value={newServerPreset.oslc_consumer_key ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_consumer_key: event.target.value || null }))}
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        label="OAuth consumer secret"
+                        type="password"
+                        value={newServerPreset.oslc_consumer_secret ?? ""}
+                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_consumer_secret: event.target.value || null }))}
+                        helperText="Saved on submit; not shown again after reload."
+                        fullWidth
+                      />
+                    </Grid>
+                      </>
+                    ) : null}
                   </Grid>
                   </AccordionDetails>
-                </Accordion>
-              ) : (
-                <Alert severity="info">
-                  Only explicit 2024x server profiles use Workbench OpenID setup. Use Workbench sign-in or TWC token sign-in for this server.
-                </Alert>
-              )}
+              </Accordion>
+              {newServerUsesOauth ? null : (
               <Accordion variant="outlined" disableGutters>
                 <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                   <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
@@ -7288,6 +7414,7 @@ export default function WorkspacePage() {
                   </Grid>
                 </AccordionDetails>
               </Accordion>
+              )}
               <Button
                 variant="contained"
                 disabled={!csrfToken || !(newServerPreset.id ?? "").trim() || !newServerPreset.name.trim() || !newServerPreset.base_url.trim() || createServerMutation.isPending}
@@ -7305,7 +7432,9 @@ export default function WorkspacePage() {
                 const draft = serverPresetDrafts[server.id] ?? createServerProfileDraft({
                   name: server.name,
                   base_url: server.base_url,
+                  workbench_public_url: server.workbench_public_url,
                   version: server.version,
+                  auth_method: server.auth_method ?? "authentication_id",
                   verify_tls: server.verify_tls,
                   ca_bundle_path: server.ca_bundle_path,
                   enabled: server.enabled,
@@ -7327,6 +7456,10 @@ export default function WorkspacePage() {
                   oslc_callback_url: server.oslc_callback_url,
                 });
                 const serverLooksLikeWorkbench = draft.base_url.trim().replace(/\/$/, "") === workbenchOrigin;
+                const draftAuthMethod = draft.auth_method ?? "authentication_id";
+                const draftUsesOauth = draftAuthMethod === "oauth";
+                const draftUsesOpenId = draftAuthMethod === "openid";
+                const draftUsesAuthenticationId = draftAuthMethod === "authentication_id";
                 return (
                   <Paper key={server.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
                     <Stack spacing={1.5}>
@@ -7439,19 +7572,44 @@ export default function WorkspacePage() {
                             fullWidth
                           />
                         </Grid>
+                        <Grid item xs={12} md={4}>
+                          <TextField
+                            select
+                            label="Authentication setup"
+                            value={draftAuthMethod}
+                            onChange={(event) =>
+                              setServerPresetDrafts((current) => ({
+                                ...current,
+                                [server.id]: {
+                                  ...draft,
+                                  auth_method: event.target.value as TWCServerAuthMethod,
+                                },
+                              }))
+                            }
+                            helperText="Controls which server auth fields are shown and saved."
+                            fullWidth
+                          >
+                            <MenuItem value="authentication_id">Authentication ID method</MenuItem>
+                            <MenuItem value="openid">OpenID</MenuItem>
+                            <MenuItem value="oauth">OAuth</MenuItem>
+                          </TextField>
+                        </Grid>
                       </Grid>
                       {serverLooksLikeWorkbench ? (
                         <Alert severity="warning">
                           This Base URL matches the Workbench app. SSO will loop back to Workbench instead of Teamwork Cloud until this is changed to the real TWC URL.
                         </Alert>
                       ) : null}
-                      {draft.version === "2024x" ? (
-                        <Accordion variant="outlined" disableGutters>
+                      <Accordion variant="outlined" disableGutters>
                           <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                            <Typography fontWeight={700}>TWC OpenID / AuthServer setup</Typography>
+                            <Typography fontWeight={700}>
+                              {draftUsesOpenId ? "OpenID setup" : draftUsesOauth ? "OAuth setup" : "Authentication ID setup"}
+                            </Typography>
                           </AccordionSummary>
                           <AccordionDetails>
                           <Grid container spacing={1.5}>
+                            {draftUsesOpenId ? (
+                              <>
                             <Grid item xs={12} md={6}>
                               <TextField
                                 label="OIDC discovery URL"
@@ -7521,6 +7679,88 @@ export default function WorkspacePage() {
                                 fullWidth
                               />
                             </Grid>
+                              </>
+                            ) : null}
+                            {draftUsesAuthenticationId ? (
+                              <>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="AuthServer authorize path"
+                                value={draft.auth_login_path ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_login_path: event.target.value || null },
+                                  }))
+                                }
+                                placeholder="/authentication/oidc/authorize"
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="AuthServer token path"
+                                value={draft.auth_token_path ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_token_path: event.target.value || null },
+                                  }))
+                                }
+                                placeholder="/authentication/api/oidc/token"
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={4}>
+                              <TextField
+                                label="Login port"
+                                type="number"
+                                value={draft.auth_login_port ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: {
+                                      ...draft,
+                                      auth_login_port: event.target.value ? Number.parseInt(event.target.value, 10) : null,
+                                    },
+                                  }))
+                                }
+                                placeholder="8443"
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={4}>
+                              <TextField
+                                label="Scope"
+                                value={draft.auth_scope ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_scope: event.target.value || null },
+                                  }))
+                                }
+                                placeholder="openid"
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={4}>
+                              <TextField
+                                label="Return URL parameter"
+                                value={draft.auth_return_url_parameter ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, auth_return_url_parameter: event.target.value || null },
+                                  }))
+                                }
+                                placeholder="redirect_uri"
+                                fullWidth
+                              />
+                            </Grid>
+                              </>
+                            ) : null}
+                            {draftUsesOpenId || draftUsesAuthenticationId ? (
+                              <>
                             <Grid item xs={12} md={6}>
                       <TextField
                         label="Application ID(s)"
@@ -7555,14 +7795,71 @@ export default function WorkspacePage() {
                                 fullWidth
                               />
                             </Grid>
+                              </>
+                            ) : null}
+                            {draftUsesOauth ? (
+                              <>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="OAuth / OSLC base URL"
+                                value={draft.oslc_base_url ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, oslc_base_url: event.target.value || null },
+                                  }))
+                                }
+                                helperText="Leave blank to use the TWC Base URL for /osmc requests."
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="OAuth callback URL"
+                                value={draft.oslc_callback_url ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, oslc_callback_url: event.target.value || null },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="OAuth consumer key"
+                                value={draft.oslc_consumer_key ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, oslc_consumer_key: event.target.value || null },
+                                  }))
+                                }
+                                fullWidth
+                              />
+                            </Grid>
+                            <Grid item xs={12} md={6}>
+                              <TextField
+                                label="OAuth consumer secret"
+                                type="password"
+                                value={draft.oslc_consumer_secret ?? ""}
+                                onChange={(event) =>
+                                  setServerPresetDrafts((current) => ({
+                                    ...current,
+                                    [server.id]: { ...draft, oslc_consumer_secret: event.target.value || null },
+                                  }))
+                                }
+                                helperText="Leave blank to keep the saved secret unchanged; enter a value only to set or rotate it."
+                                fullWidth
+                              />
+                            </Grid>
+                              </>
+                            ) : null}
                           </Grid>
                           </AccordionDetails>
-                        </Accordion>
-                      ) : (
-                        <Alert severity="info">
-                          Only explicit 2024x server profiles use Workbench OpenID setup. Use Workbench sign-in or TWC token sign-in for this server.
-                        </Alert>
-                      )}
+                      </Accordion>
+                      {draftUsesOauth ? null : (
                       <Accordion variant="outlined" disableGutters>
                         <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                           <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
@@ -7627,6 +7924,7 @@ export default function WorkspacePage() {
                           </Grid>
                         </AccordionDetails>
                       </Accordion>
+                      )}
                       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} useFlexGap flexWrap="wrap" alignItems={{ xs: "stretch", sm: "center" }}>
                         <FormControlLabel
                           control={

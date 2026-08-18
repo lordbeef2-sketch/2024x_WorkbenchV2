@@ -319,7 +319,7 @@ export default function LandingPage() {
                   {servers.map((server) => {
                     const health = healthById.get(server.id);
                     const serverVersion = server.version === "auto" ? health?.version_hint ?? "auto" : server.version;
-                    const oidcSignInAvailable = redirectSignInEnabled && server.version === "2024x";
+                    const twcRedirectSignInAvailable = redirectSignInEnabled;
                     return (
                       <Grid item xs={12} md={6} key={server.id}>
                         <Paper sx={{ p: 3, borderRadius: 2, height: "100%" }}>
@@ -344,7 +344,7 @@ export default function LandingPage() {
                               </Stack>
                               <Stack spacing={0.75}>
                                 <Typography variant="body2" color="text.secondary">
-                                  The selected preset server is established first. Only explicit 2024x profiles use TWC AuthServer OpenID Connect. 2022x and auto profiles use Workbench Sign-In or TWC token sign-in.
+                                  The selected preset server is established first. Sign In via TWC uses that server&apos;s configured AuthServer client/application ID and callback settings.
                                 </Typography>
                                 {health?.message ? (
                                   <Typography variant="body2" color="warning.main">
@@ -363,7 +363,7 @@ export default function LandingPage() {
                                     Workbench Sign-In
                                   </Button>
                                 ) : null}
-                                {oidcSignInAvailable ? (
+                                {twcRedirectSignInAvailable ? (
                                   <Button
                                     fullWidth
                                     variant={localSignInEnabled ? "outlined" : "contained"}
@@ -371,10 +371,6 @@ export default function LandingPage() {
                                     onClick={() => window.location.assign(api.signInUrl(server.id))}
                                   >
                                     Sign In via TWC
-                                  </Button>
-                                ) : redirectSignInEnabled && server.version !== "2024x" ? (
-                                  <Button fullWidth variant="outlined" disabled startIcon={<LoginRoundedIcon />}>
-                                    Token/Auth Only
                                   </Button>
                                 ) : null}
                                 {authOptions?.token_signin_enabled !== false ? (
