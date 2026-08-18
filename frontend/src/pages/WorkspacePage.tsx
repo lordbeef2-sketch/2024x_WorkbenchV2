@@ -7116,6 +7116,7 @@ export default function WorkspacePage() {
                       setNewServerPreset((current) => ({
                         ...current,
                         version,
+                        auth_method: version === "2022x" && current.auth_method === "openid" ? "authentication_id" : current.auth_method,
                         auth_scope: version === "2022x" ? current.auth_scope || null : current.auth_scope || "openid",
                         auth_application_ids: current.auth_application_ids || current.auth_client_id || "twcworkbench",
                         auth_client_id: current.auth_client_id || "twcworkbench",
@@ -7151,7 +7152,9 @@ export default function WorkspacePage() {
                     fullWidth
                   >
                     <MenuItem value="authentication_id">Authentication ID method</MenuItem>
-                    <MenuItem value="openid">OpenID</MenuItem>
+                    <MenuItem value="openid" disabled={newServerPreset.version === "2022x"}>
+                      OpenID {newServerPreset.version === "2022x" ? "(2024x only)" : ""}
+                    </MenuItem>
                     <MenuItem value="oauth">OAuth</MenuItem>
                   </TextField>
                 </Grid>
@@ -7247,7 +7250,7 @@ export default function WorkspacePage() {
                         label="AuthServer authorize path"
                         value={newServerPreset.auth_login_path ?? ""}
                         onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_login_path: event.target.value || null }))}
-                        placeholder="/authentication/oidc/authorize"
+                        placeholder="/authentication/authorize"
                         fullWidth
                       />
                     </Grid>
@@ -7256,7 +7259,7 @@ export default function WorkspacePage() {
                         label="AuthServer token path"
                         value={newServerPreset.auth_token_path ?? ""}
                         onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_token_path: event.target.value || null }))}
-                        placeholder="/authentication/api/oidc/token"
+                        placeholder="/authentication/api/token"
                         fullWidth
                       />
                     </Grid>
@@ -7368,53 +7371,6 @@ export default function WorkspacePage() {
                   </Grid>
                   </AccordionDetails>
               </Accordion>
-              {newServerUsesOauth ? null : (
-              <Accordion variant="outlined" disableGutters>
-                <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                  <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
-                </AccordionSummary>
-                <AccordionDetails>
-                  <Grid container spacing={1.5}>
-                    <Grid item xs={12} md={6}>
-                      <TextField
-                        label="OSLC/OSMC Base URL"
-                        value={newServerPreset.oslc_base_url ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_base_url: event.target.value || null }))}
-                        helperText="Leave blank to use the TWC Base URL for /osmc requests."
-                        placeholder="https://twc.example:8111"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={6}>
-                      <TextField
-                        label="OSLC callback URL"
-                        value={newServerPreset.oslc_callback_url ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_callback_url: event.target.value || null }))}
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={6}>
-                      <TextField
-                        label="OSLC consumer key"
-                        value={newServerPreset.oslc_consumer_key ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_consumer_key: event.target.value || null }))}
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={6}>
-                      <TextField
-                        label="OSLC consumer secret"
-                        type="password"
-                        value={newServerPreset.oslc_consumer_secret ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, oslc_consumer_secret: event.target.value || null }))}
-                        helperText="Saved on submit; not shown again after reload."
-                        fullWidth
-                      />
-                    </Grid>
-                  </Grid>
-                </AccordionDetails>
-              </Accordion>
-              )}
               <Button
                 variant="contained"
                 disabled={!csrfToken || !(newServerPreset.id ?? "").trim() || !newServerPreset.name.trim() || !newServerPreset.base_url.trim() || createServerMutation.isPending}
@@ -7546,6 +7502,7 @@ export default function WorkspacePage() {
                                 [server.id]: {
                                   ...draft,
                                   version,
+                                  auth_method: version === "2022x" && draft.auth_method === "openid" ? "authentication_id" : draft.auth_method,
                                   auth_scope: version === "2022x" ? draft.auth_scope || null : draft.auth_scope || "openid",
                                   auth_application_ids: draft.auth_application_ids || draft.auth_client_id || "twcworkbench",
                                   auth_client_id: draft.auth_client_id || "twcworkbench",
@@ -7590,7 +7547,9 @@ export default function WorkspacePage() {
                             fullWidth
                           >
                             <MenuItem value="authentication_id">Authentication ID method</MenuItem>
-                            <MenuItem value="openid">OpenID</MenuItem>
+                            <MenuItem value="openid" disabled={draft.version === "2022x"}>
+                              OpenID {draft.version === "2022x" ? "(2024x only)" : ""}
+                            </MenuItem>
                             <MenuItem value="oauth">OAuth</MenuItem>
                           </TextField>
                         </Grid>
@@ -7693,7 +7652,7 @@ export default function WorkspacePage() {
                                     [server.id]: { ...draft, auth_login_path: event.target.value || null },
                                   }))
                                 }
-                                placeholder="/authentication/oidc/authorize"
+                                placeholder="/authentication/authorize"
                                 fullWidth
                               />
                             </Grid>
@@ -7707,7 +7666,7 @@ export default function WorkspacePage() {
                                     [server.id]: { ...draft, auth_token_path: event.target.value || null },
                                   }))
                                 }
-                                placeholder="/authentication/api/oidc/token"
+                                placeholder="/authentication/api/token"
                                 fullWidth
                               />
                             </Grid>
@@ -7859,72 +7818,6 @@ export default function WorkspacePage() {
                           </Grid>
                           </AccordionDetails>
                       </Accordion>
-                      {draftUsesOauth ? null : (
-                      <Accordion variant="outlined" disableGutters>
-                        <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                          <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
-                        </AccordionSummary>
-                        <AccordionDetails>
-                          <Grid container spacing={1.5}>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="OSLC/OSMC Base URL"
-                                value={draft.oslc_base_url ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, oslc_base_url: event.target.value || null },
-                                  }))
-                                }
-                                helperText="Leave blank to use the TWC Base URL for /osmc requests."
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="OSLC callback URL"
-                                value={draft.oslc_callback_url ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, oslc_callback_url: event.target.value || null },
-                                  }))
-                                }
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="OSLC consumer key"
-                                value={draft.oslc_consumer_key ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, oslc_consumer_key: event.target.value || null },
-                                  }))
-                                }
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="OSLC consumer secret"
-                                type="password"
-                                value={draft.oslc_consumer_secret ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, oslc_consumer_secret: event.target.value || null },
-                                  }))
-                                }
-                                helperText="Leave blank to keep the saved secret unchanged; enter a value only to set or rotate it."
-                                fullWidth
-                              />
-                            </Grid>
-                          </Grid>
-                        </AccordionDetails>
-                      </Accordion>
-                      )}
                       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} useFlexGap flexWrap="wrap" alignItems={{ xs: "stretch", sm: "center" }}>
                         <FormControlLabel
                           control={

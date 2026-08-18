@@ -9,7 +9,7 @@ from urllib.parse import urlencode, urlparse, urlunparse
 
 import httpx
 
-from app.models.domain import TokenBundle
+from app.models.domain import TWCServerAuthMethod, TokenBundle
 from app.settings.config import Settings
 
 if TYPE_CHECKING:
@@ -42,6 +42,7 @@ def _auth_client_id(settings: Settings, server) -> str | None:
         or (override.application_ids if override and override.application_ids else None)
         or (override.client_id if override and override.client_id else None)
         or settings.resolved_twc_auth_client_id
+        or "twcworkbench"
     )
 
 
@@ -75,6 +76,16 @@ def _auth_token_method(settings: Settings, server) -> str:
         or settings.twc_oidc_token_auth_method
         or "client_secret_basic"
     ).strip().lower()
+
+
+def _server_auth_method(server) -> TWCServerAuthMethod:
+    raw = getattr(server, "auth_method", TWCServerAuthMethod.AUTHENTICATION_ID)
+    if isinstance(raw, TWCServerAuthMethod):
+        return raw
+    try:
+        return TWCServerAuthMethod(str(raw).strip().lower())
+    except ValueError:
+        return TWCServerAuthMethod.AUTHENTICATION_ID
 
 
 def _url_with_path(url: str, path_or_url: str) -> str:
@@ -125,6 +136,26 @@ def _build_twc_authorize_base_url(settings: Settings, server) -> str:
     return build_twc_auth_server_url(settings, server, login_path or "/authentication/oidc/authorize", port=login_port)
 
 
+def _build_twc_authentication_id_authorize_base_url(settings: Settings, server) -> str:
+    override = _auth_override(settings, server)
+    if authorize_url := _server_auth_value(server, "auth_authorize_url"):
+        return authorize_url
+    if override and override.authorize_url:
+        return override.authorize_url
+
+    login_path = (
+        _server_auth_value(server, "auth_login_path")
+        or (override.login_path if override and override.login_path else None)
+        or "/authentication/authorize"
+    )
+    login_port = _server_auth_value(server, "auth_login_port")
+    if login_port is None:
+        login_port = (override.login_port if override and override.login_port is not None else None)
+    if login_port is None:
+        login_port = settings.twc_oidc_port
+    return build_twc_auth_server_url(settings, server, login_path, port=login_port)
+
+
 def _build_twc_token_url(settings: Settings, server) -> str:
     override = _auth_override(settings, server)
     if token_url := _server_auth_value(server, "auth_token_url"):
@@ -153,6 +184,30 @@ def _build_twc_token_url(settings: Settings, server) -> str:
     if login_port is None:
         login_port = settings.twc_oidc_port
     return build_twc_auth_server_url(settings, server, token_path or "/authentication/api/oidc/token", port=login_port)
+
+
+def _build_twc_authentication_id_token_url(settings: Settings, server) -> str:
+    override = _auth_override(settings, server)
+    if token_url := _server_auth_value(server, "auth_token_url"):
+        return token_url
+    if override and override.token_url:
+        return override.token_url
+
+    token_path = (
+        _server_auth_value(server, "auth_token_path")
+        or (override.token_path if override and override.token_path else None)
+        or "/authentication/api/token"
+    )
+    authorize_url = _server_auth_value(server, "auth_authorize_url") or (override.authorize_url if override and override.authorize_url else None)
+    if authorize_url:
+        return _url_with_path(authorize_url, token_path)
+
+    login_port = _server_auth_value(server, "auth_login_port")
+    if login_port is None:
+        login_port = (override.login_port if override and override.login_port is not None else None)
+    if login_port is None:
+        login_port = settings.twc_oidc_port
+    return build_twc_auth_server_url(settings, server, token_path, port=login_port)
 
 
 def _build_twc_discovery_url(settings: Settings, server) -> str:
@@ -256,6 +311,38 @@ def build_twc_oidc_authorization_url(container: ApplicationContainer, server, st
     return f"{login_url}{separator}{query}"
 
 
+def build_twc_authentication_id_authorization_url(container: ApplicationContainer, server, state: str) -> str:
+    settings = container.settings
+    client_id = _auth_client_id(settings, server)
+    if not client_id:
+        raise ValueError(
+            "A TWC AuthServer Application ID(s) value must be configured for this server. "
+            "Use the Application ID(s) value from authserver.properties, normally twcworkbench."
+        )
+    callback_url = build_callback_url(settings, server)
+    login_url = _build_twc_authentication_id_authorize_base_url(settings, server)
+    query_values = {
+        _auth_return_url_parameter(settings, server): callback_url,
+        "client_id": client_id,
+        "response_type": "code",
+        "state": state,
+    }
+    if scope := _auth_scope(settings, server):
+        query_values["scope"] = scope
+    query = urlencode(query_values)
+    separator = "&" if "?" in login_url else "?"
+    return f"{login_url}{separator}{query}"
+
+
+async def build_twc_authentication_id_signin_url(container: ApplicationContainer, server, state: str) -> tuple[str, dict[str, Any]]:
+    return build_twc_authentication_id_authorization_url(container, server, state), {
+        "authorization_endpoint": _build_twc_authentication_id_authorize_base_url(container.settings, server),
+        "token_endpoint": _build_twc_authentication_id_token_url(container.settings, server),
+        "token_secret_transport": "x-auth-secret",
+        "source": "authserver-application-id",
+    }
+
+
 async def build_twc_oidc_signin_url(container: ApplicationContainer, server, state: str) -> tuple[str, dict[str, Any]]:
     configuration = await resolve_twc_oidc_configuration(container.settings, server)
     url = build_twc_oidc_authorization_url(container, server, state)
@@ -265,6 +352,18 @@ async def build_twc_oidc_signin_url(container: ApplicationContainer, server, sta
         endpoint = urlparse(configured_endpoint)
         url = urlunparse((endpoint.scheme, endpoint.netloc, endpoint.path, endpoint.params, parsed.query, ""))
     return url, configuration
+
+
+async def build_twc_signin_url(container: ApplicationContainer, server, state: str) -> tuple[str, dict[str, Any]]:
+    auth_method = _server_auth_method(server)
+    if auth_method == TWCServerAuthMethod.AUTHENTICATION_ID:
+        return await build_twc_authentication_id_signin_url(container, server, state)
+    if auth_method == TWCServerAuthMethod.OPENID:
+        version = getattr(getattr(server, "version", None), "value", getattr(server, "version", ""))
+        if str(version).strip().lower() == "2022x":
+            raise ValueError("OpenID setup is not available for Teamwork Cloud 2022x servers. Use Authentication ID method.")
+        return await build_twc_oidc_signin_url(container, server, state)
+    raise ValueError("OAuth / OSLC setup is not a Workbench browser sign-in lane. Use Authentication ID method or OpenID for sign-in.")
 
 
 def infer_token_expiry(token: str | None) -> datetime | None:
@@ -322,24 +421,39 @@ async def _request_authserver_tokens(
             "or per-server TWC_AUTH_SERVER_OVERRIDES."
         )
 
-    configuration = await resolve_twc_oidc_configuration(settings, server)
-    token_url = str(configuration.get("token_endpoint") or _build_twc_token_url(settings, server))
-    token_method = _auth_token_method(settings, server)
-    supported_methods = {
-        str(item).strip().lower()
-        for item in configuration.get("token_endpoint_auth_methods_supported", [])
-        if str(item).strip()
-    }
-    if token_method == "client_secret_basic" and supported_methods and token_method not in supported_methods:
-        raise PermissionError(
-            f"TWC AuthServer discovery does not advertise configured token authentication method {token_method}."
-        )
+    auth_method = _server_auth_method(server)
+    configuration: dict[str, Any]
+    if auth_method == TWCServerAuthMethod.OPENID:
+        configuration = await resolve_twc_oidc_configuration(settings, server)
+        token_url = str(configuration.get("token_endpoint") or _build_twc_token_url(settings, server))
+        token_method = _auth_token_method(settings, server)
+        supported_methods = {
+            str(item).strip().lower()
+            for item in configuration.get("token_endpoint_auth_methods_supported", [])
+            if str(item).strip()
+        }
+        if token_method == "client_secret_basic" and supported_methods and token_method not in supported_methods:
+            raise PermissionError(
+                f"TWC AuthServer discovery does not advertise configured token authentication method {token_method}."
+            )
+    elif auth_method == TWCServerAuthMethod.AUTHENTICATION_ID:
+        configuration = {
+            "token_endpoint": _build_twc_authentication_id_token_url(settings, server),
+            "token_secret_transport": "x-auth-secret",
+            "source": "authserver-application-id",
+        }
+        token_url = str(configuration["token_endpoint"])
+        token_method = "x_auth_secret"
+    else:
+        raise PermissionError("OAuth / OSLC setup cannot exchange a Workbench browser sign-in code.")
     verify = server.ca_bundle_path if server.verify_tls and server.ca_bundle_path else server.verify_tls
     async with httpx.AsyncClient(timeout=20.0, verify=verify, follow_redirects=True) as client:
         if token_method == "client_secret_basic":
             response = await client.post(token_url, auth=httpx.BasicAuth(client_id, client_secret), data=form_data)
+        elif token_method == "x_auth_secret":
+            response = await client.post(token_url, headers={"X-Auth-Secret": client_secret}, data=form_data)
         else:
-            raise PermissionError(f"Unsupported TWC OIDC token authentication method: {token_method}")
+            raise PermissionError(f"Unsupported TWC token authentication method: {token_method}")
     if response.status_code >= 400:
         raise PermissionError(f"TWC AuthServer token exchange failed with HTTP {response.status_code}: {response.text[:500]}")
     try:

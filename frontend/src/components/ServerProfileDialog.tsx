@@ -184,6 +184,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
                 setForm((current) => ({
                   ...current,
                   version,
+                  auth_method: version === "2022x" && current.auth_method === "openid" ? "authentication_id" : current.auth_method,
                   auth_scope: version === "2022x" ? current.auth_scope || null : current.auth_scope || "openid",
                 }));
               }}
@@ -223,7 +224,9 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
               fullWidth
             >
               <MenuItem value="authentication_id">Authentication ID method</MenuItem>
-              <MenuItem value="openid">OpenID</MenuItem>
+              <MenuItem value="openid" disabled={form.version === "2022x"}>
+                OpenID {form.version === "2022x" ? "(2024x only)" : ""}
+              </MenuItem>
               <MenuItem value="oauth">OAuth</MenuItem>
             </TextField>
           </Grid>
@@ -268,8 +271,8 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
                           label="AuthServer authorize path"
                           value={form.auth_login_path ?? ""}
                           onChange={(event) => setField("auth_login_path", event.target.value || null)}
-                          placeholder="/authentication/oidc/authorize"
-                          helperText="Path from authserver.properties based Authentication Server setup."
+                          placeholder="/authentication/authorize"
+                          helperText="Application ID lane from authserver.properties."
                           fullWidth
                         />
                       </Grid>
@@ -278,7 +281,7 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
                           label="AuthServer token path"
                           value={form.auth_token_path ?? ""}
                           onChange={(event) => setField("auth_token_path", event.target.value || null)}
-                          placeholder="/authentication/api/oidc/token"
+                          placeholder="/authentication/api/token"
                           fullWidth
                         />
                       </Grid>
@@ -340,31 +343,6 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
                 </AccordionDetails>
             </Accordion>
           </Grid>
-          {showOauthFields ? null : (
-            <Grid item xs={12}>
-            <Accordion variant="outlined" disableGutters>
-              <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
-                <Typography fontWeight={700}>OSLC / RealSwagger overrides</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Grid container spacing={2}>
-                  <Grid item xs={12} md={6}>
-                    <TextField label="OSLC/OSMC Base URL" value={form.oslc_base_url ?? ""} onChange={(event) => setField("oslc_base_url", event.target.value || null)} helperText="Leave blank to use the TWC Base URL for /osmc requests." fullWidth />
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <TextField label="OSLC callback URL" value={form.oslc_callback_url ?? ""} onChange={(event) => setField("oslc_callback_url", event.target.value || null)} fullWidth />
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <TextField label="OSLC consumer key" value={form.oslc_consumer_key ?? ""} onChange={(event) => setField("oslc_consumer_key", event.target.value || null)} fullWidth />
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <TextField label="OSLC consumer secret" type="password" value={form.oslc_consumer_secret ?? ""} onChange={(event) => setField("oslc_consumer_secret", event.target.value || null)} helperText="Saved on submit; not shown again after reload." fullWidth />
-                  </Grid>
-                </Grid>
-              </AccordionDetails>
-            </Accordion>
-          </Grid>
-          )}
           <Grid item xs={12}>
             <Stack
               spacing={0.5}

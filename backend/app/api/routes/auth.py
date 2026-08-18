@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from app.api.deps import get_container, get_session, require_admin, require_admin_csrf, require_csrf, require_group_manager, require_group_manager_csrf
-from app.auth.twc import build_twc_oidc_signin_url, exchange_twc_auth_code
+from app.auth.twc import build_twc_signin_url, exchange_twc_auth_code
 from app.models.domain import (
     TokenLoginRequest,
     WorkbenchAuthSettings,
@@ -34,7 +34,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 logger = structlog.get_logger(__name__)
 
 REDIRECT_SIGNIN_MESSAGE = (
-    "Sign in via TWC uses the selected Teamwork Cloud 2024x Authentication Server OpenID Connect authorization-code flow, then validates the returned user token through /osmc/admin/currentUser."
+    "Sign in via TWC uses the selected server profile's auth lane, then validates the returned user token through /osmc/admin/currentUser."
 )
 
 
@@ -268,7 +268,7 @@ async def signin(server_id: str, request: Request, container: ApplicationContain
 
     state, cookie_value = create_auth_state_cookie(container, server.id, app_origin=server_app_origin(container, signin_server))
     try:
-        twc_signin_url, oidc_configuration = await build_twc_oidc_signin_url(container, signin_server, state)
+        twc_signin_url, auth_configuration = await build_twc_signin_url(container, signin_server, state)
     except ValueError as exc:
         logger.warning("auth-signin-failed", auth_mode="twc-authserver-redirect-start", server_id=server.id, detail=str(exc))
         return build_error_redirect(container, str(exc), server=signin_server)
@@ -277,10 +277,10 @@ async def signin(server_id: str, request: Request, container: ApplicationContain
     set_auth_state_cookie(redirect, container, cookie_value)
     logger.info(
         "auth-mode-selected",
-        auth_mode="twc-oidc-authorization-code-start",
+        auth_mode=f"twc-{signin_server.auth_method.value}-authorization-code-start",
         server_id=server.id,
-        twc_authorize_url=oidc_configuration.get("authorization_endpoint"),
-        oidc_configuration_source=oidc_configuration.get("source"),
+        twc_authorize_url=auth_configuration.get("authorization_endpoint"),
+        auth_configuration_source=auth_configuration.get("source"),
         callback=f"{server_app_origin(container, signin_server)}{container.settings.resolved_twc_auth_callback_path}",
     )
     return redirect
@@ -310,8 +310,8 @@ async def callback(
         return build_error_redirect(container, "Selected Teamwork Cloud server no longer matches callback state. Start Sign in via TWC again.")
 
     if not state:
-        logger.warning("auth-callback-failed", auth_mode="oidc-code-callback", detail="OIDC state is missing")
-        return build_error_redirect(container, "OIDC state is missing. Start Sign in via TWC again.")
+        logger.warning("auth-callback-failed", auth_mode="redirect-code-callback", detail="Authentication state is missing")
+        return build_error_redirect(container, "Authentication state is missing. Start Sign in via TWC again.")
     if state != auth_state["state"]:
         logger.warning("auth-callback-failed", auth_mode="redirect-callback", detail="Authentication state mismatch")
         return build_error_redirect(container, "Authentication state mismatch. Start Sign in via TWC again.")

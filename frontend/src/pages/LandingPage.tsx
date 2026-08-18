@@ -281,7 +281,7 @@ export default function LandingPage() {
         {authOptions?.redirect_signin_message ? <Alert severity="info">{authOptions.redirect_signin_message}</Alert> : null}
         {authOptions?.redirect_uri ? (
           <Alert severity="info">
-            Register this exact OpenID Connect redirect URI in the TWC Web Application Platform OAuth client: <strong>{authOptions.redirect_uri}</strong>
+            Register this exact Workbench callback URI in the selected TWC/AuthServer client setup: <strong>{authOptions.redirect_uri}</strong>
           </Alert>
         ) : null}
         {authOptions?.first_admin_setup_required ? (
@@ -419,7 +419,7 @@ export default function LandingPage() {
                     This deployment exposes Teamwork Cloud presets before login so users can choose the configured server first. Workbench local users bind to the selected server and see only projects already granted to that username in stored permission snapshots.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Register Workbench under Web Application Platform OAuth clients with this app&apos;s exact callback URI. The app discovers the OIDC endpoints, exchanges the returned code with the generated client ID and secret, then validates the ID token against Teamwork Cloud. SAML may remain upstream of AuthServer, but Workbench itself uses OIDC.
+                    Configure each server in Settings with the matching auth lane. Authentication ID uses AuthServer Application ID(s), <code>/authentication/authorize</code>, <code>/authentication/api/token</code>, and <code>X-Auth-Secret</code>. OpenID is available for 2024x OpenID setups. OAuth is reserved for OSLC/RealSwagger consumer configuration.
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Use TWC Token remains available as a fallback. The backend validates that token against the selected Teamwork Cloud server before opening a workbench session.

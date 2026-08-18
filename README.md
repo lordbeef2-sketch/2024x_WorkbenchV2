@@ -65,7 +65,7 @@ Copy `backend/.env.example` to `backend/.env` and set values appropriate for you
 `backend/.env` is now a small bootstrap file. Normal administration happens in Workbench Settings.
 TWC server presets are created, edited, enabled, disabled, and deleted from the Settings page. `TWC_PRESET_SERVERS` remains only an optional startup seed/import path; leaving it empty no longer wipes app-managed presets.
 User-management mode is also saved from Settings. The env value only picks the initial mode when no app setting exists yet.
-`Sign In via TWC` is the primary sign-in path. It uses the official Teamwork Cloud 2024x Refresh3 OpenID Connect authorization-code flow. Workbench reads `https://<selected-twc-host>:8443/authentication/.well-known/oidc-configuration`, redirects to its `authorization_endpoint`, exchanges the code at its `token_endpoint` using `client_secret_basic`, requests `scope=openid`, refreshes the ID token when a refresh token is returned, and validates the user through `/osmc/admin/currentUser`. SAML may remain the Authentication Server's upstream identity provider, but it is not the protocol between Workbench and the Authentication Server. `Use TWC Token` remains the explicit fallback.
+`Sign In via TWC` follows the selected server's configured auth lane. **Authentication ID method** uses the Teamwork Cloud AuthServer `authserver.properties` Application ID(s) flow (`/authentication/authorize`, `/authentication/api/token`, and `X-Auth-Secret`). **OpenID** is available for 2024x-style OpenID/OIDC setup with discovery or explicit authorize/token URLs and `client_secret_basic`. **OAuth** is reserved for OSLC/RealSwagger consumer configuration and is not silently used as the Workbench browser sign-in path. `Use TWC Token` remains the explicit fallback.
 The supplied launchers disable Uvicorn access logging so the authorization code
 in the callback query string is not copied into console logs. Application audit
 events remain available through structured Workbench logging.
@@ -90,13 +90,13 @@ Important settings:
 - Teamwork Cloud server auth is configured from **Settings -> Servers**. Each server profile has an explicit auth setup mode: **Authentication ID method**, **OpenID**, or **OAuth**. Environment values below are legacy/bootstrap fallbacks only; saved Settings values win. In TWC user mode, Workbench local password sign-in remains available only for Workbench administrators as the recovery path for bad SSO/server configuration.
 - `TWC_AUTH_APPLICATION_IDS` / `TWC_APPLICATION_IDS`: legacy/bootstrap fallback for the Workbench Application ID(s) value from TWC Configs. Defaults to `twcworkbench`.
 - `TWC_AUTH_CLIENT_ID`: compatibility alias for the same Workbench Application ID(s) value.
-- `TWC_AUTH_CLIENT_SECRET`: the generated secret for that OIDC client.
+- `TWC_AUTH_CLIENT_SECRET`: legacy/bootstrap fallback for the AuthServer client secret. Authentication ID sends this as `X-Auth-Secret`; OpenID sends it using the configured OpenID token auth method.
 - `TWC_AUTHENTICATION_CLIENT_ID`, `TWC_AUTHENTICATION_CLIENT_IDS`, `TWC_AUTHENTICATION_CLIENT_SECRET`: optional aliases for the same TWC AuthServer properties.
 - `TWC_AUTH_SCOPE`: defaults to the documented `openid` scope.
-- `TWC_OIDC_DISCOVERY_URL`: optional complete 2024x Refresh3 discovery URL; otherwise Workbench derives it from the selected server.
-- `TWC_OIDC_AUTHORIZE_URL` / `TWC_OIDC_TOKEN_URL`: optional explicit endpoint overrides. Normally leave them blank and use discovery.
-- `TWC_OIDC_TOKEN_AUTH_METHOD`: defaults to the documented `client_secret_basic` method.
-- `TWC_OIDC_RETURN_URL_PARAMETER`: query parameter used to pass the app callback URL to the TWC OIDC authorization endpoint. Defaults to `redirect_uri`.
+- `TWC_OIDC_DISCOVERY_URL`: optional complete 2024x OpenID discovery URL for servers using the OpenID lane.
+- `TWC_OIDC_AUTHORIZE_URL` / `TWC_OIDC_TOKEN_URL`: optional explicit endpoint overrides for the OpenID lane. Authentication ID profiles should use their server Settings fields instead.
+- `TWC_OIDC_TOKEN_AUTH_METHOD`: OpenID lane token auth method; defaults to `client_secret_basic`.
+- `TWC_OIDC_RETURN_URL_PARAMETER`: query parameter used to pass the app callback URL. Defaults to `redirect_uri`.
 - `TWC_AUTH_SERVER_OVERRIDES`: optional JSON object keyed by preset server id for AuthServer hosts, client ids/application ids, secrets, ports, paths, scopes, and return parameter names.
 - `CACHE_INGEST_TOKENS`: optional legacy fallback list for plugin write tokens. The preferred path is to manage the plugin ingest token from Workbench admin Settings.
 - `CACHE_API_TOKENS`: optional legacy fallback map of bearer token to Workbench username for cache-read API access. The preferred path is to let users create their own API keys from Workbench Settings.
@@ -364,8 +364,8 @@ Then run the backend. If `frontend/dist` exists, FastAPI serves it automatically
 - Preset Teamwork Cloud servers are loaded from `TWC_PRESET_SERVERS` at startup and are readable on the landing page before app login.
 - Users select a preset server first, then authenticate against that selected Teamwork Cloud server.
 - The post-login app session is bound to the selected server, not the other way around.
-- Redirect-based `Sign In via TWC` sends the browser to the selected preset's AuthServer authorize endpoint, preserves the selected preset server, and completes the app session on the callback route after exchanging the returned authorization code.
-- Pick the server auth setup mode in **Settings -> Servers**. **Authentication ID method** maps to Teamwork Cloud AuthServer `authserver.properties`; **OpenID** exposes discovery/authorize/token endpoints; **OAuth** exposes OSLC/RealSwagger consumer key, secret, callback, and base URL fields.
+- Redirect-based `Sign In via TWC` sends the browser through the selected preset's configured auth lane, preserves the selected preset server, and completes the app session on the callback route after exchanging the returned authorization code when that lane returns one.
+- Pick the server auth setup mode in **Settings -> Servers**. **Authentication ID method** maps to Teamwork Cloud AuthServer `authserver.properties` Application ID(s), defaults to `/authentication/authorize` and `/authentication/api/token`, and exchanges the code using `X-Auth-Secret`. **OpenID** exposes discovery/authorize/token endpoints and is intended for 2024x OpenID setup. **OAuth** exposes OSLC/RealSwagger consumer key, secret, callback, and base URL fields only.
 - The callback URL is the Workbench public app URL, normally `https://<workbench-host>:<public-port>/api/auth/callback`; whitelist that same callback in every TWC/AuthServer client registration that should be able to return users to this app. If Workbench is behind Caddy or another reverse proxy, set the server profile's **Workbench Public URL** to the external URL users browse to, or let Workbench infer it from `X-Forwarded-Proto` / `X-Forwarded-Host` during sign-in. Do not use `localhost` for a shared deployment callback.
 - Configure Teamwork Cloud AuthServer so `authserver.properties` includes the Workbench callback URI in `authentication.redirect.uri.whitelist`, includes the Workbench Application ID in `authentication.client.ids` (normally `twcworkbench`), and uses the matching `authentication.client.secret` in the Workbench server profile or `TWC_AUTH_CLIENT_SECRET` / `TWC_AUTH_SERVER_OVERRIDES`.
 - If your deployment bypasses the AuthServer code flow, the callback must receive authenticated Teamwork Cloud session cookies or a forwarded user-scoped TWC token from your proxy or auth gateway.

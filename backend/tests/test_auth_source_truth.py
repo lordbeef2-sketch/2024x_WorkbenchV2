@@ -14,7 +14,13 @@ import httpx
 
 from app.api.routes import auth, workspace
 from app.adapters.teamwork import TeamworkAdapter
-from app.auth.twc import build_callback_url, build_twc_oidc_authorization_url, exchange_twc_auth_code
+from app.auth.twc import (
+    build_callback_url,
+    build_twc_authentication_id_authorization_url,
+    build_twc_oidc_authorization_url,
+    build_twc_signin_url,
+    exchange_twc_auth_code,
+)
 from app.core.storage import SqliteRepository
 from app.models.domain import (
     BranchAccessRecord,
@@ -155,6 +161,41 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
 
         self.assertEqual(query["client_id"], ["twcworkbench"])
 
+    def test_authentication_id_lane_uses_authserver_properties_endpoints(self) -> None:
+        settings = Settings(
+            app_origin="https://workbench.example",
+            twc_auth_client_secret="test-secret",
+        )
+        server = ServerProfile(
+            id="twc-2022x",
+            name="TWC 2022x",
+            base_url="https://twc.example:8111",
+            version="2022x",
+            auth_method=TWCServerAuthMethod.AUTHENTICATION_ID,
+        )
+
+        url = build_twc_authentication_id_authorization_url(SimpleNamespace(settings=settings), server, "state-value")
+        query = parse_qs(urlparse(url).query)
+
+        self.assertEqual(urlparse(url).path, "/authentication/authorize")
+        self.assertEqual(query["client_id"], ["twcworkbench"])
+        self.assertEqual(query["response_type"], ["code"])
+        self.assertEqual(query["redirect_uri"], ["https://workbench.example/api/auth/callback"])
+        self.assertEqual(query["state"], ["state-value"])
+
+    def test_openid_lane_is_rejected_for_2022x_server_profiles(self) -> None:
+        settings = Settings(app_origin="https://workbench.example", twc_auth_client_secret="test-secret")
+        server = ServerProfile(
+            id="twc-2022x",
+            name="TWC 2022x",
+            base_url="https://twc.example:8111",
+            version="2022x",
+            auth_method=TWCServerAuthMethod.OPENID,
+        )
+
+        with self.assertRaisesRegex(ValueError, "2022x"):
+            asyncio.run(build_twc_signin_url(SimpleNamespace(settings=settings), server, "state-value"))
+
     def test_env_application_ids_alias_drives_auth_client_id(self) -> None:
         settings = Settings(
             app_origin="https://workbench.example",
@@ -252,6 +293,7 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
             id="twc-2024x",
             name="TWC 2024x",
             base_url="https://twc.example:8111",
+            auth_method=TWCServerAuthMethod.OPENID,
         )
         container = SimpleNamespace(settings=settings)
 
@@ -264,6 +306,57 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
         expected = base64.b64encode(b"client-id:client-secret").decode("ascii")
         self.assertEqual(request.headers["Authorization"], f"Basic {expected}")
         self.assertEqual(post["data"]["scope"], "openid")
+        self.assertEqual(bundle.access_token, "header.payload.signature")
+
+    def test_authentication_id_code_exchange_uses_x_auth_secret_header(self) -> None:
+        calls: list[tuple[str, object]] = []
+
+        class FakeResponse:
+            status_code = 200
+            text = "{}"
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, **kwargs):
+                calls.append(("post", {"url": url, **kwargs}))
+                return FakeResponse({"id_token": "header.payload.signature", "refresh_token": "refresh"})
+
+        settings = Settings(
+            app_origin="https://workbench.example",
+            twc_auth_client_id="twcworkbench",
+            twc_auth_client_secret="client-secret",
+        )
+        server = ServerProfile(
+            id="twc-2022x",
+            name="TWC 2022x",
+            base_url="https://twc.example:8111",
+            version="2022x",
+            auth_method=TWCServerAuthMethod.AUTHENTICATION_ID,
+        )
+        container = SimpleNamespace(settings=settings)
+
+        with patch("app.auth.twc.httpx.AsyncClient", FakeAsyncClient):
+            bundle = asyncio.run(exchange_twc_auth_code(container, server, "code-value"))
+
+        post = next(value for method, value in calls if method == "post")
+        self.assertEqual(post["url"], "https://twc.example:8443/authentication/api/token")
+        self.assertEqual(post["headers"], {"X-Auth-Secret": "client-secret"})
+        self.assertEqual(post["data"]["client_id"], "twcworkbench")
+        self.assertEqual(post["data"]["grant_type"], "authorization_code")
         self.assertEqual(bundle.access_token, "header.payload.signature")
 
     def test_oidc_callback_rejects_missing_state(self) -> None:
@@ -282,7 +375,7 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
         response = asyncio.run(auth.callback(request, code="code-value", state=None, container=container))
 
         self.assertEqual(response.status_code, 302)
-        self.assertIn("OIDC+state+is+missing", response.headers["location"])
+        self.assertIn("Authentication+state+is+missing", response.headers["location"])
 
     def test_auth_options_exposes_exact_redirect_uri(self) -> None:
         settings = Settings(app_origin="https://workbench.example")

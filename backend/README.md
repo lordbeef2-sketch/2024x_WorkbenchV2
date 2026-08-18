@@ -7,10 +7,10 @@ Use Workbench Settings to manage TWC server presets and user-management mode. `T
 `WORKBENCH_USER_MANAGEMENT_MODE` in `backend/.env` only chooses the initial authority before an app setting exists:
 
 - `local`: Workbench manages username/password users locally. TWC sign-in is disabled. Local users see only projects allowed by stored/plugin permission snapshots matching their username.
-- `twc`: TWC manages users. Workbench local username/password sign-in is disabled. TWC browser/token sign-in remains the identity path.
+- `twc`: TWC manages users. TWC browser/token sign-in remains the normal identity path. Workbench local username/password sign-in stays available only for Workbench administrators as the recovery path for bad SSO/server configuration.
 
-Running both local and TWC user-management paths together is intentionally blocked. First local bootstrap uses `WORKBENCH_DEFAULT_ADMIN_USERNAME` / `WORKBENCH_DEFAULT_ADMIN_PASSWORD` when no local users exist; rotate that password immediately in Settings.
-`Sign In via TWC` is the primary path. It uses Teamwork Cloud 2024x Refresh3 OpenID Connect discovery at `/authentication/.well-known/oidc-configuration`, authorization code flow, `scope=openid`, and the discovered token endpoint with `client_secret_basic`, then validates the returned ID token through `/osmc/admin/currentUser`. Register the exact callback URI in Web Application Platform Settings -> OAuth clients -> OpenID Connect and configure the generated client ID and secret in Workbench. SAML may be configured behind AuthServer as its upstream identity provider; Workbench itself is an OIDC client. `Use TWC Token` remains the explicit fallback.
+First local bootstrap uses `WORKBENCH_DEFAULT_ADMIN_USERNAME` / `WORKBENCH_DEFAULT_ADMIN_PASSWORD` when no local users exist; rotate that password immediately in Settings.
+`Sign In via TWC` follows the selected server profile's auth lane. Authentication ID method uses Teamwork Cloud AuthServer `authserver.properties` Application ID(s), `/authentication/authorize`, `/authentication/api/token`, and `X-Auth-Secret`. OpenID is the 2024x-style discovery/authorize/token lane using the configured OpenID client secret method. OAuth is reserved for OSLC/RealSwagger consumer configuration and is not a Workbench browser sign-in lane. `Use TWC Token` remains the explicit fallback.
 
 OSLC authentication is intentionally not implemented. The bundled 3DS 2024x package documents OSLC resources but does not define the authentication exchange needed by this application, and no captured live-server contract is checked into the repository. The unsupported consumer-key/request-token implementation was removed instead of being presented as verified TWC 2024x behavior.
 

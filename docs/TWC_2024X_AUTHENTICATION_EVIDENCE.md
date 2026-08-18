@@ -7,8 +7,8 @@ for product documentation.
 
 ## Documented by official 2024x Refresh3 sources
 
-The Developer Guide page `OpenID Connect authentication` documents the current
-web-application contract:
+The Developer Guide page `OpenID Connect authentication` documents the 2024x
+OpenID web-application contract:
 
 - Discovery: `/authentication/.well-known/oidc-configuration`
 - Authorization endpoint: `/authentication/oidc/authorize`
@@ -23,17 +23,35 @@ web-application contract:
 Official URL:
 `https://docs.nomagic.com/spaces/DEVG2024xR3/pages/225347498/OpenID+Connect+authentication`
 
-## Implemented main Workbench sign-in
+The Teamwork Cloud token-based authentication documentation also documents the
+AuthServer `authserver.properties` Application ID(s) flow:
 
-Workbench acts as an OIDC client. It reads AuthServer discovery, requests an
-authorization code with `scope=openid`, authenticates to the discovered token
-endpoint with HTTP Basic client credentials, refreshes returned ID tokens, and
-validates the user against `/osmc/admin/currentUser`. Explicit per-server URLs
-remain available for deployments that publish AuthServer through a proxy.
+- Application callback whitelist: `authentication.redirect.uri.whitelist`
+- Application/client IDs: `authentication.client.ids`
+- Authorization endpoint: `/authentication/authorize`
+- Token endpoint: `/authentication/api/token`
+- Token endpoint secret transport: `X-Auth-Secret`
+- TWC REST receives the returned ID token as `Authorization: Token <ID token>`.
+
+Official URL:
+`https://docs.nomagic.com/spaces/TWCloud2024x/pages/137987741/Token-based+authentication`
+
+## Implemented Workbench sign-in lanes
+
+Workbench sign-in is selected per server profile:
+
+- Authentication ID method uses the AuthServer Application ID(s) lane,
+  defaults to `/authentication/authorize` and `/authentication/api/token`,
+  exchanges the returned code with `X-Auth-Secret`, and validates the user
+  against `/osmc/admin/currentUser`.
+- OpenID uses the 2024x OpenID lane with discovery or explicit authorize/token
+  URLs and the configured OpenID token authentication method.
+- OAuth is reserved for OSLC/RealSwagger consumer configuration and is not a
+  Workbench browser sign-in lane.
 
 SAML is not the Workbench-to-AuthServer protocol. A deployment may configure
 SAML as the Authentication Server's upstream identity provider while Workbench
-continues to use OIDC with AuthServer.
+continues to use the selected AuthServer lane.
 
 ## Not established by the package
 
@@ -44,9 +62,11 @@ continues to use OIDC with AuthServer.
 - Generic OAuth terminology or an existing code path is not evidence of the
   protocol supported by a live TWC installation.
 
-Therefore Workbench does not expose OSLC authentication or consumer-secret
-storage. That capability must remain unavailable until a live 2024x endpoint
-contract and successful/failing request captures are added and tested.
+Therefore Workbench does not treat OAuth/OSLC as a verified browser sign-in
+path. OAuth/OSLC consumer fields may be stored in a server profile, but they
+must remain separate from Authentication ID and OpenID sign-in behavior until a
+live endpoint contract and successful/failing request captures are added and
+tested.
 
 ## Required evidence for future OSLC resource work
 
