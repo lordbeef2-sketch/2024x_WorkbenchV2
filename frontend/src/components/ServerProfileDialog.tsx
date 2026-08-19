@@ -234,72 +234,26 @@ export default function ServerProfileDialog({ open, initialValue, defaultDisplay
             <Accordion variant="outlined" disableGutters>
                 <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                   <Typography fontWeight={700}>
-                    {showOpenIdFields ? "OpenID setup" : showOauthFields ? "OAuth setup" : "Authentication ID setup"}
+                    {showOauthFields ? "OAuth / OSLC setup" : "TWC auth link"}
                   </Typography>
                 </AccordionSummary>
                 <AccordionDetails>
                 <Grid container spacing={2}>
                   {showOpenIdFields ? (
                     <>
-                  <Grid item xs={12} md={6}>
-                    <TextField label="OIDC discovery URL" value={form.auth_discovery_url ?? ""} onChange={(event) => setField("auth_discovery_url", event.target.value || null)} fullWidth />
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <TextField label="Authorize URL" value={form.auth_authorize_url ?? ""} onChange={(event) => setField("auth_authorize_url", event.target.value || null)} fullWidth />
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <TextField label="Token URL" value={form.auth_token_url ?? ""} onChange={(event) => setField("auth_token_url", event.target.value || null)} fullWidth />
-                  </Grid>
-                  <Grid item xs={12} md={3}>
-                    <TextField
-                      label="Login port"
-                      type="number"
-                      value={form.auth_login_port ?? ""}
-                      onChange={(event) => setField("auth_login_port", event.target.value ? Number.parseInt(event.target.value, 10) : null)}
-                      fullWidth
-                    />
-                  </Grid>
-                  <Grid item xs={12} md={3}>
-                    <TextField label="Scope" value={form.auth_scope ?? ""} onChange={(event) => setField("auth_scope", event.target.value || null)} fullWidth />
+                  <Grid item xs={12}>
+                    <Typography variant="body2" color="text.secondary">
+                      Workbench derives OpenID endpoints from the Teamwork Cloud Base URL using the standard <code>/authentication</code> paths. Only the TWC host:port, Workbench public host:port, Application ID(s), and secret should normally change.
+                    </Typography>
                   </Grid>
                     </>
                   ) : null}
                   {showAuthenticationIdFields ? (
                     <>
-                      <Grid item xs={12} md={6}>
-                        <TextField
-                          label="AuthServer authorize path"
-                          value={form.auth_login_path ?? ""}
-                          onChange={(event) => setField("auth_login_path", event.target.value || null)}
-                          placeholder="/authentication/authorize"
-                          helperText="Application ID lane from authserver.properties."
-                          fullWidth
-                        />
-                      </Grid>
-                      <Grid item xs={12} md={6}>
-                        <TextField
-                          label="AuthServer token path"
-                          value={form.auth_token_path ?? ""}
-                          onChange={(event) => setField("auth_token_path", event.target.value || null)}
-                          placeholder="/authentication/api/token"
-                          fullWidth
-                        />
-                      </Grid>
-                      <Grid item xs={12} md={4}>
-                        <TextField
-                          label="Login port"
-                          type="number"
-                          value={form.auth_login_port ?? ""}
-                          onChange={(event) => setField("auth_login_port", event.target.value ? Number.parseInt(event.target.value, 10) : null)}
-                          placeholder="8443"
-                          fullWidth
-                        />
-                      </Grid>
-                      <Grid item xs={12} md={4}>
-                        <TextField label="Scope" value={form.auth_scope ?? ""} onChange={(event) => setField("auth_scope", event.target.value || null)} placeholder="openid" fullWidth />
-                      </Grid>
-                      <Grid item xs={12} md={4}>
-                        <TextField label="Return URL parameter" value={form.auth_return_url_parameter ?? ""} onChange={(event) => setField("auth_return_url_parameter", event.target.value || null)} placeholder="redirect_uri" fullWidth />
+                      <Grid item xs={12}>
+                        <Typography variant="body2" color="text.secondary">
+                          Authentication ID uses <code>/authentication/authorize</code> and <code>/authentication/api/token</code>. The Application ID(s) below must be present in TWC AuthServer <code>authentication.client.ids</code>, and the Workbench callback must be in <code>authentication.redirect.uri.whitelist</code>.
+                        </Typography>
                       </Grid>
                     </>
                   ) : null}

@@ -7184,117 +7184,26 @@ export default function WorkspacePage() {
               <Accordion variant="outlined" disableGutters>
                   <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                     <Typography fontWeight={700}>
-                      {newServerUsesOpenId ? "OpenID setup" : newServerUsesOauth ? "OAuth setup" : "Authentication ID setup"}
+                      {newServerUsesOauth ? "OAuth / OSLC setup" : "TWC auth link"}
                     </Typography>
                   </AccordionSummary>
                   <AccordionDetails>
                   <Grid container spacing={1.5}>
                     {newServerUsesOpenId ? (
                       <>
-                    <Grid item xs={12} md={6}>
-                      <TextField
-                        label="OIDC discovery URL"
-                        value={newServerPreset.auth_discovery_url ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_discovery_url: event.target.value || null }))}
-                        placeholder="https://twc.example:8443/authentication/.well-known/oidc-configuration"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={6}>
-                      <TextField
-                        label="Authorize URL"
-                        value={newServerPreset.auth_authorize_url ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_authorize_url: event.target.value || null }))}
-                        placeholder="https://twc.example:8443/authentication/oidc/authorize"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={6}>
-                      <TextField
-                        label="Token URL"
-                        value={newServerPreset.auth_token_url ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_token_url: event.target.value || null }))}
-                        placeholder="https://twc.example:8443/authentication/api/oidc/token"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Login port"
-                        type="number"
-                        value={newServerPreset.auth_login_port ?? ""}
-                        onChange={(event) =>
-                          setNewServerPreset((current) => ({
-                            ...current,
-                            auth_login_port: event.target.value ? Number.parseInt(event.target.value, 10) : null,
-                          }))
-                        }
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Scope"
-                        value={newServerPreset.auth_scope ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_scope: event.target.value || null }))}
-                        placeholder="openid"
-                        fullWidth
-                      />
+                    <Grid item xs={12}>
+                      <Typography variant="body2" color="text.secondary">
+                        Workbench derives OpenID endpoints from the Teamwork Cloud Base URL using the standard <code>/authentication</code> paths. Only the TWC host:port, Workbench public host:port, Application ID(s), and secret should normally change.
+                      </Typography>
                     </Grid>
                       </>
                     ) : null}
                     {newServerUsesAuthenticationId ? (
                       <>
-                    <Grid item xs={12} md={6}>
-                      <TextField
-                        label="AuthServer authorize path"
-                        value={newServerPreset.auth_login_path ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_login_path: event.target.value || null }))}
-                        placeholder="/authentication/authorize"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={6}>
-                      <TextField
-                        label="AuthServer token path"
-                        value={newServerPreset.auth_token_path ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_token_path: event.target.value || null }))}
-                        placeholder="/authentication/api/token"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={4}>
-                      <TextField
-                        label="Login port"
-                        type="number"
-                        value={newServerPreset.auth_login_port ?? ""}
-                        onChange={(event) =>
-                          setNewServerPreset((current) => ({
-                            ...current,
-                            auth_login_port: event.target.value ? Number.parseInt(event.target.value, 10) : null,
-                          }))
-                        }
-                        placeholder="8443"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={4}>
-                      <TextField
-                        label="Scope"
-                        value={newServerPreset.auth_scope ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_scope: event.target.value || null }))}
-                        placeholder="openid"
-                        fullWidth
-                      />
-                    </Grid>
-                    <Grid item xs={12} md={4}>
-                      <TextField
-                        label="Return URL parameter"
-                        value={newServerPreset.auth_return_url_parameter ?? ""}
-                        onChange={(event) => setNewServerPreset((current) => ({ ...current, auth_return_url_parameter: event.target.value || null }))}
-                        placeholder="redirect_uri"
-                        fullWidth
-                      />
+                    <Grid item xs={12}>
+                      <Typography variant="body2" color="text.secondary">
+                        Authentication ID uses <code>/authentication/authorize</code> and <code>/authentication/api/token</code>. The Application ID(s) below must be present in TWC AuthServer <code>authentication.client.ids</code>, and the Workbench callback must be in <code>authentication.redirect.uri.whitelist</code>.
+                      </Typography>
                     </Grid>
                       </>
                     ) : null}
@@ -7562,159 +7471,26 @@ export default function WorkspacePage() {
                       <Accordion variant="outlined" disableGutters>
                           <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
                             <Typography fontWeight={700}>
-                              {draftUsesOpenId ? "OpenID setup" : draftUsesOauth ? "OAuth setup" : "Authentication ID setup"}
+                              {draftUsesOauth ? "OAuth / OSLC setup" : "TWC auth link"}
                             </Typography>
                           </AccordionSummary>
                           <AccordionDetails>
                           <Grid container spacing={1.5}>
                             {draftUsesOpenId ? (
                               <>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="OIDC discovery URL"
-                                value={draft.auth_discovery_url ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, auth_discovery_url: event.target.value || null },
-                                  }))
-                                }
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="Authorize URL"
-                                value={draft.auth_authorize_url ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, auth_authorize_url: event.target.value || null },
-                                  }))
-                                }
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="Token URL"
-                                value={draft.auth_token_url ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, auth_token_url: event.target.value || null },
-                                  }))
-                                }
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={3}>
-                              <TextField
-                                label="Login port"
-                                type="number"
-                                value={draft.auth_login_port ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: {
-                                      ...draft,
-                                      auth_login_port: event.target.value ? Number.parseInt(event.target.value, 10) : null,
-                                    },
-                                  }))
-                                }
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={3}>
-                              <TextField
-                                label="Scope"
-                                value={draft.auth_scope ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, auth_scope: event.target.value || null },
-                                  }))
-                                }
-                                fullWidth
-                              />
+                            <Grid item xs={12}>
+                              <Typography variant="body2" color="text.secondary">
+                                Workbench derives OpenID endpoints from the Teamwork Cloud Base URL using the standard <code>/authentication</code> paths. Only the TWC host:port, Workbench public host:port, Application ID(s), and secret should normally change.
+                              </Typography>
                             </Grid>
                               </>
                             ) : null}
                             {draftUsesAuthenticationId ? (
                               <>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="AuthServer authorize path"
-                                value={draft.auth_login_path ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, auth_login_path: event.target.value || null },
-                                  }))
-                                }
-                                placeholder="/authentication/authorize"
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="AuthServer token path"
-                                value={draft.auth_token_path ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, auth_token_path: event.target.value || null },
-                                  }))
-                                }
-                                placeholder="/authentication/api/token"
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={4}>
-                              <TextField
-                                label="Login port"
-                                type="number"
-                                value={draft.auth_login_port ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: {
-                                      ...draft,
-                                      auth_login_port: event.target.value ? Number.parseInt(event.target.value, 10) : null,
-                                    },
-                                  }))
-                                }
-                                placeholder="8443"
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={4}>
-                              <TextField
-                                label="Scope"
-                                value={draft.auth_scope ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, auth_scope: event.target.value || null },
-                                  }))
-                                }
-                                placeholder="openid"
-                                fullWidth
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={4}>
-                              <TextField
-                                label="Return URL parameter"
-                                value={draft.auth_return_url_parameter ?? ""}
-                                onChange={(event) =>
-                                  setServerPresetDrafts((current) => ({
-                                    ...current,
-                                    [server.id]: { ...draft, auth_return_url_parameter: event.target.value || null },
-                                  }))
-                                }
-                                placeholder="redirect_uri"
-                                fullWidth
-                              />
+                            <Grid item xs={12}>
+                              <Typography variant="body2" color="text.secondary">
+                                Authentication ID uses <code>/authentication/authorize</code> and <code>/authentication/api/token</code>. The Application ID(s) below must be present in TWC AuthServer <code>authentication.client.ids</code>, and the Workbench callback must be in <code>authentication.redirect.uri.whitelist</code>.
+                              </Typography>
                             </Grid>
                               </>
                             ) : null}

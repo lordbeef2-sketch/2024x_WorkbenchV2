@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     twc_oidc_authorize_path: str = "/authentication/oidc/authorize"
     twc_oidc_token_url: str | None = None
     twc_oidc_token_path: str = "/authentication/api/oidc/token"
-    twc_oidc_port: int | None = 8443
+    twc_oidc_port: int | None = None
     twc_oidc_token_auth_method: Literal["client_secret_basic"] = "client_secret_basic"
     twc_oidc_return_url_parameter: str = "redirect_uri"
     session_ttl_minutes: int = 480

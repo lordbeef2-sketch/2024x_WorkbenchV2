@@ -177,6 +177,7 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
         url = build_twc_authentication_id_authorization_url(SimpleNamespace(settings=settings), server, "state-value")
         query = parse_qs(urlparse(url).query)
 
+        self.assertEqual(urlparse(url).netloc, "twc.example:8111")
         self.assertEqual(urlparse(url).path, "/authentication/authorize")
         self.assertEqual(query["client_id"], ["twcworkbench"])
         self.assertEqual(query["response_type"], ["code"])
@@ -353,7 +354,7 @@ class AuthenticationSourceTruthTests(unittest.TestCase):
             bundle = asyncio.run(exchange_twc_auth_code(container, server, "code-value"))
 
         post = next(value for method, value in calls if method == "post")
-        self.assertEqual(post["url"], "https://twc.example:8443/authentication/api/token")
+        self.assertEqual(post["url"], "https://twc.example:8111/authentication/api/token")
         self.assertEqual(post["headers"], {"X-Auth-Secret": "client-secret"})
         self.assertEqual(post["data"]["client_id"], "twcworkbench")
         self.assertEqual(post["data"]["grant_type"], "authorization_code")

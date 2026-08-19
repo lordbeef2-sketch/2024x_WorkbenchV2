@@ -104,7 +104,7 @@ def build_twc_auth_server_url(settings: Settings, server, path_or_url: str, *, p
     if not path_or_url.startswith("/"):
         path_or_url = f"/{path_or_url}"
     parsed = urlparse(server.base_url.rstrip("/"))
-    netloc = parsed.hostname or parsed.netloc
+    netloc = parsed.netloc or parsed.hostname or ""
     if port is not None and parsed.hostname:
         host = parsed.hostname
         if ":" in host and not host.startswith("["):
